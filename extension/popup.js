@@ -5,11 +5,18 @@ class VideoPopup {
 
     onLoad() {
         document.getElementById('content').style.display = 'none';
-        chrome.runtime.sendMessage({ type: "stat" }, this.onMsg.bind(this));
 
         document.getElementById("chk").addEventListener('click', (e) => {
             chrome.runtime.sendMessage({ type: "cmd", enabled: document.getElementById("chk").checked });
             window.close();
+        });
+
+        document.getElementById('clear').addEventListener('click', e => {
+            chrome.runtime.sendMessage({ type: "clear" });
+            window.close();
+        });
+        document.getElementById('format').addEventListener('click', e => {
+            alert("Please play the video in desired format in web player")
         });
 
         // Best-effort: only works once the tidm+app:// protocol handler is
@@ -23,18 +30,25 @@ class VideoPopup {
         document.getElementById("search-input").addEventListener('input', e => {
             this.applyFilter(e.target.value);
         });
+
+        // When this page is reused as the standalone detection window (see
+        // `App.openDetectionWindow`), a later detection while it's still open
+        // can't just re-run `onLoad` (that would re-attach every listener
+        // above a second time) - it sends this instead, so only the list
+        // itself refreshes.
+        chrome.runtime.onMessage.addListener(msg => {
+            if (msg && msg.type === "refresh") this.fetchAndRender();
+        });
+
+        this.fetchAndRender();
+    }
+
+    fetchAndRender() {
+        chrome.runtime.sendMessage({ type: "stat" }, this.onMsg.bind(this));
     }
 
     onMsg(response) {
         document.getElementById("chk").checked = response.enabled;
-        let button = document.getElementById('clear');
-        button.addEventListener('click', e => {
-            chrome.runtime.sendMessage({ type: "clear" });
-            window.close();
-        });
-        document.getElementById('format').addEventListener('click', e => {
-            alert("Please play the video in desired format in web player")
-        });
         if (response.list.length > 0) {
             document.getElementById('content').style.display = 'block';
         }
@@ -66,6 +80,42 @@ class VideoPopup {
         this.renderList(items);
     }
 
+    // Keeps both ends of a long value visible (a CDN URL's interesting parts -
+    // host and the final signature/expiry params - are at the start and end,
+    // not the middle) rather than plain end-truncation, which would hide the
+    // end entirely behind "...".
+    truncateMiddle(str, headLen = 28, tailLen = 18) {
+        if (str.length <= headLen + tailLen + 3) return str;
+        return str.slice(0, headLen) + "..." + str.slice(-tailLen);
+    }
+
+    // A single-line, middle-truncated `label + value` row that shows the
+    // full value on hover and copies it to the clipboard on double-click -
+    // matches the desktop GUI's `.url`/`.error` cell behavior for the same
+    // reason: these values (page/CDN URLs) are often far too long to display
+    // in full without wrapping the popup into an unreadable wall of text.
+    makeCopyableLine(label, value) {
+        let line = document.createElement('div');
+        line.innerText = label + this.truncateMiddle(value);
+        line.title = value + "\n(double-click to copy)";
+        // `overflow`/`max-width` stay as a backstop (Chrome's extension-popup
+        // auto-sizing has its own quirks around nested flex layouts), but the
+        // text itself is now already short enough to never need CSS clipping.
+        line.setAttribute("style", "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; margin-bottom: 4px; max-width: 320px;");
+        line.addEventListener('dblclick', async e => {
+            e.stopPropagation();
+            try {
+                await navigator.clipboard.writeText(value);
+                let original = line.innerText;
+                line.innerText = "Copied!";
+                setTimeout(() => { line.innerText = original; }, 700);
+            } catch (err) {
+                console.error("clipboard write failed", err);
+            }
+        });
+        return line;
+    }
+
     renderList(arr) {
         let table = document.getElementById("table");
         table.innerHTML = "";
@@ -93,7 +143,13 @@ class VideoPopup {
             let border = "";
 
             let div = document.createElement('div');
-            div.setAttribute("style", "padding: 10px; display: flex; flex-direction: column;" + border);
+            // `min-width: 0` overrides flex items' default `min-width: auto`,
+            // which otherwise refuses to shrink a flex item below its
+            // content's unwrapped intrinsic width - without this, a long
+            // `white-space: nowrap` URL further down this flex column forces
+            // the whole row (and with it the popup itself) wider instead of
+            // being clipped by its own `overflow: hidden`.
+            div.setAttribute("style", "padding: 10px; display: flex; flex-direction: column; min-width: 0;" + border);
 
             let details = document.createElement('button');
             details.setAttribute("style", "font-family:helvetica,arial,courier; font-size: 12px; cursor: pointer; border: none; background: rgba(0,0,0,0); color: #888; padding: 0px; flex-shrink: 0; width: 14px;");
@@ -111,10 +167,10 @@ class VideoPopup {
             titleRow.appendChild(button);
 
             let infoRow = document.createElement('div');
-            infoRow.setAttribute("style", "display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 20px;");
+            infoRow.setAttribute("style", "display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 20px; min-width: 0;");
 
             let p2 = document.createElement('span');
-            p2.setAttribute("style", "font-family:helvetica,arial,courier; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;");
+            p2.setAttribute("style", "font-family:helvetica,arial,courier; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1;");
             let node = document.createTextNode(info);
             p2.appendChild(node);
 
@@ -127,13 +183,13 @@ class VideoPopup {
             infoRow.appendChild(preview);
 
             let detailsPanel = document.createElement('div');
-            detailsPanel.setAttribute("style", "display: none; font-family:helvetica,arial,courier; font-size: 11px; color: #aaa; background: rgba(255,255,255,0.05); border-radius: 4px; padding: 6px 8px; margin-top: 4px; margin-left: 20px;");
-            let siteLine = document.createElement('div');
-            siteLine.innerText = "Site: " + (listItem.pageUrl || "(unknown)");
-            siteLine.setAttribute("style", "word-break: break-all; margin-bottom: 4px;");
-            let linkLine = document.createElement('div');
-            linkLine.innerText = "Full link: " + listItem.url;
-            linkLine.setAttribute("style", "word-break: break-all; user-select: text;");
+            detailsPanel.setAttribute("style", "display: none; font-family:helvetica,arial,courier; font-size: 11px; color: #aaa; background: rgba(255,255,255,0.05); border-radius: 4px; padding: 6px 8px; margin-top: 4px; margin-left: 20px; min-width: 0; overflow: hidden;");
+            // Long CDN URLs otherwise wrap across many lines and blow up the
+            // popup's height - capped to one ellipsized line, same as the
+            // desktop GUI's `.url`/`.error` cells, with the full value in the
+            // hover tooltip and available via double-click-to-copy below.
+            let siteLine = this.makeCopyableLine("Site: ", listItem.pageUrl || "(unknown)");
+            let linkLine = this.makeCopyableLine("Full link: ", listItem.url);
             detailsPanel.appendChild(siteLine);
             detailsPanel.appendChild(linkLine);
 
@@ -176,7 +232,11 @@ class VideoPopup {
                 details.innerText = nowOpen ? "▾" : "▸";
                 if (nowOpen && !qualityProbed) {
                     qualityProbed = true;
-                    qualityBox.innerText = "Checking quality options…";
+                    // No placeholder text while probing - most links have no
+                    // alternate quality at all, so showing "Checking..." only
+                    // to immediately clear it back to nothing is just noise
+                    // in the common case. The box only ever gets content once
+                    // the probe actually finds variants, below.
                     chrome.runtime.sendMessage({ type: "probe-quality", itemId: listItem.id }, response => {
                         const variants = (response && response.variants) || [];
                         qualityBox.innerHTML = "";

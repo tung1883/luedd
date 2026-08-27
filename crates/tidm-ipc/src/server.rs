@@ -425,38 +425,6 @@ async fn queue_url(
     cookie: Option<String>,
     quality: Option<String>,
 ) {
-    // Instagram post/reel URLs aren't themselves downloadable - they're
-    // pages. Resolve to the real direct media URL(s) first (using the
-    // page's own captured headers/cookie for private/saved content), then
-    // queue each as a plain `Http` download - skips the HLS/DASH-sniffing
-    // path below entirely, since a resolved CDN URL is never itself a
-    // manifest. A carousel resolves to more than one entry.
-    if let Some(site) = tidm_media::social::detect_site(&url) {
-        let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
-        match tidm_media::social::extract(site, &state.manager.http_client(), &url, &ctx).await {
-            Ok(items) => {
-                for item in items {
-                    let filename = item
-                        .suggested_name
-                        .clone()
-                        .or_else(|| filename_hint.clone())
-                        .unwrap_or_else(|| tidm_core::naming::suggest_filename(title_hint.as_deref(), &item.url, None));
-                    // The extractor's own required headers (e.g. a Referer the
-                    // resolved CDN URL is bound to) are known-correct for
-                    // this specific URL - applied on top of, so they override,
-                    // whatever was captured at original detection time.
-                    let mut item_headers = headers.clone();
-                    item_headers.extend(item.required_headers.clone());
-                    queue_resolved_http(state, item.url, filename, item_headers, cookie.clone(), quality.clone()).await;
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%url, ?site, error = %e, "social media extraction failed");
-            }
-        }
-        return;
-    }
-
     let guessed_kind = DownloadKind::guess_from_url(&url);
 
     // HLS/DASH already get forced to `.mp4` by `sanitize_dest_for_kind` below
@@ -511,41 +479,6 @@ async fn queue_url(
     tokio::spawn(async move {
         if let Err(e) = manager.run_entry_now(&id).await {
             tracing::warn!(error = %e, %id, "immediate run of extension-queued download failed to start");
-        }
-    });
-}
-
-/// Tail shared by the normal kind-detection path and the social-extraction
-/// path above: build `dest`, persist a `Http`-kind entry, and run it
-/// immediately (same short-lived-signed-URL reasoning as `queue_url`'s own
-/// doc comment on `run_entry_now` - resolved social CDN URLs expire in hours
-/// at best, sometimes far less).
-async fn queue_resolved_http(
-    state: &AppState,
-    url: String,
-    filename: String,
-    headers: HashMap<String, String>,
-    cookie: Option<String>,
-    quality: Option<String>,
-) {
-    let download_dir = state.config.settings.get().await.download_dir;
-    let dest = tidm_core::naming::dest_path(&download_dir, &url, &filename);
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent).await.ok();
-    }
-
-    tracing::info!(%url, dest = %dest.display(), "queued download resolved from a social media page");
-    let entry = DownloadEntry::new(url, dest, DownloadKind::Http).with_request_context(headers, cookie).with_quality(quality);
-    let id = entry.id.clone();
-    if let Err(e) = state.store.add_entry(entry).await {
-        tracing::warn!(error = %e, "failed to persist resolved social media entry");
-        return;
-    }
-
-    let manager = state.manager.clone();
-    tokio::spawn(async move {
-        if let Err(e) = manager.run_entry_now(&id).await {
-            tracing::warn!(error = %e, %id, "immediate run of resolved social media download failed to start");
         }
     });
 }

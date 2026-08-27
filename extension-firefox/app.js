@@ -21,8 +21,12 @@ export default class App {
         // A detection can now be reported twice for the same URL - once
         // locally the instant it's seen (`recordLocalDetection`), and again
         // when/if the app confirms it (`onMessage`'s `newDetection`) - this
-        // dedups the resulting OS notification to once per URL per session.
+        // dedups the resulting detection popup to once per URL per session.
         this.notifiedUrls = new Set();
+        // Tracks the id of the floating detection window (if one is
+        // currently open), so a second detection while it's still open
+        // reuses/refocuses it instead of spawning another window on top.
+        this.detectionWindowId = null;
     }
 
     start() {
@@ -72,17 +76,44 @@ export default class App {
         }
     }
 
+    // Pops the detection list up on screen the instant something new is
+    // found - a real standalone browser window (chrome.windows.create with
+    // type "popup"), not an OS notification (easy to miss/dismiss, subject
+    // to OS-level notification permissions the user can't easily debug) and
+    // not a content script injected into the page (subject to that page's
+    // CSP, and invisible for anything rendered inside a cross-origin iframe -
+    // see the Facebook reels investigation this session, where exactly that
+    // blocked a DOM-based approach entirely). It's just popup.html/popup.js
+    // reused as-is, so it has the full list/search/quality-picker UI, not a
+    // stripped-down toast.
     notifyNewDetection(item) {
-        if (!chrome.notifications) return; // permission not granted/unsupported
         if (!item || !item.url || this.notifiedUrls.has(item.url)) return;
         this.notifiedUrls.add(item.url);
-        chrome.notifications.create("tidm-video-" + item.id, {
-            type: "basic",
-            iconUrl: "icon128.png",
-            title: "Lüdd found a video",
-            message: item.text || item.info,
-            priority: 1
-        });
+        this.openDetectionWindow();
+    }
+
+    openDetectionWindow() {
+        if (this.detectionWindowId !== null) {
+            // Already open from an earlier detection - bring it forward and
+            // ask it to re-pull the current list rather than opening a
+            // second window on top of it.
+            chrome.windows.update(this.detectionWindowId, { focused: true }, () => {
+                if (chrome.runtime.lastError) {
+                    // The window was closed without us hearing about it yet
+                    // (onRemoved hasn't fired) - fall through to opening a
+                    // fresh one below instead of silently doing nothing.
+                    this.detectionWindowId = null;
+                    this.openDetectionWindow();
+                    return;
+                }
+                chrome.runtime.sendMessage({ type: "refresh" });
+            });
+            return;
+        }
+        chrome.windows.create(
+            { type: "popup", url: chrome.runtime.getURL("popup.html"), width: 440, height: 420, focused: true },
+            win => { this.detectionWindowId = win.id; }
+        );
     }
 
     // Queues a detected video for download by id, the same request the popup
@@ -111,11 +142,10 @@ export default class App {
         return (res && res.qualityVariants) || [];
     }
 
-    onNotificationClicked(notificationId) {
-        const prefix = "tidm-video-";
-        if (!notificationId.startsWith(prefix)) return;
-        this.queueVideo(notificationId.slice(prefix.length));
-        chrome.notifications.clear(notificationId);
+    onWindowRemoved(windowId) {
+        if (windowId === this.detectionWindowId) {
+            this.detectionWindowId = null;
+        }
     }
 
     onDisconnect() {
@@ -252,9 +282,7 @@ export default class App {
         this.requestWatcher.register();
         this.attachContextMenu();
         chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
-        if (chrome.notifications) {
-            chrome.notifications.onClicked.addListener(this.onNotificationClicked.bind(this));
-        }
+        chrome.windows.onRemoved.addListener(this.onWindowRemoved.bind(this));
     }
 
     isSupportedProtocol(url) {

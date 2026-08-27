@@ -14,8 +14,7 @@
         "tabs",
         "storage",
         "contextMenus",
-        "alarms",
-        "notifications"
+        "alarms"
     ],
     "background": {
         "service_worker": "main.js",
