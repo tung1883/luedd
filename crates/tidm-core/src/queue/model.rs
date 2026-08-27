@@ -55,6 +55,26 @@ pub struct DownloadEntry {
     /// report one).
     #[serde(default)]
     pub progress: Option<(u64, u64)>,
+    /// How many times the scheduler has auto-retried this entry since it last
+    /// left `Failed` for any other reason (a manual retry, or a fresh entry).
+    /// Gates against `MAX_AUTO_RETRIES` in `queue::scheduler` and indexes the
+    /// backoff table there.
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Unix timestamp (seconds) after which the scheduler is allowed to
+    /// auto-retry this entry, or `None` if it isn't scheduled for an
+    /// auto-retry (not `Failed`, already exhausted `MAX_AUTO_RETRIES`, or
+    /// never failed in the first place).
+    #[serde(default)]
+    pub next_retry_at: Option<i64>,
+    /// A user's explicit HLS/DASH quality choice (a `variant_key` from
+    /// `tidm_media::quality::QualityOption`, matched by `jobs::run_hls`/
+    /// `run_dash` against the manifest's variants at download time), or
+    /// `None` to auto-pick the highest-bandwidth variant as before - the
+    /// extension's fast auto-run path never probes, so this stays `None`
+    /// there. Meaningless for `Http` downloads.
+    #[serde(default)]
+    pub quality: Option<String>,
 }
 
 impl DownloadEntry {
@@ -70,7 +90,18 @@ impl DownloadEntry {
             headers: HashMap::new(),
             cookie: None,
             progress: None,
+            retry_count: 0,
+            next_retry_at: None,
+            quality: None,
         }
+    }
+
+    /// Attaches a user's explicit HLS/DASH quality choice, made before this
+    /// entry was queued (see `tidm_media::quality::probe_hls_qualities`/
+    /// `probe_dash_qualities`).
+    pub fn with_quality(mut self, quality: Option<String>) -> Self {
+        self.quality = quality;
+        self
     }
 
     /// Attaches request context (headers/cookie) captured when the URL was
@@ -113,7 +144,7 @@ pub struct DownloadQueueDef {
     pub schedule: Option<DownloadSchedule>,
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

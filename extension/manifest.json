@@ -1,9 +1,9 @@
 {
-    "name": "tidm Integration Module",
+    "name": "Lüdd Integration Module",
     "action": {},
     "manifest_version": 3,
     "version": "0.1.0",
-    "description": "Download with tidm.",
+    "description": "Download with Lüdd.",
     "host_permissions": [
         "*://*/*"
     ],

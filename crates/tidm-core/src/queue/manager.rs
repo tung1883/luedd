@@ -185,20 +185,44 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
                     progress_store.update_entry(&progress_id, |e| e.progress = Some((done, total))).await.ok();
                 }
                 tidm_net::JobEvent::Converting => {
-                    progress_store.update_entry(&progress_id, |e| e.status = DownloadStatus::Converting).await.ok();
+                    // Clear the download phase's leftover (done, total) rather
+                    // than leaving it on screen under the new status - it's
+                    // about to be replaced by ffmpeg's own mux progress on a
+                    // completely different scale (elapsed/total duration, not
+                    // bytes/segments), and showing the stale byte-based
+                    // percentage first would just flash to a different number
+                    // once the first real mux-progress tick arrives.
+                    progress_store
+                        .update_entry(&progress_id, |e| {
+                            e.status = DownloadStatus::Converting;
+                            e.progress = None;
+                        })
+                        .await
+                        .ok();
                 }
             }
         }
     });
 
     let ctx = RequestContext { headers: entry.headers.clone(), cookie: entry.cookie.clone() };
-    let result = jobs::run(client, entry.kind, &entry.url, &entry.dest, concurrency, &ctx, Some(&progress_tx)).await;
+    let result =
+        jobs::run(client, entry.kind, &entry.url, &entry.dest, concurrency, &ctx, Some(&progress_tx), entry.quality.as_deref()).await;
     drop(progress_tx);
     progress_task.await.ok();
 
     match result {
-        Ok(()) => {
-            store.update_entry(&entry.id, |e| e.status = DownloadStatus::Finished).await.ok();
+        Ok(final_dest) => {
+            // `final_dest` normally equals `entry.dest`, but can differ if HLS/DASH
+            // muxing fell back to `.mkv` (see `jobs::finish_mux`) - keep the
+            // persisted entry pointing at whatever's actually on disk, so
+            // Preview/Open-folder/cleanup all target the real file.
+            store
+                .update_entry(&entry.id, |e| {
+                    e.status = DownloadStatus::Finished;
+                    e.dest = final_dest;
+                })
+                .await
+                .ok();
         }
         Err(e) => {
             // `e.to_string()` (equivalent to `{e}`) shows only the outermost
@@ -208,10 +232,15 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
             // real HTTP status...). The alternate Display (`{:#}`) chains all
             // of them together, which is what actually gets shown in the GUI.
             let msg = format!("{e:#}");
+            // Schedule the next auto-retry (if any auto-attempts remain) off
+            // this run's own `retry_count` - a manual retry resets it to 0,
+            // so failing again after one always gets a fresh backoff sequence.
+            let next_retry_at = super::scheduler::next_auto_retry_at(entry.retry_count);
             store
                 .update_entry(&entry.id, |entry| {
                     entry.status = DownloadStatus::Failed;
                     entry.error = Some(msg);
+                    entry.next_retry_at = next_retry_at;
                 })
                 .await
                 .ok();
@@ -220,29 +249,14 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
 }
 
 /// Best-effort deletion of `dest` plus every temp/cache artifact a download of
-/// any kind might have left behind, keyed off the naming conventions each
-/// downloader uses (`tidm_core::progressive`'s `.tidm-state.json` sidecar,
-/// `tidm_media`'s `.{filename}.segments` dirs and `.tmp`/`.tmp.ts` intermediate
-/// files for muxed/demuxed HLS and DASH). Missing files are silently ignored -
-/// this is cleanup, not a correctness-critical operation.
+/// any kind might have left behind. Every kind's intermediate files (resumable
+/// state, HLS/DASH segments, ffmpeg mux inputs) live in one place -
+/// `naming::cache_dir_for(dest)` - so cleanup is just those two paths, not a
+/// list of naming conventions to keep in sync with each downloader. Missing
+/// files/dirs are silently ignored - this is cleanup, not correctness-critical.
 async fn delete_artifacts(dest: &std::path::Path) {
     tokio::fs::remove_file(dest).await.ok();
-
-    let mut state_path = dest.as_os_str().to_owned();
-    state_path.push(".tidm-state.json");
-    tokio::fs::remove_file(&state_path).await.ok();
-
-    let intermediate_suffixes =
-        ["tmp", "tmp.ts", "video.tmp", "audio.tmp", "video.tmp.ts", "audio.tmp.ts"];
-    for suffix in intermediate_suffixes {
-        let intermediate = dest.with_extension(suffix);
-        tokio::fs::remove_file(&intermediate).await.ok();
-
-        if let Some(name) = intermediate.file_name() {
-            let segments_dir = intermediate.with_file_name(format!(".{}.segments", name.to_string_lossy()));
-            tokio::fs::remove_dir_all(&segments_dir).await.ok();
-        }
-    }
+    tokio::fs::remove_dir_all(crate::naming::cache_dir_for(dest)).await.ok();
 }
 
 #[cfg(test)]
@@ -371,7 +385,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_finished_with_delete_files_removes_output_and_state_file() {
+    async fn clear_finished_with_delete_files_removes_output_and_cache_dir() {
         let dir = std::env::temp_dir().join(format!("tidm-manager-clear-{}", std::process::id()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let store = Arc::new(DownloadStore::open(dir.join("downloads.json")).await.unwrap());
@@ -379,9 +393,9 @@ mod tests {
 
         let dest = dir.join("out.bin");
         tokio::fs::write(&dest, b"content").await.unwrap();
-        let mut state_path = dest.as_os_str().to_owned();
-        state_path.push(".tidm-state.json");
-        tokio::fs::write(&state_path, b"{}").await.unwrap();
+        let cache_dir = crate::naming::cache_dir_for(&dest);
+        tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+        tokio::fs::write(cache_dir.join("state.json"), b"{}").await.unwrap();
 
         let entry = DownloadEntry::new("http://x/f".into(), dest.clone(), DownloadKind::Http);
         let id = entry.id.clone();
@@ -394,7 +408,7 @@ mod tests {
         assert_eq!(removed_count, 1);
         assert!(store.list_entries().await.is_empty());
         assert!(tokio::fs::metadata(&dest).await.is_err(), "output file should be deleted");
-        assert!(tokio::fs::metadata(&state_path).await.is_err(), "state sidecar should be deleted");
+        assert!(tokio::fs::metadata(&cache_dir).await.is_err(), "cache dir should be deleted");
 
         tokio::fs::remove_dir_all(&dir).await.ok();
     }

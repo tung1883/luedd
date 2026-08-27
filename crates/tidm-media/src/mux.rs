@@ -3,127 +3,191 @@
 //! `MergeHLSAudioVideStream`). Never re-encodes (`-c copy`) since the underlying
 //! stream is already valid - only assembly/remuxing is needed.
 
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
+use tidm_net::ProgressTx;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::Command;
+
+/// What to report ffmpeg's mux progress against - the same `ProgressTx`
+/// already used for download progress (`JobEvent::Progress` may now follow a
+/// `JobEvent::Converting`, see `tidm_net::JobEvent`), paired with the total
+/// duration in milliseconds the caller already knows from the parsed
+/// HLS/DASH playlist (`HlsPlaylist::total_duration` / `Representation::duration_ms`).
+/// `None` (either the whole tuple, or just a `None` duration) skips
+/// `-progress` entirely - the caller doesn't always know a duration up front.
+pub type MuxProgress<'a> = (&'a ProgressTx, u64);
 
 /// Muxes a single assembled TS/media file into `output` (mp4 by default), falling
-/// back to `.mkv` if the mp4 mux fails (mirrors XDM's fallback behavior).
-pub async fn mux_single(input: &Path, output: &Path) -> Result<()> {
-    if run_ffmpeg(&[
-        "-y",
-        "-fflags",
-        "+genpts",
-        "-i",
-        &input.to_string_lossy(),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-c",
-        "copy",
-        "-bsf:a",
-        "aac_adtstoasc",
-        "-movflags",
-        "+faststart",
-        &output.to_string_lossy(),
-    ])
+/// back to `.mkv` if the mp4 mux fails (mirrors XDM's fallback behavior). Returns
+/// whichever path actually got written - `output` itself, or its `.mkv` fallback -
+/// since the caller (moving the result out of a per-download cache dir into its
+/// real destination) needs to know which one actually happened.
+pub async fn mux_single(input: &Path, output: &Path, progress: Option<MuxProgress<'_>>) -> Result<PathBuf> {
+    if run_ffmpeg(
+        &[
+            "-y",
+            "-fflags",
+            "+genpts",
+            "-i",
+            &input.to_string_lossy(),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c",
+            "copy",
+            "-bsf:a",
+            "aac_adtstoasc",
+            "-movflags",
+            "+faststart",
+            &output.to_string_lossy(),
+        ],
+        progress,
+    )
     .await
     .is_ok()
     {
-        return Ok(());
+        return Ok(output.to_path_buf());
     }
 
     let mkv_output = output.with_extension("mkv");
-    run_ffmpeg(&[
-        "-y",
-        "-fflags",
-        "+genpts",
-        "-i",
-        &input.to_string_lossy(),
-        "-c",
-        "copy",
-        &mkv_output.to_string_lossy(),
-    ])
+    run_ffmpeg(
+        &[
+            "-y",
+            "-fflags",
+            "+genpts",
+            "-i",
+            &input.to_string_lossy(),
+            "-c",
+            "copy",
+            &mkv_output.to_string_lossy(),
+        ],
+        progress,
+    )
     .await
-    .with_context(|| format!("ffmpeg mux failed for both mp4 and mkv fallback: {}", input.display()))
+    .with_context(|| format!("ffmpeg mux failed for both mp4 and mkv fallback: {}", input.display()))?;
+    Ok(mkv_output)
 }
 
 /// Muxes separately-downloaded video and audio streams into one output container,
-/// equivalent to `MergeAudioVideStream`.
-pub async fn mux_demuxed(video: &Path, audio: &Path, output: &Path) -> Result<()> {
-    if run_ffmpeg(&[
-        "-y",
-        "-i",
-        &video.to_string_lossy(),
-        "-i",
-        &audio.to_string_lossy(),
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-c",
-        "copy",
-        "-movflags",
-        "+faststart",
-        &output.to_string_lossy(),
-    ])
+/// equivalent to `MergeAudioVideStream`. Returns whichever path actually got
+/// written, same reasoning as `mux_single`.
+pub async fn mux_demuxed(video: &Path, audio: &Path, output: &Path, progress: Option<MuxProgress<'_>>) -> Result<PathBuf> {
+    if run_ffmpeg(
+        &[
+            "-y",
+            "-i",
+            &video.to_string_lossy(),
+            "-i",
+            &audio.to_string_lossy(),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            &output.to_string_lossy(),
+        ],
+        progress,
+    )
     .await
     .is_ok()
     {
-        return Ok(());
+        return Ok(output.to_path_buf());
     }
 
     let mkv_output = output.with_extension("mkv");
-    run_ffmpeg(&[
-        "-y",
-        "-i",
-        &video.to_string_lossy(),
-        "-i",
-        &audio.to_string_lossy(),
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-c",
-        "copy",
-        &mkv_output.to_string_lossy(),
-    ])
+    run_ffmpeg(
+        &[
+            "-y",
+            "-i",
+            &video.to_string_lossy(),
+            "-i",
+            &audio.to_string_lossy(),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c",
+            "copy",
+            &mkv_output.to_string_lossy(),
+        ],
+        progress,
+    )
     .await
-    .with_context(|| "ffmpeg demuxed mux failed for both mp4 and mkv fallback")
+    .with_context(|| "ffmpeg demuxed mux failed for both mp4 and mkv fallback")?;
+    Ok(mkv_output)
 }
 
-/// Runs `ffmpeg` on a blocking thread pool thread rather than the calling
-/// tokio worker thread. `Command::output()` blocks synchronously for the
-/// entire process lifetime; called directly from an async fn it would starve
-/// that worker thread (and, with it, whatever else needs to run on the same
-/// runtime - e.g. Tauri's `list_downloads` command, polled every 2s by the
-/// frontend) for as long as the mux takes, freezing the UI on a stale status
-/// (like "Downloading" instead of "Converting") until ffmpeg finishes.
-async fn run_ffmpeg(args: &[&str]) -> Result<()> {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    tokio::task::spawn_blocking(move || {
-        let mut cmd = Command::new("ffmpeg");
-        cmd.args(&args);
+/// Runs `ffmpeg` fully asynchronously via `tokio::process::Command` (piped
+/// stdout/stderr, `.wait()`ed on rather than the old `spawn_blocking(Command::
+/// output())`), so it never blocks a tokio worker thread for the whole mux
+/// duration - important since Tauri's `list_downloads` command (polled every
+/// 2s by the frontend) shares that same runtime, and a blocked worker thread
+/// would freeze the UI on a stale status until ffmpeg finished. When
+/// `progress` is given, also passes `-progress pipe:1 -nostats` and streams
+/// parsed `out_time_us=` lines through it as it runs, rather than only
+/// reporting once at the very end.
+async fn run_ffmpeg(args: &[&str], progress: Option<MuxProgress<'_>>) -> Result<()> {
+    let mut owned_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    if progress.is_some() {
+        owned_args.push("-progress".to_string());
+        owned_args.push("pipe:1".to_string());
+        owned_args.push("-nostats".to_string());
+    }
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(&owned_args).stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let output = cmd.output().context("failed to spawn ffmpeg - is it installed and on PATH?")?;
-        if !output.status.success() {
-            bail!(
-                "ffmpeg exited with {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
+    #[cfg(windows)]
+    {
+        // `tokio::process::Command` exposes `creation_flags` as an inherent
+        // method directly (unlike `std::process::Command`, which needs the
+        // `CommandExt` trait imported) - no extra import needed here.
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().context("failed to spawn ffmpeg - is it installed and on PATH?")?;
+
+    let progress_task = match (child.stdout.take(), progress) {
+        (Some(stdout), Some((tx, total_ms))) => {
+            let tx = tx.clone();
+            Some(tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    // `out_time_us=` is unambiguously microseconds (unlike
+                    // `out_time_ms=`, which some ffmpeg builds populate with
+                    // microseconds too despite the name) - convert once here
+                    // rather than trusting either field's naming.
+                    if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<i64>().ok()) {
+                        if us >= 0 {
+                            tidm_net::report_progress(Some(&tx), (us as u64) / 1000, total_ms);
+                        }
+                    }
+                }
+            }))
         }
-        Ok(())
-    })
-    .await
-    .context("ffmpeg task panicked")?
+        _ => None,
+    };
+
+    let mut stderr_output = Vec::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        stderr.read_to_end(&mut stderr_output).await.ok();
+    }
+
+    let status = child.wait().await.context("waiting for ffmpeg to exit")?;
+    if let Some(task) = progress_task {
+        task.await.ok();
+    }
+
+    if !status.success() {
+        bail!("ffmpeg exited with {}: {}", status, String::from_utf8_lossy(&stderr_output));
+    }
+    Ok(())
 }

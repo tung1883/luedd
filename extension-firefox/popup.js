@@ -137,6 +137,18 @@ class VideoPopup {
             detailsPanel.appendChild(siteLine);
             detailsPanel.appendChild(linkLine);
 
+            // Quality picker - probed lazily the first time this row's
+            // details panel is opened, not eagerly for every detected item
+            // (that would mean fetching every manifest on the page just to
+            // show a badge count). The plain title button above keeps
+            // queuing the auto-best variant instantly with no probe at all -
+            // this is purely an opt-in slower path for someone who expands
+            // the row on purpose.
+            let qualityBox = document.createElement('div');
+            qualityBox.setAttribute("style", "margin-top: 6px; display: flex; flex-direction: column; gap: 3px;");
+            detailsPanel.appendChild(qualityBox);
+            let qualityProbed = false;
+
             div.appendChild(titleRow);
             div.appendChild(infoRow);
             div.appendChild(detailsPanel);
@@ -147,9 +159,9 @@ class VideoPopup {
                 const original = button.innerText;
                 chrome.runtime.sendMessage({ type: "vid", itemId: e.target.id }, response => {
                     const success = response && response.success;
-                    button.innerText = success === true ? "Added to tidm!"
+                    button.innerText = success === true ? "Added to Lüdd!"
                         : success === false ? "Failed - link may have expired"
-                        : "tidm app not running";
+                        : "Lüdd app not running";
                     setTimeout(() => { button.innerText = original; }, 1500);
                 });
             });
@@ -162,6 +174,41 @@ class VideoPopup {
                 let nowOpen = detailsPanel.style.display === "none";
                 detailsPanel.style.display = nowOpen ? "block" : "none";
                 details.innerText = nowOpen ? "▾" : "▸";
+                if (nowOpen && !qualityProbed) {
+                    qualityProbed = true;
+                    qualityBox.innerText = "Checking quality options…";
+                    chrome.runtime.sendMessage({ type: "probe-quality", itemId: listItem.id }, response => {
+                        const variants = (response && response.variants) || [];
+                        qualityBox.innerHTML = "";
+                        if (variants.length === 0) {
+                            // Nothing to pick from (plain HTTP, or only one
+                            // rendition) - leave the box empty rather than
+                            // showing a message for the common case.
+                            return;
+                        }
+                        let label = document.createElement('div');
+                        label.innerText = "Choose a quality:";
+                        label.setAttribute("style", "margin-bottom: 2px;");
+                        qualityBox.appendChild(label);
+                        variants.forEach(variant => {
+                            let qBtn = document.createElement('button');
+                            qBtn.innerText = variant.label;
+                            qBtn.setAttribute("style", "font-family:helvetica,arial,courier; font-size: 11px; cursor: pointer; text-align: left; border: none; background: rgba(0,0,0,0); color: #06c; padding: 1px 0;");
+                            qBtn.addEventListener('click', ev => {
+                                ev.stopPropagation();
+                                const original = qBtn.innerText;
+                                chrome.runtime.sendMessage({ type: "vid", itemId: listItem.id, quality: variant.variant_key }, res => {
+                                    const success = res && res.success;
+                                    qBtn.innerText = success === true ? "Added to Lüdd!"
+                                        : success === false ? "Failed - link may have expired"
+                                        : "Lüdd app not running";
+                                    setTimeout(() => { qBtn.innerText = original; }, 1500);
+                                });
+                            });
+                            qualityBox.appendChild(qBtn);
+                        });
+                    });
+                }
             });
         });
     }

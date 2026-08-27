@@ -3,3 +3,5 @@ pub mod dash;
 pub mod disguise;
 pub mod hls;
 pub mod mux;
+pub mod quality;
+pub mod social;

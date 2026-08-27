@@ -6,7 +6,7 @@
 //! straight from the server's response instead of trusting the URL alone -
 //! the same idea as XDM's page-title-based auto-naming.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tidm_net::{HttpClient, RequestContext};
 
@@ -260,6 +260,55 @@ pub fn suggest_filename(title: Option<&str>, url: &str, detected_ext: Option<&st
     }
 }
 
+/// Short, non-cryptographic hash (FNV-1a, 8 hex chars) - not for security,
+/// just to guarantee two downloads never silently collide/overwrite each
+/// other on disk (nothing that writes a fresh download's first bytes checks
+/// path existence beforehand).
+fn short_hash(input: &str) -> String {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in input.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    format!("{hash:08x}")
+}
+
+/// Final on-disk destination for a new download: flat inside `download_dir`,
+/// with `filename`'s stem suffixed by a short hash. The hash is over `url`
+/// *plus* the moment this particular download was added (nanosecond-precision
+/// wall clock) rather than the URL alone, so every individual download gets
+/// its own hash - re-adding the exact same URL a second time is a distinct
+/// download with its own path, not one that silently collides with or
+/// resumes into the first. Only called once per new download (the result is
+/// persisted on the entry, never recomputed), so this being time-dependent
+/// doesn't affect retry - a retry reuses the already-stored `dest` untouched.
+/// Composes cleanly with `jobs::sanitize_dest_for_kind`, which only ever
+/// rewrites the extension via `.with_extension(...)` - the hashed stem passes
+/// through untouched.
+pub fn dest_path(download_dir: &Path, url: &str, filename: &str) -> PathBuf {
+    let now_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let hash = short_hash(&format!("{url}#{now_ns}"));
+    let path = Path::new(filename);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("download");
+    let hashed_filename = match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{stem}-{hash}.{ext}"),
+        None => format!("{stem}-{hash}"),
+    };
+    download_dir.join(hashed_filename)
+}
+
+/// Every download's intermediate/temp artifacts (resumable-download state,
+/// HLS/DASH segments, ffmpeg mux inputs) live in one dedicated cache folder
+/// per download, derived from `dest`'s own filename (which already contains
+/// the hash from `dest_path`) rather than the URL - so nothing downstream
+/// needs the URL again, and a retry (which never changes `dest`) naturally
+/// finds the same cache dir a prior failed attempt left behind. Deleted once
+/// the finished file has been moved into place at `dest`.
+pub fn cache_dir_for(dest: &Path) -> PathBuf {
+    let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("download");
+    dest.parent().unwrap_or_else(|| Path::new(".")).join(".tidm-cache").join(stem)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +384,47 @@ mod tests {
     #[test]
     fn suggest_filename_uses_detected_ext_when_url_has_none() {
         assert_eq!(suggest_filename(None, "https://cdn.example/videos/29whtyqk8y", Some("mp4")), "29whtyqk8y.mp4");
+    }
+
+    #[test]
+    fn dest_path_gives_each_download_its_own_hash_even_for_the_same_url() {
+        let dir = Path::new("downloads");
+        let a = dest_path(dir, "https://cdn.example/video.m3u8", "My Cool Video.mp4");
+        let b = dest_path(dir, "https://cdn.example/video.m3u8", "My Cool Video.mp4");
+        assert_ne!(a, b, "re-adding the same URL must be a distinct download, not collide with/resume the first");
+    }
+
+    #[test]
+    fn dest_path_different_urls_never_collide_even_with_identical_titles() {
+        let dir = Path::new("downloads");
+        let a = dest_path(dir, "https://cdn.example/a.m3u8", "video.mp4");
+        let b = dest_path(dir, "https://cdn.example/b.m3u8", "video.mp4");
+        assert_ne!(a, b, "different source URLs must never resolve to the same on-disk path");
+    }
+
+    #[test]
+    fn dest_path_is_flat_and_keeps_extension_after_the_hash() {
+        let dir = Path::new("downloads");
+        let dest = dest_path(dir, "https://cdn.example/video.m3u8", "My Cool Video.mp4");
+        assert_eq!(dest.parent().unwrap(), Path::new("downloads"));
+        assert_eq!(dest.extension().and_then(|e| e.to_str()), Some("mp4"));
+        let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap();
+        assert!(stem.starts_with("My Cool Video-"), "stem was {stem:?}");
+    }
+
+    #[test]
+    fn cache_dir_for_is_derived_from_dests_own_hashed_stem() {
+        let dir = Path::new("downloads");
+        let dest = dest_path(dir, "https://cdn.example/video.m3u8", "My Cool Video.mp4");
+        let cache_dir = cache_dir_for(&dest);
+        assert_eq!(cache_dir.parent().unwrap(), Path::new("downloads/.tidm-cache"));
+        assert_eq!(cache_dir.file_name().and_then(|s| s.to_str()), dest.file_stem().and_then(|s| s.to_str()));
+    }
+
+    #[test]
+    fn cache_dir_for_is_stable_across_retries_since_dest_never_changes() {
+        let dir = Path::new("downloads");
+        let dest = dest_path(dir, "https://cdn.example/video.m3u8", "My Cool Video.mp4");
+        assert_eq!(cache_dir_for(&dest), cache_dir_for(&dest));
     }
 }

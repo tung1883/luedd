@@ -122,7 +122,7 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
 
 async fn run_job(kind: DownloadKind, url: &str, output: &PathBuf, concurrency: usize) -> Result<()> {
     let client = HttpClient::new()?;
-    tidm_core::jobs::run(&client, kind, url, output, concurrency, &RequestContext::default(), None).await?;
+    tidm_core::jobs::run(&client, kind, url, output, concurrency, &RequestContext::default(), None, None).await?;
     tracing::info!(output = %output.display(), "done");
     Ok(())
 }

@@ -9,8 +9,11 @@ use anyhow::{bail, Context, Result};
 use tidm_media::dash::download_representation;
 use tidm_media::hls::{download_playlist, parse_master_playlist, parse_media_playlist};
 use tidm_media::mux::{mux_demuxed, mux_single};
+use tidm_media::mux::MuxProgress;
+use tidm_media::quality::{dash_variant_key, hls_variant_key};
 use tidm_net::{HttpClient, ProgressTx, RequestContext};
 
+use crate::naming::cache_dir_for;
 use crate::progressive;
 
 /// What kind of downloader a URL needs. `Http` covers any plain file.
@@ -63,6 +66,17 @@ pub fn sanitize_dest_for_kind(dest: &Path, kind: DownloadKind) -> PathBuf {
     }
 }
 
+/// Moves a mux's actual output (which may be `output` itself, or its `.mkv`
+/// fallback - see `mux::mux_single`/`mux_demuxed`) into the real `dest`,
+/// adjusting `dest`'s own extension to match if the mkv fallback fired, so
+/// the returned path always reflects what's actually on disk rather than
+/// what the caller originally assumed the container would be.
+async fn finish_mux(produced: PathBuf, dest: &Path) -> Result<PathBuf> {
+    let final_dest = if produced.extension() == dest.extension() { dest.to_path_buf() } else { dest.with_extension("mkv") };
+    tokio::fs::rename(&produced, &final_dest).await.context("moving muxed output into place")?;
+    Ok(final_dest)
+}
+
 pub async fn run_http(
     client: &HttpClient,
     url: &str,
@@ -70,8 +84,9 @@ pub async fn run_http(
     concurrency: usize,
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
-) -> Result<()> {
-    progressive::download(client, url, dest, concurrency, ctx, progress).await
+) -> Result<PathBuf> {
+    progressive::download(client, url, dest, concurrency, ctx, progress).await?;
+    Ok(dest.to_path_buf())
 }
 
 pub async fn run_hls(
@@ -81,17 +96,28 @@ pub async fn run_hls(
     concurrency: usize,
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
-) -> Result<()> {
+    quality: Option<&str>,
+) -> Result<PathBuf> {
     let dest = &sanitize_dest_for_kind(dest, DownloadKind::Hls);
+    let cache_dir = cache_dir_for(dest);
+    tokio::fs::create_dir_all(&cache_dir).await?;
     let text = client.get_text(url, &ctx.to_options(None)).await?;
     let lines: Vec<&str> = text.lines().collect();
 
-    if text.contains("#EXT-X-STREAM-INF") {
+    let final_dest = if text.contains("#EXT-X-STREAM-INF") {
         let containers = parse_master_playlist(&lines, url)?;
-        let best = containers
-            .iter()
-            .max_by_key(|c| {
-                c.attributes.get("BANDWIDTH").and_then(|b| b.parse::<u64>().ok()).unwrap_or(0)
+        // Prefer the caller's explicit choice (from `naming`/`quality::probe_hls_qualities`,
+        // surfaced to the user before this job ever started) when it still
+        // matches a variant in this fetch of the manifest; fall back to the
+        // highest-bandwidth variant otherwise - either no choice was made
+        // (the extension's fast auto-run path never probes), or the manifest
+        // changed since the choice was made and the exact variant is gone.
+        let best = quality
+            .and_then(|q| containers.iter().find(|c| hls_variant_key(c) == q))
+            .or_else(|| {
+                containers
+                    .iter()
+                    .max_by_key(|c| c.attributes.get("BANDWIDTH").and_then(|b| b.parse::<u64>().ok()).unwrap_or(0))
             })
             .context("master playlist had no variants")?;
 
@@ -106,33 +132,35 @@ pub async fn run_hls(
                 let audio_lines: Vec<&str> = audio_text.lines().collect();
                 let audio_playlist = parse_media_playlist(&audio_lines, audio_url.as_str())?;
 
-                let video_tmp = dest.with_extension("video.tmp.ts");
-                let audio_tmp = dest.with_extension("audio.tmp.ts");
+                let video_tmp = cache_dir.join("video.ts");
+                let audio_tmp = cache_dir.join("audio.ts");
                 // Only the (usually larger, slower) video track drives progress -
                 // reporting both would need combining two independent totals into
                 // one number, not worth the complexity for a progress indicator.
-                download_playlist(client, &video_playlist, &video_tmp, concurrency, ctx, progress).await?;
-                download_playlist(client, &audio_playlist, &audio_tmp, concurrency, ctx, None).await?;
+                download_playlist(client, &video_playlist, &video_tmp, &cache_dir.join("video-segments"), concurrency, ctx, progress).await?;
+                download_playlist(client, &audio_playlist, &audio_tmp, &cache_dir.join("audio-segments"), concurrency, ctx, None).await?;
                 tidm_net::report_converting(progress);
-                mux_demuxed(&video_tmp, &audio_tmp, dest).await?;
-                tokio::fs::remove_file(&video_tmp).await.ok();
-                tokio::fs::remove_file(&audio_tmp).await.ok();
+                let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, (video_playlist.total_duration * 1000.0) as u64));
+                let produced = mux_demuxed(&video_tmp, &audio_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
+                finish_mux(produced, dest).await?
             }
             None => {
-                let assembled_tmp = dest.with_extension("tmp.ts");
-                download_playlist(client, &video_playlist, &assembled_tmp, concurrency, ctx, progress).await?;
+                let assembled_tmp = cache_dir.join("assembled.ts");
+                download_playlist(client, &video_playlist, &assembled_tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
                 tidm_net::report_converting(progress);
-                mux_single(&assembled_tmp, dest).await?;
-                tokio::fs::remove_file(&assembled_tmp).await.ok();
+                let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, (video_playlist.total_duration * 1000.0) as u64));
+                let produced = mux_single(&assembled_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
+                finish_mux(produced, dest).await?
             }
         }
     } else if text.contains("#EXTINF") {
         let playlist = parse_media_playlist(&lines, url)?;
-        let assembled_tmp = dest.with_extension("tmp.ts");
-        download_playlist(client, &playlist, &assembled_tmp, concurrency, ctx, progress).await?;
+        let assembled_tmp = cache_dir.join("assembled.ts");
+        download_playlist(client, &playlist, &assembled_tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
         tidm_net::report_converting(progress);
-        mux_single(&assembled_tmp, dest).await?;
-        tokio::fs::remove_file(&assembled_tmp).await.ok();
+        let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, (playlist.total_duration * 1000.0) as u64));
+        let produced = mux_single(&assembled_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
+        finish_mux(produced, dest).await?
     } else {
         // A 200 response that's neither a master nor media playlist is almost
         // always an auth/bot-protection page (login wall, Cloudflare
@@ -145,8 +173,9 @@ pub async fn run_hls(
             "URL did not look like a master or media HLS playlist ({}). First bytes of response: {snippet:?}",
             tidm_net::describe_sent_headers(&ctx.to_options(None))
         );
-    }
-    Ok(())
+    };
+    tokio::fs::remove_dir_all(&cache_dir).await.ok();
+    Ok(final_dest)
 }
 
 pub async fn run_dash(
@@ -156,49 +185,61 @@ pub async fn run_dash(
     concurrency: usize,
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
-) -> Result<()> {
+    quality: Option<&str>,
+) -> Result<PathBuf> {
     let dest = &sanitize_dest_for_kind(dest, DownloadKind::Dash);
+    let cache_dir = cache_dir_for(dest);
+    tokio::fs::create_dir_all(&cache_dir).await?;
     let manifest = client.get_text(url, &ctx.to_options(None)).await?;
     let periods = tidm_media::dash::parse(&manifest, url)?;
-    let pairing = periods
-        .iter()
-        .flatten()
-        .max_by_key(|(v, a)| {
-            v.as_ref().map(|r| r.bandwidth).unwrap_or(0) + a.as_ref().map(|r| r.bandwidth).unwrap_or(0)
+    // Same reasoning as `run_hls`: prefer the caller's explicit choice when
+    // it still matches a pairing in this fetch, else fall back to highest
+    // combined bandwidth.
+    let pairing = quality
+        .and_then(|q| periods.iter().flatten().find(|(v, a)| dash_variant_key(v.as_ref(), a.as_ref()) == q))
+        .or_else(|| {
+            periods.iter().flatten().max_by_key(|(v, a)| {
+                v.as_ref().map(|r| r.bandwidth).unwrap_or(0) + a.as_ref().map(|r| r.bandwidth).unwrap_or(0)
+            })
         })
         .context("manifest had no usable video/audio representations")?;
 
-    match pairing {
+    let final_dest = match pairing {
         (Some(video), Some(audio)) => {
-            let video_tmp = dest.with_extension("video.tmp");
-            let audio_tmp = dest.with_extension("audio.tmp");
-            download_representation(client, video, &video_tmp, concurrency, ctx, progress).await?;
-            download_representation(client, audio, &audio_tmp, concurrency, ctx, None).await?;
+            let video_tmp = cache_dir.join("video.m4s");
+            let audio_tmp = cache_dir.join("audio.m4s");
+            download_representation(client, video, &video_tmp, &cache_dir.join("video-segments"), concurrency, ctx, progress).await?;
+            download_representation(client, audio, &audio_tmp, &cache_dir.join("audio-segments"), concurrency, ctx, None).await?;
             tidm_net::report_converting(progress);
-            mux_demuxed(&video_tmp, &audio_tmp, dest).await?;
-            tokio::fs::remove_file(&video_tmp).await.ok();
-            tokio::fs::remove_file(&audio_tmp).await.ok();
+            let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, video.duration_ms.max(0) as u64));
+            let produced = mux_demuxed(&video_tmp, &audio_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
+            finish_mux(produced, dest).await?
         }
         (Some(video), None) => {
-            let tmp = dest.with_extension("tmp");
-            download_representation(client, video, &tmp, concurrency, ctx, progress).await?;
+            let tmp = cache_dir.join("video.m4s");
+            download_representation(client, video, &tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
             tidm_net::report_converting(progress);
-            mux_single(&tmp, dest).await?;
-            tokio::fs::remove_file(&tmp).await.ok();
+            let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, video.duration_ms.max(0) as u64));
+            let produced = mux_single(&tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
+            finish_mux(produced, dest).await?
         }
         (None, Some(audio)) => {
-            let tmp = dest.with_extension("tmp");
-            download_representation(client, audio, &tmp, concurrency, ctx, progress).await?;
+            let tmp = cache_dir.join("audio.m4s");
+            download_representation(client, audio, &tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
             tidm_net::report_converting(progress);
-            mux_single(&tmp, dest).await?;
-            tokio::fs::remove_file(&tmp).await.ok();
+            let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, audio.duration_ms.max(0) as u64));
+            let produced = mux_single(&tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
+            finish_mux(produced, dest).await?
         }
         (None, None) => bail!("manifest pairing had neither video nor audio"),
-    }
-    Ok(())
+    };
+    tokio::fs::remove_dir_all(&cache_dir).await.ok();
+    Ok(final_dest)
 }
 
-/// Dispatches to the right job runner based on `kind`.
+/// Dispatches to the right job runner based on `kind`. Returns the actual
+/// final path the download landed at - normally `dest`, but may differ if
+/// muxing fell back to `.mkv` (see `finish_mux`).
 pub async fn run(
     client: &HttpClient,
     kind: DownloadKind,
@@ -207,11 +248,12 @@ pub async fn run(
     concurrency: usize,
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
-) -> Result<()> {
+    quality: Option<&str>,
+) -> Result<PathBuf> {
     match kind {
         DownloadKind::Http => run_http(client, url, dest, concurrency, ctx, progress).await,
-        DownloadKind::Hls => run_hls(client, url, dest, concurrency, ctx, progress).await,
-        DownloadKind::Dash => run_dash(client, url, dest, concurrency, ctx, progress).await,
+        DownloadKind::Hls => run_hls(client, url, dest, concurrency, ctx, progress, quality).await,
+        DownloadKind::Dash => run_dash(client, url, dest, concurrency, ctx, progress, quality).await,
     }
 }
 

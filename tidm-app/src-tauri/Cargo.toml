@@ -22,4 +22,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tidm-core = { path = "../../crates/tidm-core" }
 tidm-ipc = { path = "../../crates/tidm-ipc" }
+tidm-media = { path = "../../crates/tidm-media" }
 tidm-net = { path = "../../crates/tidm-net" }

@@ -18,6 +18,11 @@ export default class App {
         this.onTabUpdateCallback = this.onTabUpdate.bind(this);
         this.activeTabId = -1;
         this.connector = new Connector(this.onMessage.bind(this), this.onDisconnect.bind(this));
+        // A detection can now be reported twice for the same URL - once
+        // locally the instant it's seen (`recordLocalDetection`), and again
+        // when/if the app confirms it (`onMessage`'s `newDetection`) - this
+        // dedups the resulting OS notification to once per URL per session.
+        this.notifiedUrls = new Set();
     }
 
     start() {
@@ -38,7 +43,15 @@ export default class App {
         this.fileExts = msg.fileExts;
         this.blockedHosts = msg.blockedHosts;
         this.tabsWatcher = msg.tabsWatcher;
-        this.videoList = msg.videoList;
+        // The server's list is authoritative for anything it already knows
+        // about, but keep any locally-tracked item (see `recordLocalDetection`)
+        // it doesn't yet know about - e.g. something detected while the app
+        // was closed, or between this response and the request that produced
+        // it - rather than dropping it the instant a server response arrives.
+        const serverList = msg.videoList || [];
+        const serverUrls = new Set(serverList.map(v => v.url));
+        const localOnly = (this.videoList || []).filter(v => this.isLocalId(v.id) && !serverUrls.has(v.url));
+        this.videoList = [...serverList, ...localOnly];
         this.requestWatcher.updateConfig({
             mediaExts: msg.requestFileExts,
             blockedHosts: msg.blockedHosts,
@@ -48,19 +61,25 @@ export default class App {
         this.updateActionIcon();
         // `newDetection` is only present on the one /media response that just
         // added a genuinely new item (server-side dedup by URL) - never on
-        // /sync polls or repeat detections of something already known, so
-        // this fires once per new video, not once per matching network request.
-        if (msg.newDetection && this.isMonitoringEnabled()) {
+        // /sync polls or repeat detections of something already known. This
+        // is usually already covered by `recordLocalDetection`'s own
+        // notification for the same URL (deduped in `notifyNewDetection`
+        // below) - kept as a fallback for the case where the app confirms a
+        // detection this extension instance didn't record locally itself
+        // (e.g. reported by another window/tab sharing the same app).
+        if (msg.newDetection) {
             this.notifyNewDetection(msg.newDetection);
         }
     }
 
     notifyNewDetection(item) {
         if (!chrome.notifications) return; // permission not granted/unsupported
+        if (!item || !item.url || this.notifiedUrls.has(item.url)) return;
+        this.notifiedUrls.add(item.url);
         chrome.notifications.create("tidm-video-" + item.id, {
             type: "basic",
             iconUrl: "icon128.png",
-            title: "tidm found a video",
+            title: "Lüdd found a video",
             message: item.text || item.info,
             priority: 1
         });
@@ -71,9 +90,25 @@ export default class App {
     // trigger the same download without opening the popup at all. Returns
     // `true`/`false` (from the GUI's `vidQueued`) or `null` if the app never
     // responded, so the popup can show whether the click actually worked.
-    async queueVideo(itemId) {
-        const res = await this.connector.postMessage("/vid", { vid: itemId + "" });
+    // `quality` (a `variant_key` from `probeQuality`) is only set when the
+    // user expanded the row's details panel and picked a specific rendition
+    // there - the plain one-click path always omits it, keeping the app's
+    // own auto-best fallback for the fast path.
+    async queueVideo(itemId, quality) {
+        const body = { vid: itemId + "" };
+        if (quality) body.quality = quality;
+        const res = await this.connector.postMessage("/vid", body);
         return res ? res.vidQueued ?? null : null;
+    }
+
+    // Fetches the selectable quality variants for a detected item (empty for
+    // plain HTTP, or an HLS/DASH URL with only one rendition) - called when
+    // a row's details panel is expanded, not eagerly for every detected item.
+    // The response is still the full state blob (see `onMessage`'s doc) with
+    // a `qualityVariants` field added on top, not a bespoke shape.
+    async probeQuality(itemId) {
+        const res = await this.connector.postMessage("/probe-quality", { vid: itemId + "" });
+        return (res && res.qualityVariants) || [];
     }
 
     onNotificationClicked(notificationId) {
@@ -94,11 +129,59 @@ export default class App {
         return this.appEnabled === true && this.userDisabled === false && this.connector.isConnected();
     }
 
+    // Whether detection should run at all - unlike `isMonitoringEnabled()`,
+    // this doesn't require the app to be reachable: the whole point is that
+    // detected links keep showing up in the popup even with the app closed,
+    // so only the user's own toggle gates this, not connectivity or the
+    // app's own enabled/disabled state (which defaults to false/unknown
+    // until a connection is actually made).
+    isDetectionEnabled() {
+        return this.userDisabled === false;
+    }
+
+    isLocalId(id) {
+        return typeof id === "string" && id.startsWith("local");
+    }
+
+    filenameFromUrl(url) {
+        try {
+            const path = new URL(url).pathname;
+            const last = path.split('/').filter(Boolean).pop();
+            return last || url;
+        } catch {
+            return url;
+        }
+    }
+
+    // Adds a freshly-detected item to `videoList` immediately, under a
+    // locally-generated id, so it shows in the popup right away regardless
+    // of whether `/media` below ever reaches the app - `onMessage` reconciles
+    // this against the server's own list once/if a response does arrive
+    // (matching by URL), replacing the local id with the server's real one.
+    recordLocalDetection(data) {
+        if (this.videoList.some(v => v.url === data.url)) return;
+        this.localDetectionCounter = (this.localDetectionCounter || 0) + 1;
+        const item = {
+            id: "local" + this.localDetectionCounter,
+            text: data.tabUrl || data.file || data.url,
+            info: data.file || this.filenameFromUrl(data.url),
+            url: data.url,
+            pageUrl: data.tabUrl || null,
+        };
+        this.videoList = [...this.videoList, item];
+        this.updateActionIcon();
+        this.notifyNewDetection(item);
+    }
+
     onRequestDataReceived(data) {
         //Streaming video data received, send to native messaging application
         this.logger.log("onRequestDataReceived");
         this.logger.log(data);
-        this.isMonitoringEnabled() && this.connector.isConnected() && this.connector.postMessage("/media", data);
+        if (!this.isDetectionEnabled()) return;
+        this.recordLocalDetection(data);
+        if (this.connector.isConnected()) {
+            this.connector.postMessage("/media", data);
+        }
     }
 
     onDeterminingFilename(download, suggest) {
@@ -223,7 +306,12 @@ export default class App {
         chrome.action.setBadgeText({ text: vc });
         if (!this.connector.isConnected()) {
             this.logger.log("Not connected...");
-            chrome.action.setPopup({ popup: "./error.html" });
+            // Still show whatever's been detected locally (see
+            // `recordLocalDetection`) rather than the "can't connect" page -
+            // only fall back to that when there's genuinely nothing to show
+            // yet, since it's more useful than an empty list either way.
+            const hasDetections = this.videoList && this.videoList.length > 0;
+            chrome.action.setPopup({ popup: hasDetections ? "./popup.html" : "./error.html" });
             return;
         }
         if (!this.appEnabled) {
@@ -314,7 +402,11 @@ export default class App {
             this.updateActionIcon();
         }
         else if (request.type === "vid") {
-            this.queueVideo(request.itemId).then(success => sendResponse({ success }));
+            this.queueVideo(request.itemId, request.quality).then(success => sendResponse({ success }));
+            return true;
+        }
+        else if (request.type === "probe-quality") {
+            this.probeQuality(request.itemId).then(variants => sendResponse({ variants }));
             return true;
         }
         else if (request.type === "clear") {
@@ -361,13 +453,13 @@ export default class App {
     attachContextMenu() {
         chrome.contextMenus.create({
             id: 'download-any-link',
-            title: "Download with tidm",
+            title: "Download with Lüdd",
             contexts: ["link", "video", "audio", "all"]
         });
 
         chrome.contextMenus.create({
             id: 'download-image-link',
-            title: "Download Image with tidm",
+            title: "Download Image with Lüdd",
             contexts: ["image"]
         });
 

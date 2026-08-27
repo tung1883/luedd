@@ -9,16 +9,31 @@ import Logger from './logger.js';
 const IMAGE_EXTS = ['.JPG', '.JPEG', '.PNG', '.GIF', '.WEBP', '.BMP', '.SVG'];
 const MIN_IMAGE_BYTES = 20000;
 
+// Mirrors server.rs's DEFAULT_MEDIA_EXTS/DEFAULT_MEDIA_TYPES - the real
+// config normally arrives from the app's /sync response, but detection would
+// never match anything at all before that first successful connection (or
+// for as long as the app stays closed), which defeats "still show links
+// without the app running." These are the starting values, overwritten as
+// soon as a real config does arrive (see App.onMessage).
+const DEFAULT_MEDIA_EXTS = [
+    '.M3U8', '.MPD', '.MP4', '.M4V', '.M4A', '.WEBM', '.MKV', '.MOV', '.AVI', '.FLV', '.TS', '.MP3', '.AAC', '.WAV',
+    '.OGG', '.FLAC', '.PDF', '.JPG', '.JPEG', '.PNG', '.GIF', '.WEBP', '.BMP', '.SVG',
+];
+const DEFAULT_MEDIA_TYPES = [
+    'video/', 'audio/', 'application/vnd.apple.mpegurl', 'application/x-mpegurl', 'application/dash+xml',
+    'application/vnd.ms-sstr+xml', 'application/pdf', 'image/',
+];
+
 export default class RequestWatcher {
     constructor(callback) {
         this.logger = new Logger();
         this.blockedHosts = [];
-        this.mediaExts = [];
+        this.mediaExts = DEFAULT_MEDIA_EXTS;
+        this.mediaTypes = DEFAULT_MEDIA_TYPES;
         this.fileExts = [];
         this.requestMap = new Map();
         this.callback = callback;
         this.matchingHosts = [];
-        this.mediaTypes = [];
         this.onSendHeadersEventCallback = this.onSendHeadersEvent.bind(this);
         this.onHeadersReceivedEventCallback = this.onHeadersReceivedEvent.bind(this);
         this.onErrorOccurredEventCallback = this.onErrorOccurredEvent.bind(this);

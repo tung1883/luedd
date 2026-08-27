@@ -21,8 +21,11 @@ pub enum JobEvent {
     /// `(done, total)` - segments for HLS/DASH, bytes for a plain HTTP download.
     Progress { done: u64, total: u64 },
     /// All segments/pieces are fetched; ffmpeg is now muxing them into the
-    /// final output. No further `Progress` events follow one of these for the
-    /// same download.
+    /// final output. `Progress` events *do* still follow one of these -
+    /// `tidm_media::mux::run_ffmpeg` reports ffmpeg's own `-progress`
+    /// `(elapsed_ms, total_duration_ms)` through the same channel once muxing
+    /// starts producing output, rather than leaving the whole Converting
+    /// phase unreported.
     Converting,
 }
 

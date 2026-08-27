@@ -32,34 +32,86 @@ fn build_manager(store: Arc<DownloadStore>, settings: &Settings) -> Result<Arc<D
     )))
 }
 
-#[tauri::command]
-async fn add_download(state: State<'_, AppState>, url: String, filename: Option<String>) -> Result<(), String> {
-    let guessed_kind = DownloadKind::guess_from_url(&url);
-    let settings = state.settings.get().await;
-    tokio::fs::create_dir_all(&settings.download_dir).await.ok();
-
+/// Best-effort detection of what kind a URL really is, beyond its own
+/// extension - shared by `add_download` and `probe_qualities` so a URL that
+/// looks like a plain file but is actually a disguised HLS/DASH manifest
+/// (see `m3u8-guide.txt`) gets routed the same way in both.
+async fn detect_kind(client: &HttpClient, url: &str) -> (DownloadKind, Option<String>) {
+    let guessed_kind = DownloadKind::guess_from_url(url);
     let detected_ext = if matches!(guessed_kind, DownloadKind::Http) {
-        let client = state.manager.read().await.http_client();
-        tidm_core::naming::resolve_real_extension(&client, &url, &tidm_net::RequestContext::default()).await
+        tidm_core::naming::resolve_real_extension(client, url, &tidm_net::RequestContext::default()).await
     } else {
         None
     };
-    // A URL that looked like a plain file but is actually a disguised
-    // HLS/DASH manifest (see `m3u8-guide.txt`) must go through the real
-    // playlist downloader, not be saved as raw manifest text.
     let kind = match detected_ext.as_deref() {
         Some("m3u8") => DownloadKind::Hls,
         Some("mpd") => DownloadKind::Dash,
         _ => guessed_kind,
     };
+    (kind, detected_ext)
+}
+
+#[tauri::command]
+async fn add_download(state: State<'_, AppState>, url: String, filename: Option<String>, quality: Option<String>) -> Result<(), String> {
+    let settings = state.settings.get().await;
+    let client = state.manager.read().await.http_client();
+
+    // Facebook/Instagram post/reel/watch URLs are pages, not downloadable
+    // files - resolve to the real direct media URL(s) first (no cookie here,
+    // since a manually-pasted GUI URL has no captured browser session behind
+    // it - only public content resolves this way; private/saved content
+    // needs the browser-extension flow, which does capture cookies). A
+    // carousel resolves to more than one queued entry.
+    if let Some(site) = tidm_media::social::detect_site(&url) {
+        let ctx = tidm_net::RequestContext::default();
+        let items = tidm_media::social::extract(site, &client, &url, &ctx).await.map_err(|e| e.to_string())?;
+        for item in items {
+            let item_filename = item
+                .suggested_name
+                .clone()
+                .unwrap_or_else(|| tidm_core::naming::suggest_filename(None, &item.url, None));
+            let dest = tidm_core::naming::dest_path(&settings.download_dir, &item.url, &item_filename);
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            let entry = DownloadEntry::new(item.url, dest, DownloadKind::Http).with_quality(quality.clone());
+            state.store.add_entry(entry).await.map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+
+    let (kind, detected_ext) = detect_kind(&client, &url).await;
 
     let filename = filename.filter(|f| !f.is_empty()).unwrap_or_else(|| {
         tidm_core::naming::suggest_filename(None, &url, detected_ext.as_deref())
     });
-    let dest = tidm_core::jobs::sanitize_dest_for_kind(&settings.download_dir.join(filename), kind);
+    let dest = tidm_core::naming::dest_path(&settings.download_dir, &url, &filename);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+    let dest = tidm_core::jobs::sanitize_dest_for_kind(&dest, kind);
 
-    let entry = DownloadEntry::new(url, dest, kind);
+    let entry = DownloadEntry::new(url, dest, kind).with_quality(quality);
     state.store.add_entry(entry).await.map_err(|e| e.to_string())
+}
+
+/// Fetches and parses `url`'s manifest for its selectable quality variants
+/// (empty for a plain HTTP URL, or an HLS/DASH URL with only one rendition),
+/// so the GUI's "Add" flow can show a picker before actually queuing -
+/// called separately from `add_download` rather than folded into it, since
+/// probing needs a network round-trip the caller may not want to pay for
+/// every add (a plain-HTTP URL skips it entirely, matching `add_download`'s
+/// own kind detection).
+#[tauri::command]
+async fn probe_qualities(state: State<'_, AppState>, url: String) -> Result<Vec<tidm_media::quality::QualityOption>, String> {
+    let client = state.manager.read().await.http_client();
+    let (kind, _detected_ext) = detect_kind(&client, &url).await;
+    let ctx = tidm_net::RequestContext::default();
+    match kind {
+        DownloadKind::Http => Ok(Vec::new()),
+        DownloadKind::Hls => tidm_media::quality::probe_hls_qualities(&client, &url, &ctx).await.map_err(|e| e.to_string()),
+        DownloadKind::Dash => tidm_media::quality::probe_dash_qualities(&client, &url, &ctx).await.map_err(|e| e.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -111,18 +163,42 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 
 /// Opens a downloaded file with the OS's default handler for its type (video
 /// player, image viewer, PDF reader, ...) - the "Preview" action per entry.
+/// The frontend only shows this button once `path` (the entry's `dest`)
+/// exists (`Finished`) or for a plain HTTP download mid-transfer, where
+/// `progressive::download` writes the growing file inside the per-download
+/// cache dir (not `dest` itself - see `naming::cache_dir_for`) until it's
+/// complete, so that's the path opened in the latter case.
 #[tauri::command]
 async fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+    let dest = std::path::PathBuf::from(&path);
+    let target = if tokio::fs::metadata(&dest).await.is_ok() {
+        dest
+    } else {
+        tidm_core::naming::cache_dir_for(&dest).join("output.partial")
+    };
+    app.opener().open_path(target.to_string_lossy().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Opens the file's containing folder in the OS file manager with the file
-/// itself selected/highlighted - the "Open folder" action per entry.
+/// itself selected/highlighted if it already exists (`Finished`); otherwise
+/// falls back to the per-download cache dir (exists once the download has
+/// started) and finally to the configured downloads folder itself, so the
+/// button always opens something reasonable at any stage.
 #[tauri::command]
-async fn open_containing_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+async fn open_containing_folder(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+    let dest = std::path::PathBuf::from(&path);
+    if tokio::fs::metadata(&dest).await.is_ok() {
+        return app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string());
+    }
+    let cache_dir = tidm_core::naming::cache_dir_for(&dest);
+    let target = if tokio::fs::metadata(&cache_dir).await.is_ok() {
+        cache_dir
+    } else {
+        state.settings.get().await.download_dir
+    };
+    app.opener().open_path(target.to_string_lossy().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -180,11 +256,23 @@ fn main() {
                 }
             });
 
+            // Auto-retries `Failed` entries on a backoff and drives any
+            // configured schedule window - dead code until this spawn (the
+            // loop itself already existed, just unwired). Same "captures the
+            // manager Arc at startup, not settings-change-aware" pattern as
+            // the tidm-ipc server spawn above, since concurrency limits
+            // aren't relevant to what the scheduler itself does (retry
+            // bookkeeping + kicking `run_queued`).
+            let scheduler_store = store.clone();
+            let scheduler_manager = manager.clone();
+            tauri::async_runtime::spawn(tidm_core::queue::run_scheduler_forever(scheduler_store, scheduler_manager));
+
             app.manage(AppState { store, settings, manager: RwLock::new(manager) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             add_download,
+            probe_qualities,
             list_downloads,
             run_queue,
             remove_entry,

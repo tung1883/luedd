@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tidm",
+  "productName": "Lüdd",
   "version": "0.1.0",
   "identifier": "com.tidm.app",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "tidm",
+        "title": "Lüdd",
         "width": 900,
         "height": 600
       }

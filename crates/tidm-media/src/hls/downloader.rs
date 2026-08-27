@@ -14,21 +14,23 @@ use crate::disguise::extract_ts_payload;
 /// `MultiSourceHLSDownloader`'s per-chunk workers + `Assemble()`, but as bounded
 /// async tasks instead of thread-per-connection. `ctx` carries any
 /// Referer/Origin/Cookie/User-Agent captured when the URL was detected, replayed
-/// on the manifest's key fetch and every segment fetch.
+/// on the manifest's key fetch and every segment fetch. `segments_dir` is the
+/// caller-owned scratch folder for this playlist's per-segment files - callers
+/// downloading multiple playlists for one logical download (demuxed video +
+/// audio) pass distinct `segments_dir`s so they don't collide, but both live
+/// inside that download's single shared cache folder.
 pub async fn download_playlist(
     client: &HttpClient,
     playlist: &HlsPlaylist,
     dest: &Path,
+    segments_dir: &Path,
     concurrency: usize,
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
 ) -> Result<()> {
     let total_segments = playlist.media_segments.len() as u64;
-    let tmp_dir = dest
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!(".{}.segments", dest.file_name().unwrap_or_default().to_string_lossy()));
-    tokio::fs::create_dir_all(&tmp_dir).await?;
+    let tmp_dir = segments_dir;
+    tokio::fs::create_dir_all(tmp_dir).await?;
 
     let mut key_cache: Option<(url::Url, Vec<u8>)> = None;
     // Fetch the encryption key once up front (all segments in a media playlist
@@ -92,6 +94,15 @@ async fn download_one_segment(
     out_path: &Path,
     ctx: &RequestContext,
 ) -> Result<u64> {
+    // A retry re-runs this whole playlist from segment 0 with the same `dest`
+    // (and therefore the same `tmp_dir`), so a prior attempt's already-complete
+    // segments are still sitting on disk - skip re-fetching them. Safe because
+    // `out_path` is only ever created by the atomic rename below, so its mere
+    // existence means a full, uncorrupted write already happened.
+    if let Ok(meta) = tokio::fs::metadata(out_path).await {
+        return Ok(meta.len());
+    }
+
     let opts = ctx.to_options(segment.byte_range);
     // Segment fetches over real CDNs fail transiently often enough in practice
     // (observed: truncated bodies, mid-transfer timeouts) that one-shot fetches
@@ -117,7 +128,14 @@ async fn download_one_segment(
     };
 
     let len = payload.len() as u64;
-    tokio::fs::write(out_path, payload).await?;
+    // Write to a sibling temp path and rename into place, rather than writing
+    // `out_path` directly - a rename is effectively atomic, so a segment that
+    // gets interrupted mid-write (process killed, crash) never leaves a
+    // truncated file under the final name for the skip check above to
+    // mistake for complete.
+    let tmp_path = out_path.with_extension("seg.part");
+    tokio::fs::write(&tmp_path, payload).await?;
+    tokio::fs::rename(&tmp_path, out_path).await?;
     Ok(len)
 }
 

@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<title>tidm</title>
+<title>Lüdd</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #1e1e1e; color: #ddd; }
   h1 { font-size: 18px; margin: 0 0 12px; display: flex; align-items: center; justify-content: space-between; }
@@ -15,10 +15,22 @@
   button.danger { background: #a33; }
   button.small { padding: 3px 8px; font-size: 12px; }
   button:disabled { opacity: 0.4; cursor: default; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; vertical-align: middle; }
+  /* table-layout: fixed plus an explicit width on every column (via <colgroup>
+     below) so text-length changes (status transitions, "5%"->"100%",
+     "12 KB/s"->"1.2 MB/s") never reflow the table - each column holds its
+     width regardless of what's currently in it. */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; vertical-align: middle; overflow: hidden; }
   th.checkbox-col, td.checkbox-col { width: 24px; padding-right: 0; }
   th.toggle-col, td.toggle-col { width: 18px; padding-right: 0; padding-left: 8px; }
+  th.id-col, td.id-col { width: 70px; white-space: nowrap; }
+  th.kind-col, td.kind-col { width: 55px; white-space: nowrap; }
+  th.status-col, td.status-col { width: 90px; white-space: nowrap; }
+  th.progress-col, td.progress-col { width: 120px; white-space: nowrap; }
+  th.speed-col, td.speed-col { width: 70px; white-space: nowrap; }
+  th.url-col, td.url-col { width: 260px; }
+  th.error-col, td.error-col { width: 160px; }
+  th.actions-col, td.actions-col { width: 230px; }
   .details-toggle-btn { background: none; border: none; color: #999; cursor: pointer; font-size: 12px; padding: 0; width: 16px; }
   .status-Queued { color: #ccc; }
   .status-Downloading { color: #4af; }
@@ -48,7 +60,7 @@
 </style>
 </head>
 <body>
-  <h1>tidm <button id="settings-btn" class="secondary">Settings</button></h1>
+  <h1>Lüdd <button id="settings-btn" class="secondary">Settings</button></h1>
 
   <div id="settings-panel" class="panel">
     <div class="panel-row">
@@ -96,11 +108,21 @@
     </div>
   </div>
 
+  <div id="quality-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
+    <div style="background: #262626; border: 1px solid #3a3a3a; border-radius: 8px; padding: 20px; min-width: 280px; max-width: 380px;">
+      <div style="margin-bottom: 12px; font-size: 14px; color: #ddd;">Choose a quality</div>
+      <div id="quality-options" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 300px; overflow-y: auto;"></div>
+      <div style="display: flex; justify-content: flex-end;">
+        <button id="quality-cancel-btn" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <table>
     <thead><tr>
       <th class="toggle-col"></th>
       <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
-      <th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Speed</th><th>URL</th><th>Error</th><th>Actions</th>
+      <th class="id-col">ID</th><th class="kind-col">Kind</th><th class="status-col">Status</th><th class="progress-col">Progress</th><th class="speed-col">Speed</th><th class="url-col">URL</th><th class="error-col">Error</th><th class="actions-col">Actions</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -152,6 +174,42 @@ function confirmAction(message) {
   });
 }
 
+// Shows the quality-picker modal for a list of `QualityOption`s (from the
+// `probe_qualities` command) and resolves with the chosen `variant_key`, or
+// null if the user cancelled - used by the Add form so an HLS/DASH URL with
+// multiple renditions doesn't silently auto-queue the highest-bandwidth one.
+function pickQuality(options) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById("quality-overlay");
+    const list = document.getElementById("quality-options");
+    const cancelBtn = document.getElementById("quality-cancel-btn");
+
+    list.innerHTML = "";
+    for (const opt of options) {
+      const btn = document.createElement("button");
+      btn.className = "secondary";
+      btn.style.textAlign = "left";
+      btn.textContent = opt.label;
+      btn.addEventListener("click", () => {
+        cleanup();
+        resolve(opt.variant_key);
+      });
+      list.appendChild(btn);
+    }
+    overlay.style.display = "flex";
+
+    const cleanup = () => {
+      overlay.style.display = "none";
+      cancelBtn.removeEventListener("click", onCancel);
+    };
+    const onCancel = () => {
+      cleanup();
+      resolve(null);
+    };
+    cancelBtn.addEventListener("click", onCancel);
+  });
+}
+
 function formatBytesPerSec(bytesPerSec) {
   const units = ["B/s", "KB/s", "MB/s", "GB/s"];
   let v = bytesPerSec, i = 0;
@@ -199,10 +257,16 @@ function formatProgress(e) {
   if (e.status === "Finished") {
     return `<div class="progress-wrap"><div class="progress-bar" style="width:100%"></div></div><div class="progress-text">100%</div>`;
   }
-  if (e.status === "Converting") {
-    return `<div class="progress-text">Converting…</div>`;
+  // Converting reuses the same bar/percentage as Downloading - ffmpeg reports
+  // its own (done, total) = (elapsed ms, total duration ms) through the same
+  // progress channel once muxing starts, so this doesn't need a separate
+  // branch beyond falling straight through to the shared rendering below.
+  // Before that first mux-progress tick arrives, e.progress is still
+  // whatever the download phase last reported (typically 100% of segments/
+  // bytes), which reads fine as "converting, starting from full".
+  if (!e.progress) {
+    return e.status === "Converting" ? `<div class="progress-text">Converting…</div>` : "";
   }
-  if (!e.progress) return "";
   const [done, total] = e.progress;
   if (!total) return formatBytes(done);
   const pct = Math.min(100, Math.round((done / total) * 100));
@@ -219,6 +283,15 @@ function formatSpeed(e) {
 const KIND_LABELS = { Http: "HTTP", Hls: "HLS", Dash: "DASH" };
 function kindLabel(kind) {
   return KIND_LABELS[kind] ?? kind;
+}
+
+// Display-only rename ("Running" reads better than "Downloading" for what's
+// otherwise a generic in-progress state) - the underlying DownloadStatus
+// enum/CSS class (`status-Downloading`) is untouched, same pattern as
+// KIND_LABELS/kindLabel above.
+const STATUS_LABELS = { Downloading: "Running" };
+function statusLabel(status) {
+  return STATUS_LABELS[status] ?? status;
 }
 
 function updateBulkButtons() {
@@ -246,16 +319,16 @@ async function refresh() {
     tr.innerHTML = `
       <td class="toggle-col"><button class="details-toggle-btn" data-id="${e.id}" title="Details">${isOpen ? "▾" : "▸"}</button></td>
       <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${e.id}" ${selected.has(e.id) ? "checked" : ""} /></td>
-      <td class="id">${e.id.slice(0, 8)}</td>
-      <td>${kindLabel(e.kind)}</td>
-      <td class="status-${e.status}">${e.status}</td>
-      <td>${formatProgress(e)}</td>
-      <td class="speed-text">${formatSpeed(e)}</td>
-      <td class="url copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${e.url}</td>
-      <td class="error copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n(double-click to copy)" : ""}">${e.error ?? ""}</td>
-      <td class="actions">
-        ${e.status === "Finished" ? `<button class="small secondary preview-btn" data-id="${e.id}">Preview</button>` : ""}
-        ${e.status === "Finished" ? `<button class="small secondary open-folder-btn" data-id="${e.id}">Open folder</button>` : ""}
+      <td class="id id-col">${e.id.slice(0, 8)}</td>
+      <td class="kind-col">${kindLabel(e.kind)}</td>
+      <td class="status-${e.status} status-col">${statusLabel(e.status)}</td>
+      <td class="progress-col">${formatProgress(e)}</td>
+      <td class="speed-text speed-col">${formatSpeed(e)}</td>
+      <td class="url url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${e.url}</td>
+      <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n(double-click to copy)" : ""}">${e.error ?? ""}</td>
+      <td class="actions actions-col">
+        ${e.status === "Finished" || (e.status === "Downloading" && e.kind === "Http") ? `<button class="small secondary preview-btn" data-id="${e.id}">Preview</button>` : ""}
+        <button class="small secondary open-folder-btn" data-id="${e.id}">Open folder</button>
         ${e.status === "Downloading" ? `<button class="small secondary pause-btn" data-id="${e.id}">Pause</button>` : ""}
         ${e.status === "Paused" ? `<button class="small secondary resume-btn" data-id="${e.id}">Resume</button>` : ""}
         ${canRetry ? `<button class="small secondary retry-btn" data-id="${e.id}">Retry</button>` : ""}
@@ -400,7 +473,28 @@ document.getElementById("add-form").addEventListener("submit", async (ev) => {
   const url = document.getElementById("url").value.trim();
   const filename = document.getElementById("filename").value.trim() || null;
   if (!url) return;
-  await invoke("add_download", { url, filename });
+
+  // Probe for selectable HLS/DASH variants before queuing - empty for plain
+  // HTTP (or a single-rendition manifest), in which case this is a no-op
+  // extra round-trip and we fall straight through to adding as before.
+  let quality = null;
+  const submitBtn = ev.target.querySelector("button[type=submit]");
+  submitBtn.disabled = true;
+  try {
+    const variants = await invoke("probe_qualities", { url });
+    if (variants.length > 0) {
+      quality = await pickQuality(variants);
+      if (quality === null && variants.length > 0) {
+        // User cancelled the picker - abort the add entirely rather than
+        // falling back to auto-best, since they clearly wanted to choose.
+        return;
+      }
+    }
+  } finally {
+    submitBtn.disabled = false;
+  }
+
+  await invoke("add_download", { url, filename, quality });
   document.getElementById("url").value = "";
   document.getElementById("filename").value = "";
   await refresh();

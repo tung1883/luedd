@@ -10,20 +10,23 @@ use super::model::Representation;
 /// typically fMP4 (init segment + media segments) so, unlike HLS, there's no
 /// disguise-detection or AES-128 step here - just fetch and concatenate. `ctx`
 /// carries any Referer/Origin/Cookie/User-Agent captured at detection time.
+/// `segments_dir` is the caller-owned scratch folder for this representation's
+/// per-segment files - callers downloading multiple representations for one
+/// logical download (demuxed video + audio) pass distinct `segments_dir`s so
+/// they don't collide, but both live inside that download's single shared
+/// cache folder.
 pub async fn download_representation(
     client: &HttpClient,
     representation: &Representation,
     dest: &Path,
+    segments_dir: &Path,
     concurrency: usize,
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
 ) -> Result<()> {
     let total_segments = representation.segments.len() as u64;
-    let tmp_dir = dest
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!(".{}.segments", dest.file_name().unwrap_or_default().to_string_lossy()));
-    tokio::fs::create_dir_all(&tmp_dir).await?;
+    let tmp_dir = segments_dir;
+    tokio::fs::create_dir_all(tmp_dir).await?;
 
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
     let mut tasks = Vec::with_capacity(representation.segments.len());
@@ -36,6 +39,17 @@ pub async fn download_representation(
 
         tasks.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore closed");
+
+            // A retry re-runs this whole representation from segment 0 with
+            // the same `dest` (and therefore the same `tmp_dir`), so a prior
+            // attempt's already-complete segments are still sitting on disk -
+            // skip re-fetching them. Safe because `seg_path` is only ever
+            // created by the atomic rename below, so its mere existence means
+            // a full, uncorrupted write already happened.
+            if let Ok(meta) = tokio::fs::metadata(&seg_path).await {
+                return Ok::<_, anyhow::Error>(meta.len());
+            }
+
             let opts = ctx.to_options(None);
             let bytes = tidm_net::retry(tidm_net::DEFAULT_RETRY_ATTEMPTS, tidm_net::DEFAULT_RETRY_DELAY, || {
                 client.get_bytes(url.as_str(), &opts)
@@ -43,7 +57,14 @@ pub async fn download_representation(
             .await
             .with_context(|| format!("segment {url} failed after retries"))?;
             let len = bytes.len() as u64;
-            tokio::fs::write(&seg_path, bytes).await?;
+            // Write to a sibling temp path and rename into place, rather than
+            // writing `seg_path` directly - a rename is effectively atomic,
+            // so a segment interrupted mid-write never leaves a truncated
+            // file under the final name for the skip check above to mistake
+            // for complete.
+            let tmp_path = seg_path.with_extension("seg.part");
+            tokio::fs::write(&tmp_path, bytes).await?;
+            tokio::fs::rename(&tmp_path, &seg_path).await?;
             Ok::<_, anyhow::Error>(len)
         }));
     }

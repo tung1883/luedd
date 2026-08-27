@@ -91,7 +91,11 @@ impl DownloadStore {
     /// Resets a `Failed`, `Cancelled`, or `Paused` entry back to `Queued` so
     /// the next `run_queued` picks it up again (also used as "Resume" for a
     /// paused entry - same transition, the GUI just labels the button
-    /// differently). No-op (returns `false`) for any other status.
+    /// differently). No-op (returns `false`) for any other status. Also
+    /// clears `retry_count`/`next_retry_at` - a manual retry always gets a
+    /// fresh set of auto-retries if it fails again (the scheduler's own
+    /// auto-retry path calls this too, then re-sets `retry_count` itself
+    /// right after, since this always resets it to 0 first).
     pub async fn retry_entry(&self, id: &str) -> Result<bool> {
         let mut retried = false;
         self.update_entry(id, |e| {
@@ -99,6 +103,8 @@ impl DownloadStore {
                 e.status = DownloadStatus::Queued;
                 e.error = None;
                 e.progress = None;
+                e.retry_count = 0;
+                e.next_retry_at = None;
                 retried = true;
             }
         })

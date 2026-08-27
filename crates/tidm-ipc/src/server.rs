@@ -107,6 +107,14 @@ struct SyncResponse {
     /// id (`Some(false)`) - `None`/absent everywhere else.
     #[serde(rename = "vidQueued", skip_serializing_if = "Option::is_none")]
     vid_queued: Option<bool>,
+    /// Set only on the `/probe-quality` response. Every response round-trips
+    /// this same `SyncResponse` shape (the whole-blob convention documented
+    /// at the top of this file) rather than a bespoke response type, since
+    /// `connector.js` feeds every response through `App.onMessage` - a
+    /// response missing `enabled`/`videoList`/etc. would wipe the extension's
+    /// state on every quality probe.
+    #[serde(rename = "qualityVariants", skip_serializing_if = "Option::is_none")]
+    quality_variants: Option<Vec<tidm_media::quality::QualityOption>>,
 }
 
 /// Shape `popup.js`'s `renderList` expects: `listItem.id` becomes a DOM node id
@@ -163,6 +171,7 @@ fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoList
         media_types: DEFAULT_MEDIA_TYPES.iter().map(|s| s.to_string()).collect(),
         new_detection,
         vid_queued: None,
+        quality_variants: None,
     }
 }
 
@@ -200,8 +209,21 @@ struct MediaRequest {
 }
 
 /// Matches `app.js`'s `postMessage("/vid", { vid })` sent when a popup entry is clicked.
+/// `quality` is set only when the user expanded the row's details panel and
+/// picked a specific variant there (`popup.js`'s quality picker) - absent for
+/// the fast one-click path, which keeps auto-picking the best variant.
 #[derive(Debug, Deserialize)]
 struct VidRequest {
+    vid: String,
+    #[serde(default)]
+    quality: Option<String>,
+}
+
+/// Matches `popup.js`'s `postMessage("/probe-quality", { vid })`, sent when a
+/// row's details panel is expanded, to fetch that item's selectable HLS/DASH
+/// variants before the user commits to one.
+#[derive(Debug, Deserialize)]
+struct ProbeQualityRequest {
     vid: String,
 }
 
@@ -224,6 +246,7 @@ pub async fn serve(
         .route("/media", post(media))
         .route("/tab-update", post(ignored))
         .route("/vid", post(vid))
+        .route("/probe-quality", post(probe_quality))
         .route("/clear", post(clear))
         .layer(cors)
         .with_state(state);
@@ -289,7 +312,7 @@ async fn download(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncR
             return Json(default_sync_response(video_list(&state).await));
         }
     };
-    queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie).await;
+    queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None).await;
     Json(default_sync_response(video_list(&state).await))
 }
 
@@ -336,7 +359,7 @@ async fn vid(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespon
         match found {
             Some(media) => {
                 let headers = flatten_headers(media.request_headers, media.user_agent);
-                queue_url(&state, media.url, None, media.page_title, headers, media.cookie).await;
+                queue_url(&state, media.url, None, media.page_title, headers, media.cookie, req.quality).await;
                 Some(true)
             }
             None => {
@@ -352,6 +375,42 @@ async fn vid(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespon
     Json(resp)
 }
 
+async fn probe_quality(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResponse> {
+    let Ok(req) = serde_json::from_slice::<ProbeQualityRequest>(&body) else {
+        return Json(default_sync_response(video_list(&state).await));
+    };
+    let found = {
+        let detected = state.detected.lock().await;
+        detected.iter().find(|m| m.id == req.vid).cloned()
+    };
+    let Some(media) = found else {
+        tracing::warn!(vid = %req.vid, "probe-quality for an unknown/expired video id");
+        return Json(default_sync_response(video_list(&state).await));
+    };
+
+    let client = state.manager.http_client();
+    let ctx = RequestContext {
+        headers: flatten_headers(media.request_headers, media.user_agent),
+        cookie: media.cookie,
+    };
+    let guessed_kind = DownloadKind::guess_from_url(&media.url);
+    let variants = match guessed_kind {
+        DownloadKind::Hls => tidm_media::quality::probe_hls_qualities(&client, &media.url, &ctx).await.unwrap_or_default(),
+        DownloadKind::Dash => tidm_media::quality::probe_dash_qualities(&client, &media.url, &ctx).await.unwrap_or_default(),
+        // A URL guessed as plain HTTP might still be a disguised manifest
+        // (m3u8-guide.txt) - `queue_url` pays for a sniff request to check
+        // this before every download, but that cost isn't worth paying just
+        // to populate a details panel that's usually plain HTTP anyway; a
+        // real HLS/DASH URL under a generic extension just shows no variants
+        // here (falls back to auto-best at actual download time, same as
+        // today) rather than probing speculatively on every expand.
+        DownloadKind::Http => Vec::new(),
+    };
+    let mut resp = default_sync_response(video_list(&state).await);
+    resp.quality_variants = Some(variants);
+    Json(resp)
+}
+
 async fn clear(State(state): State<Arc<AppState>>, _body: Bytes) -> Json<SyncResponse> {
     state.detected.lock().await.clear();
     Json(default_sync_response(video_list(&state).await))
@@ -364,7 +423,33 @@ async fn queue_url(
     title_hint: Option<String>,
     headers: HashMap<String, String>,
     cookie: Option<String>,
+    quality: Option<String>,
 ) {
+    // Facebook/Instagram post/reel/watch URLs aren't themselves downloadable -
+    // they're pages. Resolve to the real direct media URL(s) first (using the
+    // page's own captured headers/cookie for private/saved content), then
+    // queue each as a plain `Http` download - skips the HLS/DASH-sniffing
+    // path below entirely, since a resolved CDN URL is never itself a
+    // manifest. A carousel resolves to more than one entry.
+    if let Some(site) = tidm_media::social::detect_site(&url) {
+        let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
+        match tidm_media::social::extract(site, &state.manager.http_client(), &url, &ctx).await {
+            Ok(items) => {
+                for item in items {
+                    let filename = item
+                        .suggested_name
+                        .or_else(|| filename_hint.clone())
+                        .unwrap_or_else(|| tidm_core::naming::suggest_filename(title_hint.as_deref(), &item.url, None));
+                    queue_resolved_http(state, item.url, filename, headers.clone(), cookie.clone(), quality.clone()).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%url, ?site, error = %e, "social media extraction failed");
+            }
+        }
+        return;
+    }
+
     let guessed_kind = DownloadKind::guess_from_url(&url);
 
     // HLS/DASH already get forced to `.mp4` by `sanitize_dest_for_kind` below
@@ -395,11 +480,14 @@ async fn queue_url(
         tidm_core::naming::suggest_filename(title_hint.as_deref(), &url, detected_ext.as_deref())
     });
     let download_dir = state.config.settings.get().await.download_dir;
-    tokio::fs::create_dir_all(&download_dir).await.ok();
-    let dest = tidm_core::jobs::sanitize_dest_for_kind(&download_dir.join(filename), kind);
+    let dest = tidm_core::naming::dest_path(&download_dir, &url, &filename);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+    let dest = tidm_core::jobs::sanitize_dest_for_kind(&dest, kind);
 
     tracing::info!(%url, dest = %dest.display(), ?kind, "queued download from browser extension");
-    let entry = DownloadEntry::new(url, dest, kind).with_request_context(headers, cookie);
+    let entry = DownloadEntry::new(url, dest, kind).with_request_context(headers, cookie).with_quality(quality);
     let id = entry.id.clone();
     if let Err(e) = state.store.add_entry(entry).await {
         tracing::warn!(error = %e, "failed to persist download entry from extension");
@@ -416,6 +504,42 @@ async fn queue_url(
     tokio::spawn(async move {
         if let Err(e) = manager.run_entry_now(&id).await {
             tracing::warn!(error = %e, %id, "immediate run of extension-queued download failed to start");
+        }
+    });
+}
+
+/// Tail shared by the normal kind-detection path and the social-extraction
+/// path above: build `dest`, persist a `Http`-kind entry, and run it
+/// immediately (same short-lived-signed-URL reasoning as `queue_url`'s own
+/// doc comment on `run_entry_now` - resolved social CDN URLs expire in hours
+/// at best, sometimes far less).
+async fn queue_resolved_http(
+    state: &AppState,
+    url: String,
+    filename: String,
+    headers: HashMap<String, String>,
+    cookie: Option<String>,
+    quality: Option<String>,
+) {
+    let download_dir = state.config.settings.get().await.download_dir;
+    let dest = tidm_core::naming::dest_path(&download_dir, &url, &filename);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+
+    tracing::info!(%url, dest = %dest.display(), "queued download resolved from a social media page");
+    let entry =
+        DownloadEntry::new(url, dest, DownloadKind::Http).with_request_context(headers, cookie).with_quality(quality);
+    let id = entry.id.clone();
+    if let Err(e) = state.store.add_entry(entry).await {
+        tracing::warn!(error = %e, "failed to persist resolved social media entry");
+        return;
+    }
+
+    let manager = state.manager.clone();
+    tokio::spawn(async move {
+        if let Err(e) = manager.run_entry_now(&id).await {
+            tracing::warn!(error = %e, %id, "immediate run of resolved social media download failed to start");
         }
     });
 }

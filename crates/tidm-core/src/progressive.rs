@@ -10,7 +10,7 @@
 //! re-fetching finished ranges, matching the original's `chunks.db` checkpoint
 //! behavior.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,8 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use tidm_net::{HttpClient, ProgressTx, RequestContext};
+
+use crate::naming::cache_dir_for;
 
 const STATE_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -45,15 +47,14 @@ struct DownloadState {
     pieces: Vec<Piece>,
 }
 
-fn state_path(dest: &Path) -> PathBuf {
-    let mut p = dest.as_os_str().to_owned();
-    p.push(".tidm-state.json");
-    PathBuf::from(p)
-}
-
 /// Downloads `url` to `dest` using up to `concurrency` parallel range requests
 /// when the server supports them, falling back to a single streamed connection
-/// otherwise. Resumable if interrupted and re-run with the same `url`/`dest`.
+/// otherwise. Resumable if interrupted and re-run with the same `url`/`dest`,
+/// since retry never changes `dest` and everything below is keyed off
+/// `cache_dir_for(dest)`. The growing file and its checkpoint sidecar both
+/// live inside that per-download cache folder (not next to `dest`) so `dest`
+/// itself never exists as a partial/truncated file - it only appears once
+/// the download is genuinely complete, via a rename out of the cache dir.
 /// `ctx` carries any Referer/Origin/Cookie/User-Agent captured at detection time.
 pub async fn download(
     client: &HttpClient,
@@ -63,7 +64,10 @@ pub async fn download(
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
 ) -> Result<()> {
-    let state_file = state_path(dest);
+    let cache_dir = cache_dir_for(dest);
+    tokio::fs::create_dir_all(&cache_dir).await?;
+    let work_path = cache_dir.join("output.partial");
+    let state_file = cache_dir.join("state.json");
 
     let existing_state = load_state(&state_file, url).await;
 
@@ -81,19 +85,19 @@ pub async fn download(
             match (probe.accept_ranges, probe.content_length) {
                 (true, Some(total_size)) if total_size > 0 => {
                     let pieces = split_into_pieces(total_size, concurrency.max(1) as u64);
-                    let file = OpenOptions::new().create(true).write(true).truncate(true).open(dest).await?;
+                    let file = OpenOptions::new().create(true).write(true).truncate(true).open(&work_path).await?;
                     file.set_len(total_size).await?;
                     DownloadState { url: url.to_string(), total_size, pieces }
                 }
                 _ => {
                     tracing::info!("server does not support byte ranges; downloading as a single stream");
-                    return download_single_stream(client, url, dest, ctx, progress).await;
+                    return download_single_stream(client, url, dest, &cache_dir, ctx, progress).await;
                 }
             }
         }
     };
 
-    download_resumable(client, state, dest, &state_file, concurrency.max(1), ctx, progress).await
+    download_resumable(client, state, dest, &cache_dir, &work_path, &state_file, concurrency.max(1), ctx, progress).await
 }
 
 fn split_into_pieces(total_size: u64, count: u64) -> Vec<Piece> {
@@ -137,6 +141,8 @@ async fn download_resumable(
     client: &HttpClient,
     state: DownloadState,
     dest: &Path,
+    cache_dir: &Path,
+    work_path: &Path,
     state_file: &Path,
     concurrency: usize,
     ctx: &RequestContext,
@@ -154,7 +160,7 @@ async fn download_resumable(
         let client = client.clone();
         let shared = shared.clone();
         let last_saved = last_saved.clone();
-        let dest = dest.to_path_buf();
+        let work_path = work_path.to_path_buf();
         let state_file = state_file.to_path_buf();
         let url = url.clone();
         let ctx = ctx.clone();
@@ -177,7 +183,7 @@ async fn download_resumable(
                 // inside it) naturally resumes from wherever the last attempt left
                 // off instead of re-fetching bytes already written to disk.
                 tidm_net::retry(tidm_net::DEFAULT_RETRY_ATTEMPTS, tidm_net::DEFAULT_RETRY_DELAY, || {
-                    download_piece(&client, &url, &dest, shared.clone(), index, &last_saved, &state_file, &ctx, progress.as_ref())
+                    download_piece(&client, &url, &work_path, shared.clone(), index, &last_saved, &state_file, &ctx, progress.as_ref())
                 })
                 .await
                 .with_context(|| format!("piece {index} failed after retries"))?;
@@ -200,7 +206,11 @@ async fn download_resumable(
             bail!("download incomplete: {unfinished} piece(s) unfinished after all workers exited");
         }
     }
-    tokio::fs::remove_file(state_file).await.ok();
+    // `dest` only ever comes into existence here, fully formed - never as a
+    // partial/truncated file - since every byte up to this point was written
+    // to `work_path` inside the cache dir.
+    tokio::fs::rename(work_path, dest).await.context("moving finished download into place")?;
+    tokio::fs::remove_dir_all(cache_dir).await.ok();
     // The loop above only reports progress every `STATE_SAVE_INTERVAL` (2s), so
     // whichever piece happened to finish last can leave the last reported
     // percentage below 100% even though the file is now complete (observed:
@@ -218,7 +228,7 @@ fn find_next_claimable_piece(pieces: &[Piece], claimed: &[bool]) -> Option<usize
 async fn download_piece(
     client: &HttpClient,
     url: &str,
-    dest: &Path,
+    work_path: &Path,
     shared: Arc<Mutex<Shared>>,
     index: usize,
     last_saved: &Arc<Mutex<Instant>>,
@@ -245,7 +255,7 @@ async fn download_piece(
         bail!("piece {index} GET {url} returned status {status} ({})", tidm_net::describe_sent_headers(&opts));
     }
 
-    let mut file = OpenOptions::new().write(true).open(dest).await.context("opening destination file for piece write")?;
+    let mut file = OpenOptions::new().write(true).open(work_path).await.context("opening destination file for piece write")?;
     file.seek(std::io::SeekFrom::Start(range_offset)).await?;
 
     let mut stream = response.bytes_stream();
@@ -298,6 +308,7 @@ async fn download_single_stream(
     client: &HttpClient,
     url: &str,
     dest: &Path,
+    cache_dir: &Path,
     ctx: &RequestContext,
     progress: Option<&ProgressTx>,
 ) -> Result<()> {
@@ -312,7 +323,8 @@ async fn download_single_stream(
     // GET; 0 signals "unknown" to the caller when it doesn't.
     let total_size = response.content_length().unwrap_or(0);
 
-    let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(dest).await?;
+    let work_path = cache_dir.join("output.partial");
+    let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(&work_path).await?;
     let mut stream = response.bytes_stream();
     let mut total = 0u64;
     while let Some(chunk) = stream.next().await {
@@ -324,6 +336,11 @@ async fn download_single_stream(
         tidm_net::report_progress(progress, total, total_size);
     }
     file.flush().await?;
+    drop(file);
+    // `dest` only ever comes into existence here, fully formed, same
+    // reasoning as `download_resumable`'s rename-then-cleanup.
+    tokio::fs::rename(&work_path, dest).await.context("moving finished download into place")?;
+    tokio::fs::remove_dir_all(cache_dir).await.ok();
     // Same reasoning as `download_resumable`'s final report: the periodic timer
     // above may never fire again between the last chunk and stream end, so the
     // last displayed percentage could sit below 100% forever without this.
