@@ -1,40 +1,34 @@
-# Lüdd
+# <img src="tidm-app/src-tauri/icons/128x128.png" alt="Lüdd Logo" width="32" align="left" /> Lüdd
 
-<img src="tidm-app/src-tauri/icons/128x128.png" alt="Lüdd logo" width="96" />
+*🇩🇪 Deutsch | [🇬🇧 English](README.en.md)*
 
-A download manager (Rust rewrite of XDM) with a desktop app, CLI, and browser
-extension. Supports plain HTTP, HLS, and DASH downloads, plus resolving
-Facebook/Instagram post URLs to their direct media links.
+Ein Download-Manager mit Desktop-App, CLI und Browser-Erweiterung.
+Unterstützt einfache HTTP-, HLS- und DASH-Downloads.
 
-## Structure
+## Struktur
 
-- `crates/tidm-net` — HTTP client
-- `crates/tidm-media` — HLS/DASH parsing, muxing, quality probing, social-site extractors
-- `crates/tidm-core` — download queue, jobs, naming
+- `crates/tidm-net` — HTTP-Client
+- `crates/tidm-media` — HLS/DASH-Parsing, Muxing, Qualitätsabfrage, Extraktoren für soziale Netzwerke
+- `crates/tidm-core` — Download-Warteschlange, Jobs, Benennung
 - `crates/tidm-cli` — CLI
-- `crates/tidm-ipc` — local server the browser extension talks to
-- `tidm-app` — Tauri desktop app (`dist/` = frontend, `src-tauri/` = backend)
-- `extension` / `extension-firefox` — browser extensions
+- `crates/tidm-ipc` — lokaler Server, mit dem die Browser-Erweiterung kommuniziert
+- `tidm-app` — Tauri-Desktop-App (`dist/` = Frontend, `src-tauri/` = Backend)
+- `extension` / `extension-firefox` — Browser-Erweiterungen
 
-## Build
-
-Requires the GNU toolchain — the default MSVC toolchain doesn't link on this
-machine.
+## Erstellen
 
 ```
-$env:PATH = "C:\Program Files\Git\usr\bin;C:\mingw64\bin;C:\Program Files\CMake\bin;" + $env:PATH
 cargo +stable-x86_64-pc-windows-gnu build --release --workspace
 ```
 
-Binaries land in `target/release/` (`tidm-app.exe`, `tidm-cli.exe`).
+Die Binaries landen in `target/release/` (`tidm-app.exe`, `tidm-cli.exe`).
 
-## Test
+## Testen
 
 ```
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 ```
 
-## Extension
+## Erweiterung
 
-Load `extension/` (Chrome) or `extension-firefox/` (Firefox) unpacked. Reload
-after any JS/HTML change.
+`extension/` (Chrome/Edge) oder `extension-firefox/` (Firefox) laden.
