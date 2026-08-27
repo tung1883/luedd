@@ -10,8 +10,9 @@
 //! URLs are typically short-lived (signed, expiring in hours) - extraction
 //! should happen right before queuing a download, not far ahead of it.
 
-pub mod facebook;
 pub mod instagram;
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use tidm_net::{HttpClient, RequestContext};
@@ -25,25 +26,26 @@ pub struct SocialMedia {
     /// the site's response offers one - `None` falls back to the caller's
     /// usual URL/title-based naming.
     pub suggested_name: Option<String>,
+    /// Headers that must be sent when actually fetching `url` - e.g. a CDN
+    /// token bound to its originating page via `Referer`. Known-correct for
+    /// this specific resolved URL, so the caller should apply these *on top
+    /// of* (overriding) whatever it already had captured, not merge under it.
+    pub required_headers: HashMap<String, String>,
 }
 
 /// Which extractor a URL should go through, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocialSite {
-    Facebook,
     Instagram,
 }
 
 /// Best-effort sniff from the URL's host/path - matches broadly (any
-/// `facebook.com`/`fb.watch` or `instagram.com` URL) since both extractors
-/// themselves fail cleanly with a clear error on a URL that isn't actually a
-/// post/reel/video (a profile page, a comment link, etc.), rather than
-/// needing this to be a precise path matcher.
+/// `instagram.com` URL) since the extractor itself fails cleanly with a
+/// clear error on a URL that isn't actually a post/reel (a profile page, a
+/// comment link, etc.), rather than needing this to be a precise path matcher.
 pub fn detect_site(url: &str) -> Option<SocialSite> {
     let lower = url.to_ascii_lowercase();
-    if lower.contains("facebook.com/") || lower.contains("fb.watch/") {
-        Some(SocialSite::Facebook)
-    } else if lower.contains("instagram.com/") {
+    if lower.contains("instagram.com/") {
         Some(SocialSite::Instagram)
     } else {
         None
@@ -53,7 +55,6 @@ pub fn detect_site(url: &str) -> Option<SocialSite> {
 /// Resolves a social-site page URL into one or more direct media URLs.
 pub async fn extract(site: SocialSite, client: &HttpClient, url: &str, ctx: &RequestContext) -> Result<Vec<SocialMedia>> {
     match site {
-        SocialSite::Facebook => facebook::extract(client, url, ctx).await,
         SocialSite::Instagram => instagram::extract(client, url, ctx).await,
     }
 }

@@ -414,20 +414,6 @@ export default class App {
         }
     }
 
-    sendLinkToXDM(info, tab) {
-        let url = info.linkUrl;
-        if (!this.isSupportedProtocol(url)) {
-            url = info.srcUrl;
-        }
-        if (!this.isSupportedProtocol(url)) {
-            url = info.pageUrl;
-        }
-        if (!this.isSupportedProtocol(url)) {
-            return;
-        }
-        this.triggerDownload(url, null, info.pageUrl, null, null);
-    }
-
     sendImageToXDM(info, tab) {
         let url = info.srcUrl;
         if (!this.isSupportedProtocol(url))
@@ -442,25 +428,25 @@ export default class App {
     }
 
     onMenuClicked(info, tab) {
-        if (info.menuItemId == "download-any-link") {
-            this.sendLinkToXDM(info, tab);
-        }
         if (info.menuItemId == "download-image-link") {
             this.sendImageToXDM(info, tab);
         }
     }
 
     attachContextMenu() {
-        chrome.contextMenus.create({
-            id: 'download-any-link',
-            title: "Download with Lüdd",
-            contexts: ["link", "video", "audio", "all"]
-        });
-
-        chrome.contextMenus.create({
-            id: 'download-image-link',
-            title: "Download Image with Lüdd",
-            contexts: ["image"]
+        // The service worker can restart (extension reload, idle eviction,
+        // browser restart) without the previously-registered menu items ever
+        // going away - they're owned by the browser, not the worker's
+        // lifetime. Re-creating them with the same ids without clearing first
+        // throws "duplicate id", which can leave registration half-done.
+        // removeAll() makes this idempotent regardless of how many times the
+        // worker (re)starts.
+        chrome.contextMenus.removeAll(() => {
+            chrome.contextMenus.create({
+                id: 'download-image-link',
+                title: "Download Image with Lüdd",
+                contexts: ["image"]
+            });
         });
 
         chrome.contextMenus.onClicked.addListener(this.onMenuClicked.bind(this));

@@ -425,8 +425,8 @@ async fn queue_url(
     cookie: Option<String>,
     quality: Option<String>,
 ) {
-    // Facebook/Instagram post/reel/watch URLs aren't themselves downloadable -
-    // they're pages. Resolve to the real direct media URL(s) first (using the
+    // Instagram post/reel URLs aren't themselves downloadable - they're
+    // pages. Resolve to the real direct media URL(s) first (using the
     // page's own captured headers/cookie for private/saved content), then
     // queue each as a plain `Http` download - skips the HLS/DASH-sniffing
     // path below entirely, since a resolved CDN URL is never itself a
@@ -438,9 +438,16 @@ async fn queue_url(
                 for item in items {
                     let filename = item
                         .suggested_name
+                        .clone()
                         .or_else(|| filename_hint.clone())
                         .unwrap_or_else(|| tidm_core::naming::suggest_filename(title_hint.as_deref(), &item.url, None));
-                    queue_resolved_http(state, item.url, filename, headers.clone(), cookie.clone(), quality.clone()).await;
+                    // The extractor's own required headers (e.g. a Referer the
+                    // resolved CDN URL is bound to) are known-correct for
+                    // this specific URL - applied on top of, so they override,
+                    // whatever was captured at original detection time.
+                    let mut item_headers = headers.clone();
+                    item_headers.extend(item.required_headers.clone());
+                    queue_resolved_http(state, item.url, filename, item_headers, cookie.clone(), quality.clone()).await;
                 }
             }
             Err(e) => {
@@ -528,8 +535,7 @@ async fn queue_resolved_http(
     }
 
     tracing::info!(%url, dest = %dest.display(), "queued download resolved from a social media page");
-    let entry =
-        DownloadEntry::new(url, dest, DownloadKind::Http).with_request_context(headers, cookie).with_quality(quality);
+    let entry = DownloadEntry::new(url, dest, DownloadKind::Http).with_request_context(headers, cookie).with_quality(quality);
     let id = entry.id.clone();
     if let Err(e) = state.store.add_entry(entry).await {
         tracing::warn!(error = %e, "failed to persist resolved social media entry");

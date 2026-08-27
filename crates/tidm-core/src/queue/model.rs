@@ -111,6 +111,7 @@ impl DownloadEntry {
         self.cookie = cookie;
         self
     }
+
 }
 
 /// A time-of-day window (minutes since midnight, local time), the Rust

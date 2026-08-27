@@ -12,6 +12,8 @@
 //! Resolved CDN URLs are signed and expire in hours - extraction should
 //! happen right before queuing, not far ahead of it.
 
+use std::collections::HashMap;
+
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use tidm_net::{HttpClient, RequestContext};
@@ -115,21 +117,21 @@ fn single_item_media(node: &Value) -> Option<SocialMedia> {
 
     if is_video {
         if let Some(url) = node.get("video_url").and_then(|v| v.as_str()) {
-            return Some(SocialMedia { url: url.to_string(), suggested_name: None });
+            return Some(SocialMedia { url: url.to_string(), suggested_name: None, required_headers: HashMap::new() });
         }
         if let Some(url) = node.pointer("/video_versions/0/url").and_then(|v| v.as_str()) {
-            return Some(SocialMedia { url: url.to_string(), suggested_name: None });
+            return Some(SocialMedia { url: url.to_string(), suggested_name: None, required_headers: HashMap::new() });
         }
     }
 
     // Largest image: index 0 of either field is the largest candidate/resource.
     if let Some(url) = node.pointer("/display_resources/0/src").and_then(|v| v.as_str()) {
-        return Some(SocialMedia { url: url.to_string(), suggested_name: None });
+        return Some(SocialMedia { url: url.to_string(), suggested_name: None, required_headers: HashMap::new() });
     }
     if let Some(url) = node.pointer("/image_versions2/candidates/0/url").and_then(|v| v.as_str()) {
-        return Some(SocialMedia { url: url.to_string(), suggested_name: None });
+        return Some(SocialMedia { url: url.to_string(), suggested_name: None, required_headers: HashMap::new() });
     }
-    node.get("display_url").and_then(|v| v.as_str()).map(|url| SocialMedia { url: url.to_string(), suggested_name: None })
+    node.get("display_url").and_then(|v| v.as_str()).map(|url| SocialMedia { url: url.to_string(), suggested_name: None, required_headers: HashMap::new() })
 }
 
 #[cfg(test)]

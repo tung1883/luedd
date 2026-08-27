@@ -29,6 +29,6 @@ Die Binaries landen in `target/release/` (`tidm-app.exe`, `tidm-cli.exe`).
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 ```
 
-## Erweiterung
+## Extension
 
 `extension/` (Chrome/Edge) oder `extension-firefox/` (Firefox) laden.

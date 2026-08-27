@@ -13,3 +13,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Personal scratch notes
+/PLAN.md

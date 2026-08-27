@@ -56,8 +56,8 @@ async fn add_download(state: State<'_, AppState>, url: String, filename: Option<
     let settings = state.settings.get().await;
     let client = state.manager.read().await.http_client();
 
-    // Facebook/Instagram post/reel/watch URLs are pages, not downloadable
-    // files - resolve to the real direct media URL(s) first (no cookie here,
+    // Instagram post/reel URLs are pages, not downloadable files - resolve
+    // to the real direct media URL(s) first (no cookie here,
     // since a manually-pasted GUI URL has no captured browser session behind
     // it - only public content resolves this way; private/saved content
     // needs the browser-extension flow, which does capture cookies). A
@@ -74,7 +74,13 @@ async fn add_download(state: State<'_, AppState>, url: String, filename: Option<
             if let Some(parent) = dest.parent() {
                 tokio::fs::create_dir_all(parent).await.ok();
             }
-            let entry = DownloadEntry::new(item.url, dest, DownloadKind::Http).with_quality(quality.clone());
+            // The extractor's own required headers (e.g. a Referer the
+            // resolved CDN URL is bound to) are known-correct for this
+            // specific URL - there's no captured browser context to merge
+            // them on top of here, unlike the extension flow.
+            let entry = DownloadEntry::new(item.url, dest, DownloadKind::Http)
+                .with_request_context(item.required_headers, None)
+                .with_quality(quality.clone());
             state.store.add_entry(entry).await.map_err(|e| e.to_string())?;
         }
         return Ok(());
