@@ -258,11 +258,20 @@ async fn download_piece(
         let should_save = {
             let mut s = shared.lock().await;
             s.state.pieces[index].downloaded += chunk.len() as u64;
+            // Report every chunk (cheap: an unbounded-channel send) so the
+            // frontend's poll always sees a fresh `done` value - only the
+            // actual disk write below stays gated behind STATE_SAVE_INTERVAL,
+            // since that one is genuinely expensive. Reporting used to share
+            // this same 2s gate, which let its period drift against the
+            // frontend's own independent 2s poll timer and made the UI's
+            // client-side speed calculation see stale/duplicate `done`
+            // values (the bug this fixes).
+            let total_downloaded: u64 = s.state.pieces.iter().map(|p| p.downloaded).sum();
+            tidm_net::report_progress(progress, total_downloaded, s.state.total_size);
+
             let mut ls = last_saved.lock().await;
             if ls.elapsed() >= STATE_SAVE_INTERVAL {
                 *ls = Instant::now();
-                let total_downloaded: u64 = s.state.pieces.iter().map(|p| p.downloaded).sum();
-                tidm_net::report_progress(progress, total_downloaded, s.state.total_size);
                 Some(s.state.clone())
             } else {
                 None
@@ -306,15 +315,13 @@ async fn download_single_stream(
     let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(dest).await?;
     let mut stream = response.bytes_stream();
     let mut total = 0u64;
-    let mut last_report = Instant::now();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("error reading response body")?;
         file.write_all(&chunk).await?;
         total += chunk.len() as u64;
-        if last_report.elapsed() >= STATE_SAVE_INTERVAL {
-            last_report = Instant::now();
-            tidm_net::report_progress(progress, total, total_size);
-        }
+        // Report every chunk, same reasoning as `download_piece` - this is
+        // a cheap unbounded-channel send, not the throttled path.
+        tidm_net::report_progress(progress, total, total_size);
     }
     file.flush().await?;
     // Same reasoning as `download_resumable`'s final report: the periodic timer

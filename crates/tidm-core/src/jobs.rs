@@ -114,7 +114,7 @@ pub async fn run_hls(
                 download_playlist(client, &video_playlist, &video_tmp, concurrency, ctx, progress).await?;
                 download_playlist(client, &audio_playlist, &audio_tmp, concurrency, ctx, None).await?;
                 tidm_net::report_converting(progress);
-                mux_demuxed(&video_tmp, &audio_tmp, dest)?;
+                mux_demuxed(&video_tmp, &audio_tmp, dest).await?;
                 tokio::fs::remove_file(&video_tmp).await.ok();
                 tokio::fs::remove_file(&audio_tmp).await.ok();
             }
@@ -122,7 +122,7 @@ pub async fn run_hls(
                 let assembled_tmp = dest.with_extension("tmp.ts");
                 download_playlist(client, &video_playlist, &assembled_tmp, concurrency, ctx, progress).await?;
                 tidm_net::report_converting(progress);
-                mux_single(&assembled_tmp, dest)?;
+                mux_single(&assembled_tmp, dest).await?;
                 tokio::fs::remove_file(&assembled_tmp).await.ok();
             }
         }
@@ -131,7 +131,7 @@ pub async fn run_hls(
         let assembled_tmp = dest.with_extension("tmp.ts");
         download_playlist(client, &playlist, &assembled_tmp, concurrency, ctx, progress).await?;
         tidm_net::report_converting(progress);
-        mux_single(&assembled_tmp, dest)?;
+        mux_single(&assembled_tmp, dest).await?;
         tokio::fs::remove_file(&assembled_tmp).await.ok();
     } else {
         // A 200 response that's neither a master nor media playlist is almost
@@ -175,7 +175,7 @@ pub async fn run_dash(
             download_representation(client, video, &video_tmp, concurrency, ctx, progress).await?;
             download_representation(client, audio, &audio_tmp, concurrency, ctx, None).await?;
             tidm_net::report_converting(progress);
-            mux_demuxed(&video_tmp, &audio_tmp, dest)?;
+            mux_demuxed(&video_tmp, &audio_tmp, dest).await?;
             tokio::fs::remove_file(&video_tmp).await.ok();
             tokio::fs::remove_file(&audio_tmp).await.ok();
         }
@@ -183,14 +183,14 @@ pub async fn run_dash(
             let tmp = dest.with_extension("tmp");
             download_representation(client, video, &tmp, concurrency, ctx, progress).await?;
             tidm_net::report_converting(progress);
-            mux_single(&tmp, dest)?;
+            mux_single(&tmp, dest).await?;
             tokio::fs::remove_file(&tmp).await.ok();
         }
         (None, Some(audio)) => {
             let tmp = dest.with_extension("tmp");
             download_representation(client, audio, &tmp, concurrency, ctx, progress).await?;
             tidm_net::report_converting(progress);
-            mux_single(&tmp, dest)?;
+            mux_single(&tmp, dest).await?;
             tokio::fs::remove_file(&tmp).await.ok();
         }
         (None, None) => bail!("manifest pairing had neither video nor audio"),

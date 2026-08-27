@@ -100,7 +100,7 @@
     <thead><tr>
       <th class="toggle-col"></th>
       <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
-      <th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>URL</th><th>Error</th><th>Actions</th>
+      <th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Speed</th><th>URL</th><th>Error</th><th>Actions</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -204,11 +204,21 @@ function formatProgress(e) {
   }
   if (!e.progress) return "";
   const [done, total] = e.progress;
-  const speed = e.status === "Downloading" ? speedLabel(e, done) : "";
-  const speedHtml = speed ? `<div class="speed-text">${speed}</div>` : "";
-  if (!total) return `${formatBytes(done)}${speedHtml}`;
+  if (!total) return formatBytes(done);
   const pct = Math.min(100, Math.round((done / total) * 100));
-  return `<div class="progress-wrap"><div class="progress-bar" style="width:${pct}%"></div></div><div class="progress-text">${pct}%</div>${speedHtml}`;
+  return `<div class="progress-wrap"><div class="progress-bar" style="width:${pct}%"></div></div><div class="progress-text">${pct}%</div>`;
+}
+
+// Speed lives in its own column now rather than inline in the Progress cell.
+function formatSpeed(e) {
+  if (e.status !== "Downloading" || !e.progress) return "";
+  const [done] = e.progress;
+  return speedLabel(e, done);
+}
+
+const KIND_LABELS = { Http: "HTTP", Hls: "HLS", Dash: "DASH" };
+function kindLabel(kind) {
+  return KIND_LABELS[kind] ?? kind;
 }
 
 function updateBulkButtons() {
@@ -237,9 +247,10 @@ async function refresh() {
       <td class="toggle-col"><button class="details-toggle-btn" data-id="${e.id}" title="Details">${isOpen ? "▾" : "▸"}</button></td>
       <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${e.id}" ${selected.has(e.id) ? "checked" : ""} /></td>
       <td class="id">${e.id.slice(0, 8)}</td>
-      <td>${e.kind}</td>
+      <td>${kindLabel(e.kind)}</td>
       <td class="status-${e.status}">${e.status}</td>
       <td>${formatProgress(e)}</td>
+      <td class="speed-text">${formatSpeed(e)}</td>
       <td class="url copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${e.url}</td>
       <td class="error copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n(double-click to copy)" : ""}">${e.error ?? ""}</td>
       <td class="actions">
@@ -262,7 +273,7 @@ async function refresh() {
     const headerNames = Object.keys(e.headers ?? {});
     detailsTr.innerHTML = `
       <td></td><td></td>
-      <td colspan="7" class="details-cell">
+      <td colspan="8" class="details-cell">
         <div><strong>Site:</strong> ${site}</div>
         <div><strong>Full link:</strong> <span class="selectable">${e.url}</span></div>
         <div><strong>Saving to:</strong> <span class="selectable">${e.dest}</span></div>
