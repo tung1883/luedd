@@ -1,0 +1,38 @@
+{
+    "name": "tidm Integration Module",
+    "action": {},
+    "manifest_version": 3,
+    "version": "0.1.0",
+    "description": "Download with tidm.",
+    "host_permissions": [
+        "*://*/*"
+    ],
+    "permissions": [
+        "downloads",
+        "cookies",
+        "webRequest",
+        "tabs",
+        "storage",
+        "contextMenus",
+        "alarms",
+        "notifications"
+    ],
+    "background": {
+        "scripts": ["main.js"],
+        "type": "module"
+    },
+    "icons": {
+        "16": "icon16.png",
+        "48": "icon48.png",
+        "128": "icon128.png"
+    },
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "tidm@example.invalid",
+            "strict_min_version": "140.0",
+            "data_collection_permissions": {
+                "required": ["none"]
+            }
+        }
+    }
+}

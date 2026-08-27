@@ -1,0 +1,18 @@
+[package]
+name = "tidm-media"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+url.workspace = true
+aes.workspace = true
+cbc.workspace = true
+tokio.workspace = true
+roxmltree.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+tidm-net = { path = "../tidm-net" }
+
+[dev-dependencies]
