@@ -1,0 +1,17 @@
+[package]
+name = "luedd-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+futures.workspace = true
+chrono.workspace = true
+uuid = { version = "1", features = ["v4"] }
+luedd-net = { path = "../luedd-net" }
+luedd-media = { path = "../luedd-media" }

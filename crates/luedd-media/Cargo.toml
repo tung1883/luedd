@@ -1,0 +1,20 @@
+[package]
+name = "luedd-media"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+aes.workspace = true
+cbc.workspace = true
+tokio.workspace = true
+roxmltree.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+luedd-net = { path = "../luedd-net" }
+
+[dev-dependencies]

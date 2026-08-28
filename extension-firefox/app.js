@@ -39,7 +39,7 @@ export default class App {
     }
 
     onMessage(msg) {
-        this.logger.log("message from tidm");
+        this.logger.log("message from Lüdd");
         this.logger.log(msg);
         this.appEnabled = msg.enabled === true;
         this.fileExts = msg.fileExts;

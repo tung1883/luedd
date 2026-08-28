@@ -1,0 +1,20 @@
+[package]
+name = "luedd-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "luedd-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+url.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+luedd-net = { path = "../luedd-net" }
+luedd-media = { path = "../luedd-media" }
+luedd-core = { path = "../luedd-core" }
+luedd-ipc = { path = "../luedd-ipc" }

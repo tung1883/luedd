@@ -3,9 +3,9 @@
 **/*.rs.bk
 
 # Tauri generated files
-/tidm-app/src-tauri/gen/schemas
-/tidm-app/src-tauri/gen/android
-/tidm-app/src-tauri/gen/apple
+/luedd-app/src-tauri/gen/schemas
+/luedd-app/src-tauri/gen/android
+/luedd-app/src-tauri/gen/apple
 
 # OS / editor
 .DS_Store
