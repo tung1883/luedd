@@ -119,6 +119,12 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let dest = std::path::PathBuf::from(&path);
@@ -203,6 +209,15 @@ fn main() {
             let scheduler_manager = manager.clone();
             tauri::async_runtime::spawn(tidm_core::queue::run_scheduler_forever(scheduler_store, scheduler_manager));
 
+            if let Some(main_win) = app.get_webview_window("main") {
+                let app_handle_for_exit = app.handle().clone();
+                main_win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { .. } = event {
+                        app_handle_for_exit.exit(0);
+                    }
+                });
+            }
+
             app.manage(AppState { store, settings, manager: RwLock::new(manager) });
             Ok(())
         })
@@ -220,6 +235,7 @@ fn main() {
             pick_folder,
             open_file,
             open_containing_folder,
+            open_external_url,
             detection_window_set_pinned,
             detection_window_hide
         ])
@@ -232,7 +248,6 @@ const DETECTION_WINDOW_LABEL: &str = "detection";
 fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window(DETECTION_WINDOW_LABEL) {
         let _ = win.show();
-        let _ = win.set_focus();
         let _ = win.emit("detection-updated", ());
         return;
     }
@@ -241,7 +256,7 @@ fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
         .inner_size(420.0, 480.0)
         .resizable(true)
         .always_on_top(true)
-        .focused(true)
+        .focused(false)
         .build();
     match win {
         Ok(win) => {

@@ -33,7 +33,7 @@
 </head>
 <body>
   <header>
-    <h1>Detected downloads</h1>
+    <h1>Detected downloads <span id="count" style="color: #999; font-weight: 400;"></span></h1>
     <button id="pin-btn" class="secondary" title="Toggle always-on-top">Unpin</button>
     <button id="hide-btn" class="secondary" title="Hide this window">Hide</button>
   </header>
@@ -54,7 +54,6 @@
     try {
       const res = await fetch(APP_BASE_URL + path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body || {}),
       });
       return await res.json();
@@ -63,15 +62,52 @@
     }
   }
 
+  let fetchInFlight = false;
+  let refetchQueued = false;
+  // Signature of the last list actually rendered (just the ordered ids -
+  // items are immutable once created server-side, so an id list fully
+  // captures "did anything add/remove"). Most polls fetch an unchanged list;
+  // rebuilding a couple hundred DOM rows every 2s for no reason is wasted
+  // work and would blow away in-progress interactions (typed search text
+  // aside - that's untouched either way since it lives outside #list) for no
+  // benefit, so a no-op fetch skips the render entirely instead of just
+  // re-doing it faster.
+  let lastRenderedSignature = null;
+
+  // A burst of detections (e.g. a page with hundreds of segment/byte-range
+  // requests) fires one "refresh" event per item - without this guard, each
+  // triggers its own independent, unsequenced fetch, and since network
+  // responses can resolve out of order, whichever one happens to finish
+  // *last* wins, even if it was one of the earliest ones issued (captured
+  // when the server had barely any items yet). Coalescing overlapping calls
+  // into "run once more after the current one finishes" guarantees the fetch
+  // that actually renders was always issued after every event seen so far.
   async function fetchAndRender() {
-    try {
-      const res = await fetch(APP_BASE_URL + "/sync");
-      const json = await res.json();
-      allItems = json.videoList || [];
-    } catch {
-      allItems = [];
+    if (fetchInFlight) {
+      refetchQueued = true;
+      return;
     }
-    applyFilter(document.getElementById("search-input").value);
+    fetchInFlight = true;
+    do {
+      refetchQueued = false;
+      try {
+        const res = await fetch(APP_BASE_URL + "/sync");
+        const json = await res.json();
+        const fetched = json.videoList || [];
+        const signature = fetched.map(i => i.id).join(",");
+        if (signature === lastRenderedSignature) {
+          continue; // nothing actually changed - skip the render entirely
+        }
+        lastRenderedSignature = signature;
+        allItems = fetched;
+      } catch {
+        allItems = [];
+        lastRenderedSignature = null;
+      }
+      document.getElementById("count").innerText = allItems.length > 0 ? `(${allItems.length})` : "";
+      applyFilter(document.getElementById("search-input").value);
+    } while (refetchQueued);
+    fetchInFlight = false;
   }
 
   function applyFilter(query) {
@@ -111,111 +147,169 @@
     return line;
   }
 
+  // `renderList` rebuilds every row from scratch on every poll/refresh (every
+  // 2s at minimum, see the `setInterval` below) - without tracking which
+  // rows are expanded, that rebuild would collapse a details panel the user
+  // just opened right back up before they could read it.
+  const expandedIds = new Set();
+
+  async function probeQualityFor(item, qualityBox) {
+    const res = await post("/probe-quality", { vid: item.id });
+    const variants = (res && res.qualityVariants) || [];
+    qualityBox.innerHTML = "";
+    if (variants.length === 0) return;
+    const label = document.createElement("div");
+    label.innerText = "Choose a quality:";
+    label.style.marginBottom = "2px";
+    qualityBox.appendChild(label);
+    variants.forEach(variant => {
+      const qBtn = document.createElement("button");
+      qBtn.innerText = variant.label;
+      qBtn.addEventListener("click", async ev => {
+        ev.stopPropagation();
+        const original = qBtn.innerText;
+        const r = await post("/vid", { vid: item.id, quality: variant.variant_key });
+        qBtn.innerText = r && r.vidQueued === true ? "Added to Lüdd!"
+          : r && r.vidQueued === false ? "Failed - link may have expired"
+          : "Could not reach Lüdd";
+        setTimeout(() => { qBtn.innerText = original; }, 1500);
+      });
+      qualityBox.appendChild(qBtn);
+    });
+  }
+
+  // Persistent id -> row element map, so an unchanged item's row is never
+  // torn down and rebuilt - only genuinely new items get a fresh row, and
+  // only genuinely gone ones get removed. `appendChild` on a node already in
+  // the DOM just repositions it (cheap, no recreation), which is how
+  // existing rows get kept in the right order without rebuilding them.
+  const rowElements = new Map();
+  let emptyEl = null;
+
   function renderList(items) {
     const list = document.getElementById("list");
-    list.innerHTML = "";
 
     if (items.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.innerText = allItems.length === 0 ? "Nothing detected yet." : "No matches.";
-      list.appendChild(empty);
+      rowElements.forEach(el => el.remove());
+      rowElements.clear();
+      if (!emptyEl) {
+        emptyEl = document.createElement("div");
+        emptyEl.className = "empty";
+        list.appendChild(emptyEl);
+      }
+      emptyEl.innerText = allItems.length === 0 ? "Nothing detected yet." : "No matches.";
       return;
     }
 
+    if (emptyEl) {
+      emptyEl.remove();
+      emptyEl = null;
+    }
+
+    const newIds = new Set(items.map(item => item.id));
+    for (const [id, el] of rowElements) {
+      if (!newIds.has(id)) {
+        el.remove();
+        rowElements.delete(id);
+      }
+    }
+
     items.forEach(item => {
-      const row = document.createElement("div");
-      row.className = "row";
-
-      const toggle = document.createElement("button");
-      toggle.className = "toggle-btn";
-      toggle.innerText = "▸";
-      toggle.title = "Details";
-
-      const titleBtn = document.createElement("button");
-      titleBtn.className = "title-btn";
-      titleBtn.innerText = item.text;
-
-      const titleRow = document.createElement("div");
-      titleRow.className = "row-title";
-      titleRow.appendChild(toggle);
-      titleRow.appendChild(titleBtn);
-
-      const infoText = document.createElement("span");
-      infoText.className = "info-text";
-      infoText.innerText = item.info;
-
-      const preview = document.createElement("button");
-      preview.className = "preview-link";
-      preview.innerText = "Preview";
-      preview.title = "Open this link in a new tab to view it before downloading";
-
-      const infoRow = document.createElement("div");
-      infoRow.className = "info-row";
-      infoRow.appendChild(infoText);
-      infoRow.appendChild(preview);
-
-      const detailsPanel = document.createElement("div");
-      detailsPanel.className = "details-panel";
-      detailsPanel.appendChild(makeCopyableLine("Site: ", item.pageUrl || "(unknown)"));
-      detailsPanel.appendChild(makeCopyableLine("Full link: ", item.url));
-
-      const qualityBox = document.createElement("div");
-      qualityBox.className = "quality-box";
-      detailsPanel.appendChild(qualityBox);
-      let qualityProbed = false;
-
-      row.appendChild(titleRow);
-      row.appendChild(infoRow);
-      row.appendChild(detailsPanel);
+      const existing = rowElements.get(item.id);
+      if (existing) {
+        list.appendChild(existing); // already correct content - just keep order in sync
+        return;
+      }
+      const row = buildRow(item);
+      rowElements.set(item.id, row);
       list.appendChild(row);
-
-      titleBtn.addEventListener("click", async () => {
-        const original = titleBtn.innerText;
-        const res = await post("/vid", { vid: item.id });
-        titleBtn.innerText = res && res.vidQueued === true ? "Added to Lüdd!"
-          : res && res.vidQueued === false ? "Failed - link may have expired"
-          : "Could not reach Lüdd";
-        setTimeout(() => { titleBtn.innerText = original; }, 1500);
-      });
-
-      preview.addEventListener("click", e => {
-        e.stopPropagation();
-        window.open(item.url, "_blank");
-      });
-
-      toggle.addEventListener("click", async e => {
-        e.stopPropagation();
-        const nowOpen = !detailsPanel.classList.contains("open");
-        detailsPanel.classList.toggle("open", nowOpen);
-        toggle.innerText = nowOpen ? "▾" : "▸";
-        if (nowOpen && !qualityProbed) {
-          qualityProbed = true;
-          const res = await post("/probe-quality", { vid: item.id });
-          const variants = (res && res.qualityVariants) || [];
-          qualityBox.innerHTML = "";
-          if (variants.length === 0) return;
-          const label = document.createElement("div");
-          label.innerText = "Choose a quality:";
-          label.style.marginBottom = "2px";
-          qualityBox.appendChild(label);
-          variants.forEach(variant => {
-            const qBtn = document.createElement("button");
-            qBtn.innerText = variant.label;
-            qBtn.addEventListener("click", async ev => {
-              ev.stopPropagation();
-              const original = qBtn.innerText;
-              const r = await post("/vid", { vid: item.id, quality: variant.variant_key });
-              qBtn.innerText = r && r.vidQueued === true ? "Added to Lüdd!"
-                : r && r.vidQueued === false ? "Failed - link may have expired"
-                : "Could not reach Lüdd";
-              setTimeout(() => { qBtn.innerText = original; }, 1500);
-            });
-            qualityBox.appendChild(qBtn);
-          });
-        }
-      });
     });
+  }
+
+  function buildRow(item) {
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const toggle = document.createElement("button");
+    toggle.className = "toggle-btn";
+    toggle.innerText = "▸";
+    toggle.title = "Details";
+
+    const titleBtn = document.createElement("button");
+    titleBtn.className = "title-btn";
+    titleBtn.innerText = item.text;
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "row-title";
+    titleRow.appendChild(toggle);
+    titleRow.appendChild(titleBtn);
+
+    const infoText = document.createElement("span");
+    infoText.className = "info-text";
+    infoText.innerText = item.info;
+
+    const preview = document.createElement("button");
+    preview.className = "preview-link";
+    preview.innerText = "Preview";
+    preview.title = "Open this link in a new tab to view it before downloading";
+
+    const infoRow = document.createElement("div");
+    infoRow.className = "info-row";
+    infoRow.appendChild(infoText);
+    infoRow.appendChild(preview);
+
+    const detailsPanel = document.createElement("div");
+    detailsPanel.className = "details-panel";
+    detailsPanel.appendChild(makeCopyableLine("Site: ", item.pageUrl || "(unknown)"));
+    detailsPanel.appendChild(makeCopyableLine("Full link: ", item.url));
+
+    const qualityBox = document.createElement("div");
+    qualityBox.className = "quality-box";
+    detailsPanel.appendChild(qualityBox);
+    let qualityProbed = false;
+
+    if (expandedIds.has(item.id)) {
+      detailsPanel.classList.add("open");
+      toggle.innerText = "▾";
+      qualityProbed = true;
+      probeQualityFor(item, qualityBox);
+    }
+
+    row.appendChild(titleRow);
+    row.appendChild(infoRow);
+    row.appendChild(detailsPanel);
+
+    titleBtn.addEventListener("click", async () => {
+      const original = titleBtn.innerText;
+      const res = await post("/vid", { vid: item.id });
+      titleBtn.innerText = res && res.vidQueued === true ? "Added to Lüdd!"
+        : res && res.vidQueued === false ? "Failed - link may have expired"
+        : "Could not reach Lüdd";
+      setTimeout(() => { titleBtn.innerText = original; }, 1500);
+    });
+
+    preview.addEventListener("click", e => {
+      e.stopPropagation();
+      window.__TAURI__.core.invoke("open_external_url", { url: item.url });
+    });
+
+    toggle.addEventListener("click", async e => {
+      e.stopPropagation();
+      const nowOpen = !detailsPanel.classList.contains("open");
+      detailsPanel.classList.toggle("open", nowOpen);
+      toggle.innerText = nowOpen ? "▾" : "▸";
+      if (nowOpen) {
+        expandedIds.add(item.id);
+      } else {
+        expandedIds.delete(item.id);
+      }
+      if (nowOpen && !qualityProbed) {
+        qualityProbed = true;
+        await probeQualityFor(item, qualityBox);
+      }
+    });
+
+    return row;
   }
 
   document.getElementById("search-input").addEventListener("input", e => applyFilter(e.target.value));
@@ -236,6 +330,17 @@
   });
 
   window.__TAURI__.event.listen("detection-updated", fetchAndRender);
+
+  // The event above is a best-effort nudge, not the source of correctness -
+  // during a burst (many detections in quick succession, e.g. a page with
+  // hundreds of media requests), several "detection-updated" events fire
+  // before this page has even finished loading and calling `listen()`.
+  // Tauri doesn't queue events for a listener that wasn't registered yet, so
+  // those are just gone - no amount of debouncing on this end can recover
+  // an event that was never received. A plain, dumb, reliable poll is what
+  // actually guarantees this list is never stuck stale for more than a
+  // couple seconds, independent of whether any given event made it through.
+  setInterval(fetchAndRender, 2000);
 
   fetchAndRender();
 </script>

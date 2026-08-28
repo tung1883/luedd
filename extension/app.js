@@ -18,6 +18,13 @@ export default class App {
         this.onTabUpdateCallback = this.onTabUpdate.bind(this);
         this.activeTabId = -1;
         this.connector = new Connector(this.onMessage.bind(this), this.onDisconnect.bind(this));
+        // Detections whose /media POST hasn't been confirmed by the server
+        // yet (the fetch itself failed, or fired during a moment the app
+        // wasn't reachable) - keyed by URL, holding the full original
+        // payload (headers/cookie/userAgent, not just the derived list item)
+        // so a retry has everything it needs. Reconciled on every poll in
+        // `onMessage` below.
+        this.pendingMedia = new Map();
     }
 
     start() {
@@ -42,6 +49,26 @@ export default class App {
         const serverUrls = new Set(serverList.map(v => v.url));
         const localOnly = (this.videoList || []).filter(v => this.isLocalId(v.id) && !serverUrls.has(v.url));
         this.videoList = [...serverList, ...localOnly];
+        // Self-healing retry: anything still pending that the server has now
+        // confirmed is done; anything still pending that the server hasn't
+        // seen gets POSTed again, capped to a small batch per tick. Without
+        // that cap, a backlog (e.g. built up while the app was closed) would
+        // fire one concurrent fetch per pending item on *every* poll -
+        // hundreds of simultaneous requests every ~5s, which is enough to
+        // make the browser itself sluggish/unresponsive, not just slow to
+        // sync. Confirmed items are always cleaned up immediately (cheap,
+        // no network); only the actual retry POSTs are throttled, so a large
+        // backlog drains gradually across several ticks instead of bursting.
+        const MAX_MEDIA_RETRIES_PER_TICK = 5;
+        let retriedThisTick = 0;
+        for (const [url, data] of this.pendingMedia) {
+            if (serverUrls.has(url)) {
+                this.pendingMedia.delete(url);
+            } else if (retriedThisTick < MAX_MEDIA_RETRIES_PER_TICK) {
+                this.connector.postMessage("/media", data);
+                retriedThisTick++;
+            }
+        }
         this.requestWatcher.updateConfig({
             mediaExts: msg.requestFileExts,
             blockedHosts: msg.blockedHosts,
@@ -103,6 +130,7 @@ export default class App {
             pageUrl: data.tabUrl || null,
         };
         this.videoList = [...this.videoList, item];
+        this.pendingMedia.set(data.url, data);
         this.updateActionIcon();
     }
 

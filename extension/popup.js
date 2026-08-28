@@ -19,10 +19,6 @@ class VideoPopup {
             alert("Please play the video in desired format in web player")
         });
 
-        document.getElementById("open-app").addEventListener('click', () => {
-            window.open("tidm+app://launch");
-        });
-
         document.getElementById("search-input").addEventListener('input', e => {
             this.applyFilter(e.target.value);
         });
