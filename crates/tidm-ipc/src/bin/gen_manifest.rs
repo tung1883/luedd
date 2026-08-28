@@ -1,10 +1,3 @@
-//! Prints the native-messaging host manifest for `tidm-nmhost` plus the
-//! manual registration steps for the current platform. This tool only prints -
-//! it never touches the registry or writes into a browser's profile directory,
-//! since that's a system-wide/profile-wide change the user should apply
-//! themselves (or explicitly ask an agent to run on their behalf).
-//!
-//! Usage: tidm-gen-manifest <path-to-tidm-nmhost-exe> [chrome-extension-id]
 
 use tidm_ipc::manifest::manifest;
 

@@ -1,8 +1,6 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-/// Parses an ISO 8601 duration (`PT1H2M3.5S`) into milliseconds. Equivalent of
-/// `DashUtil.ParseXsDuration`: years assumed as 365.242 days, months as 30.4368 days.
 static XS_DURATION_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)^(-)?P(([0-9]*)Y)?(([0-9]*)M)?(([0-9]*)D)?(T(([0-9]*)H)?(([0-9]*)M)?(([0-9.]*)S)?)?$",

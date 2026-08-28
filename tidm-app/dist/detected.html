@@ -1,0 +1,243 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Detected downloads</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #1e1e1e; color: #ddd; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #333; }
+  header h1 { font-size: 15px; margin: 0; flex: 1; font-weight: 600; }
+  button { padding: 6px 12px; background: #3a6; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  button.secondary { background: #555; }
+  button.danger { background: #a33; }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  header button { padding: 4px 10px; font-size: 12px; }
+  .search-row { padding: 8px 12px; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 6px 8px; background: #2a2a2a; border: 1px solid #444; color: #eee; border-radius: 4px; font-size: 13px; }
+  #list { flex: 1; overflow-y: auto; padding: 0 12px; }
+  .empty { padding: 20px; color: #888; font-size: 13px; text-align: center; }
+  .row { padding: 10px 0; border-bottom: 1px solid #333; min-width: 0; }
+  .row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .toggle-btn { background: none; border: none; color: #888; cursor: pointer; font-size: 12px; padding: 0; width: 14px; flex-shrink: 0; }
+  .title-btn { background: none; border: none; color: #ddd; cursor: pointer; text-align: left; font-size: 14px; padding: 4px 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .info-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 20px; min-width: 0; }
+  .info-text { font-size: 12px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .preview-link { background: none; border: none; color: #4af; cursor: pointer; font-size: 11px; padding: 0; flex-shrink: 0; }
+  .details-panel { display: none; font-size: 11px; color: #aaa; background: #232323; border-radius: 4px; padding: 6px 8px; margin-top: 4px; margin-left: 20px; min-width: 0; overflow: hidden; }
+  .details-panel.open { display: block; }
+  .copyable-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; margin-bottom: 4px; max-width: 100%; }
+  .quality-box { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+  .quality-box button { background: none; border: none; color: #4af; cursor: pointer; text-align: left; font-size: 11px; padding: 1px 0; }
+  footer { padding: 8px 12px; border-top: 1px solid #333; display: flex; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Detected downloads</h1>
+    <button id="pin-btn" class="secondary" title="Toggle always-on-top">Unpin</button>
+    <button id="hide-btn" class="secondary" title="Hide this window">Hide</button>
+  </header>
+  <div class="search-row">
+    <input id="search-input" type="text" placeholder="Filter by name or site&hellip;" />
+  </div>
+  <div id="list"></div>
+  <footer>
+    <button id="clear-btn" class="danger">Clear items</button>
+  </footer>
+
+<script>
+  const APP_BASE_URL = "http://127.0.0.1:8597";
+  let allItems = [];
+  let pinned = true;
+
+  async function post(path, body) {
+    try {
+      const res = await fetch(APP_BASE_URL + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  async function fetchAndRender() {
+    try {
+      const res = await fetch(APP_BASE_URL + "/sync");
+      const json = await res.json();
+      allItems = json.videoList || [];
+    } catch {
+      allItems = [];
+    }
+    applyFilter(document.getElementById("search-input").value);
+  }
+
+  function applyFilter(query) {
+    const terms = (query || "").trim().toLowerCase().split(/\s+/).filter(t => t);
+    if (terms.length === 0) {
+      renderList(allItems);
+      return;
+    }
+    const items = allItems.filter(item => {
+      const haystack = [item.text, item.info, item.url, item.pageUrl].filter(Boolean).join("\n").toLowerCase();
+      return terms.every(term => haystack.includes(term));
+    });
+    renderList(items);
+  }
+
+  function truncateMiddle(str, headLen = 32, tailLen = 20) {
+    if (str.length <= headLen + tailLen + 3) return str;
+    return str.slice(0, headLen) + "..." + str.slice(-tailLen);
+  }
+
+  function makeCopyableLine(label, value) {
+    const line = document.createElement("div");
+    line.className = "copyable-line";
+    line.innerText = label + truncateMiddle(value);
+    line.title = value + "\n(double-click to copy)";
+    line.addEventListener("dblclick", async e => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(value);
+        const original = line.innerText;
+        line.innerText = "Copied!";
+        setTimeout(() => { line.innerText = original; }, 700);
+      } catch (err) {
+        console.error("clipboard write failed", err);
+      }
+    });
+    return line;
+  }
+
+  function renderList(items) {
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.innerText = allItems.length === 0 ? "Nothing detected yet." : "No matches.";
+      list.appendChild(empty);
+      return;
+    }
+
+    items.forEach(item => {
+      const row = document.createElement("div");
+      row.className = "row";
+
+      const toggle = document.createElement("button");
+      toggle.className = "toggle-btn";
+      toggle.innerText = "▸";
+      toggle.title = "Details";
+
+      const titleBtn = document.createElement("button");
+      titleBtn.className = "title-btn";
+      titleBtn.innerText = item.text;
+
+      const titleRow = document.createElement("div");
+      titleRow.className = "row-title";
+      titleRow.appendChild(toggle);
+      titleRow.appendChild(titleBtn);
+
+      const infoText = document.createElement("span");
+      infoText.className = "info-text";
+      infoText.innerText = item.info;
+
+      const preview = document.createElement("button");
+      preview.className = "preview-link";
+      preview.innerText = "Preview";
+      preview.title = "Open this link in a new tab to view it before downloading";
+
+      const infoRow = document.createElement("div");
+      infoRow.className = "info-row";
+      infoRow.appendChild(infoText);
+      infoRow.appendChild(preview);
+
+      const detailsPanel = document.createElement("div");
+      detailsPanel.className = "details-panel";
+      detailsPanel.appendChild(makeCopyableLine("Site: ", item.pageUrl || "(unknown)"));
+      detailsPanel.appendChild(makeCopyableLine("Full link: ", item.url));
+
+      const qualityBox = document.createElement("div");
+      qualityBox.className = "quality-box";
+      detailsPanel.appendChild(qualityBox);
+      let qualityProbed = false;
+
+      row.appendChild(titleRow);
+      row.appendChild(infoRow);
+      row.appendChild(detailsPanel);
+      list.appendChild(row);
+
+      titleBtn.addEventListener("click", async () => {
+        const original = titleBtn.innerText;
+        const res = await post("/vid", { vid: item.id });
+        titleBtn.innerText = res && res.vidQueued === true ? "Added to Lüdd!"
+          : res && res.vidQueued === false ? "Failed - link may have expired"
+          : "Could not reach Lüdd";
+        setTimeout(() => { titleBtn.innerText = original; }, 1500);
+      });
+
+      preview.addEventListener("click", e => {
+        e.stopPropagation();
+        window.open(item.url, "_blank");
+      });
+
+      toggle.addEventListener("click", async e => {
+        e.stopPropagation();
+        const nowOpen = !detailsPanel.classList.contains("open");
+        detailsPanel.classList.toggle("open", nowOpen);
+        toggle.innerText = nowOpen ? "▾" : "▸";
+        if (nowOpen && !qualityProbed) {
+          qualityProbed = true;
+          const res = await post("/probe-quality", { vid: item.id });
+          const variants = (res && res.qualityVariants) || [];
+          qualityBox.innerHTML = "";
+          if (variants.length === 0) return;
+          const label = document.createElement("div");
+          label.innerText = "Choose a quality:";
+          label.style.marginBottom = "2px";
+          qualityBox.appendChild(label);
+          variants.forEach(variant => {
+            const qBtn = document.createElement("button");
+            qBtn.innerText = variant.label;
+            qBtn.addEventListener("click", async ev => {
+              ev.stopPropagation();
+              const original = qBtn.innerText;
+              const r = await post("/vid", { vid: item.id, quality: variant.variant_key });
+              qBtn.innerText = r && r.vidQueued === true ? "Added to Lüdd!"
+                : r && r.vidQueued === false ? "Failed - link may have expired"
+                : "Could not reach Lüdd";
+              setTimeout(() => { qBtn.innerText = original; }, 1500);
+            });
+            qualityBox.appendChild(qBtn);
+          });
+        }
+      });
+    });
+  }
+
+  document.getElementById("search-input").addEventListener("input", e => applyFilter(e.target.value));
+
+  document.getElementById("clear-btn").addEventListener("click", async () => {
+    await post("/clear", {});
+    await fetchAndRender();
+  });
+
+  document.getElementById("pin-btn").addEventListener("click", async () => {
+    pinned = !pinned;
+    document.getElementById("pin-btn").innerText = pinned ? "Unpin" : "Pin";
+    await window.__TAURI__.core.invoke("detection_window_set_pinned", { pinned });
+  });
+
+  document.getElementById("hide-btn").addEventListener("click", async () => {
+    await window.__TAURI__.core.invoke("detection_window_hide");
+  });
+
+  window.__TAURI__.event.listen("detection-updated", fetchAndRender);
+
+  fetchAndRender();
+</script>
+</body>
+</html>

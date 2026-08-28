@@ -6,10 +6,6 @@ use tokio::sync::RwLock;
 
 use super::model::{DownloadEntry, DownloadQueueDef, DownloadStatus};
 
-/// On-disk persistence for the download list and queues, the Rust equivalent of
-/// XDM's `DataAccess.DownloadList`/`QueueManager` (a plain versioned JSON file
-/// instead of their hand-rolled binary format - no compatibility requirement
-/// with old XDM state, so a human-readable format is strictly better here).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StoreData {
     entries: Vec<DownloadEntry>,
@@ -22,7 +18,6 @@ pub struct DownloadStore {
 }
 
 impl DownloadStore {
-    /// Loads the store from `path` if it exists, otherwise starts empty.
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let data = match tokio::fs::read(&path).await {
@@ -75,9 +70,6 @@ impl DownloadStore {
         self.data.read().await.queues.clone()
     }
 
-    /// Removes one entry regardless of its status. Callers that also want its
-    /// on-disk output/temp files removed (not this store's concern - it only
-    /// owns the persisted list) should do so with the returned entry's `dest`.
     pub async fn remove_entry(&self, id: &str) -> Result<Option<DownloadEntry>> {
         let removed = {
             let mut data = self.data.write().await;
@@ -88,14 +80,6 @@ impl DownloadStore {
         Ok(removed)
     }
 
-    /// Resets a `Failed`, `Cancelled`, or `Paused` entry back to `Queued` so
-    /// the next `run_queued` picks it up again (also used as "Resume" for a
-    /// paused entry - same transition, the GUI just labels the button
-    /// differently). No-op (returns `false`) for any other status. Also
-    /// clears `retry_count`/`next_retry_at` - a manual retry always gets a
-    /// fresh set of auto-retries if it fails again (the scheduler's own
-    /// auto-retry path calls this too, then re-sets `retry_count` itself
-    /// right after, since this always resets it to 0 first).
     pub async fn retry_entry(&self, id: &str) -> Result<bool> {
         let mut retried = false;
         self.update_entry(id, |e| {
@@ -112,9 +96,6 @@ impl DownloadStore {
         Ok(retried)
     }
 
-    /// Removes every `Finished`/`Failed`/`Cancelled` entry from the list and
-    /// returns them, so the caller can optionally delete their output/temp
-    /// files - this store only owns the persisted list, not the filesystem.
     pub async fn clear_finished(&self) -> Result<Vec<DownloadEntry>> {
         let removed = {
             let mut data = self.data.write().await;
@@ -139,17 +120,6 @@ pub fn default_store_path(data_dir: &Path) -> PathBuf {
     data_dir.join("downloads.json")
 }
 
-/// Shared default data directory for CLI and GUI alike, so both see the same
-/// download list unless `TIDM_DATA_DIR` is set.
-///
-/// Portable by design: everything (`downloads.json`, `settings.json`, the
-/// `downloads/` folder, and per-download temp/state files, since those are all
-/// computed relative to a download's own `dest`) lives in a `data` folder next
-/// to the running executable, not in the system temp directory - a system temp
-/// dir gets periodically wiped and isn't something you can just copy/move the
-/// app folder and keep your downloads/settings with it, which is the whole
-/// point of "portable." Falls back to the current working directory if the
-/// executable's own path can't be resolved (should not happen in practice).
 pub fn default_data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("TIDM_DATA_DIR") {
         return PathBuf::from(dir);

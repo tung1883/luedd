@@ -16,14 +16,6 @@ edition = "2021"
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "deflate"] }
-# Pinned exactly: the latest wreq/wreq-util (0.16.0/0.2.0) declare
-# rust-version 1.98, which this toolchain (1.97.1) doesn't satisfy - these are
-# the newest versions still on the pre-bump line. wreq is a reqwest-API-shaped
-# HTTP client with genuine browser TLS/HTTP2 fingerprint emulation (not just
-# header values) via a bundled, patched BoringSSL - see tidm-net's HttpClient
-# doc comment for why this is needed at all (some Cloudflare-protected CDNs
-# fingerprint the TLS handshake itself, which no amount of faithful header
-# replay through a normal TLS stack can pass).
 wreq = { version = "=0.15.3", default-features = false, features = ["gzip", "brotli", "deflate", "stream", "webpki-roots"] }
 wreq-util = "=0.1.0"
 anyhow = "1"

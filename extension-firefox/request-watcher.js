@@ -1,20 +1,9 @@
 "use strict";
 import Logger from './logger.js';
 
-// Image extensions we deliberately watch for (see server.rs's
-// DEFAULT_MEDIA_EXTS/DEFAULT_MEDIA_TYPES), but every page loads dozens of tiny
-// ones - icons, tracking pixels, ad thumbnails - that nobody would ever want a
-// download notification for. Below this size (bytes), an otherwise-matching
-// image request is treated as a false positive rather than a real download.
 const IMAGE_EXTS = ['.JPG', '.JPEG', '.PNG', '.GIF', '.WEBP', '.BMP', '.SVG'];
 const MIN_IMAGE_BYTES = 20000;
 
-// Mirrors server.rs's DEFAULT_MEDIA_EXTS/DEFAULT_MEDIA_TYPES - the real
-// config normally arrives from the app's /sync response, but detection would
-// never match anything at all before that first successful connection (or
-// for as long as the app stays closed), which defeats "still show links
-// without the app running." These are the starting values, overwritten as
-// soon as a real config does arrive (see App.onMessage).
 const DEFAULT_MEDIA_EXTS = [
     '.M3U8', '.MPD', '.MP4', '.M4V', '.M4A', '.WEBM', '.MKV', '.MOV', '.AVI', '.FLV', '.TS', '.MP3', '.AAC', '.WAV',
     '.OGG', '.FLAC', '.PDF', '.JPG', '.JPEG', '.PNG', '.GIF', '.WEBP', '.BMP', '.SVG',
@@ -114,11 +103,6 @@ export default class RequestWatcher {
         }
     }
 
-    // Returns true if this looks like an image match (by extension or
-    // content-type) that's smaller than MIN_IMAGE_BYTES - a favicon,
-    // tracking pixel, or ad thumbnail rather than something worth flagging as
-    // a download. Unknown size (no Content-Length) is let through rather than
-    // filtered, since that's the normal case for a genuinely large image too.
     isSmallImage(matchedExt, res, contentType) {
         let looksLikeImage = (matchedExt && IMAGE_EXTS.includes(matchedExt))
             || (contentType && contentType.toUpperCase().startsWith("IMAGE/"));
@@ -141,15 +125,6 @@ export default class RequestWatcher {
         this.requestMap.set(info.requestId, info);
     }
 
-    // The page's own fetch()/XHR for this URL may have been made with a
-    // credentials mode that omits cookies entirely (the default for a
-    // cross-origin fetch), so webRequest's captured requestHeaders can show
-    // no Cookie at all even though the browser genuinely has one stored for
-    // that site (e.g. a Cloudflare `cf_clearance` cookie obtained on an
-    // earlier navigation). Reading straight from the cookie jar via
-    // chrome.cookies - already permitted via the "cookies" manifest
-    // permission, previously unused - is authoritative regardless of what
-    // that specific request did or didn't attach.
     async getCookieHeaderForUrl(url) {
         try {
             const cookies = await chrome.cookies.getAll({ url });
@@ -196,12 +171,6 @@ export default class RequestWatcher {
     }
 
     register() {
-        // "extraHeaders" is a Chrome-only extraInfoSpec value; Firefox throws a
-        // hard TypeError on an unrecognized enum value, which - uncaught - would
-        // abort registration of every listener below it, and the ones that never
-        // even get called from app.js's register() after this one throws. Try the
-        // Chrome-shaped call first and fall back to the Firefox-compatible one so
-        // this works either way without needing to detect the browser by name.
         try {
             chrome.webRequest.onSendHeaders.addListener(
                 this.onSendHeadersEventCallback,

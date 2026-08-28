@@ -8,28 +8,15 @@ use crate::jobs::DownloadKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadStatus {
     Queued,
-    /// Renamed from `Running` for clarity now that there's a second, distinct
-    /// in-progress phase (`Converting`) - the alias keeps any already-
-    /// persisted `downloads.json` entry stuck in the old state deserializing.
     #[serde(alias = "Running")]
     Downloading,
-    /// Segments/pieces are all fetched; ffmpeg is muxing them into the final
-    /// output. A separate phase from `Downloading` because it's CPU-bound
-    /// rather than network-bound and reports no further byte progress -
-    /// `jobs::run_hls`/`run_dash` signal entry into this phase via
-    /// `tidm_net::report_converting` right before invoking ffmpeg.
     Converting,
-    /// User-paused mid-transfer (`DownloadManager::pause_entry`) - distinct
-    /// from `Queued` (never started) so the GUI can tell the two apart, even
-    /// though resuming a paused entry goes through the same `Queued` path.
     Paused,
     Finished,
     Failed,
     Cancelled,
 }
 
-/// One download record, the Rust equivalent of XDM's `DownloadEntries`/
-/// `DataAccess.DownloadList` rows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadEntry {
     pub id: String,
@@ -38,41 +25,17 @@ pub struct DownloadEntry {
     pub kind: DownloadKind,
     pub status: DownloadStatus,
     pub error: Option<String>,
-    /// Unix timestamp (seconds) the entry was added.
     pub created_at: i64,
-    /// Request headers (Referer/Origin/User-Agent/etc.) captured at detection
-    /// time, to be replayed on the actual download. Without these, a URL that
-    /// only works in the context of the page it was found on (hotlink
-    /// protection, session-bound tokens) fails when fetched standalone even
-    /// though the URL itself is otherwise fine. `#[serde(default)]` so older
-    /// persisted `downloads.json` entries without this field still deserialize.
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
     pub cookie: Option<String>,
-    /// (done, total) - segments for Hls/Dash, bytes for Http. `None` until the
-    /// first progress update arrives (or if the job finishes too fast to ever
-    /// report one).
     #[serde(default)]
     pub progress: Option<(u64, u64)>,
-    /// How many times the scheduler has auto-retried this entry since it last
-    /// left `Failed` for any other reason (a manual retry, or a fresh entry).
-    /// Gates against `MAX_AUTO_RETRIES` in `queue::scheduler` and indexes the
-    /// backoff table there.
     #[serde(default)]
     pub retry_count: u32,
-    /// Unix timestamp (seconds) after which the scheduler is allowed to
-    /// auto-retry this entry, or `None` if it isn't scheduled for an
-    /// auto-retry (not `Failed`, already exhausted `MAX_AUTO_RETRIES`, or
-    /// never failed in the first place).
     #[serde(default)]
     pub next_retry_at: Option<i64>,
-    /// A user's explicit HLS/DASH quality choice (a `variant_key` from
-    /// `tidm_media::quality::QualityOption`, matched by `jobs::run_hls`/
-    /// `run_dash` against the manifest's variants at download time), or
-    /// `None` to auto-pick the highest-bandwidth variant as before - the
-    /// extension's fast auto-run path never probes, so this stays `None`
-    /// there. Meaningless for `Http` downloads.
     #[serde(default)]
     pub quality: Option<String>,
 }
@@ -96,16 +59,11 @@ impl DownloadEntry {
         }
     }
 
-    /// Attaches a user's explicit HLS/DASH quality choice, made before this
-    /// entry was queued (see `tidm_media::quality::probe_hls_qualities`/
-    /// `probe_dash_qualities`).
     pub fn with_quality(mut self, quality: Option<String>) -> Self {
         self.quality = quality;
         self
     }
 
-    /// Attaches request context (headers/cookie) captured when the URL was
-    /// detected, so the actual download replays them instead of fetching bare.
     pub fn with_request_context(mut self, headers: HashMap<String, String>, cookie: Option<String>) -> Self {
         self.headers = headers;
         self.cookie = cookie;
@@ -114,9 +72,6 @@ impl DownloadEntry {
 
 }
 
-/// A time-of-day window (minutes since midnight, local time), the Rust
-/// equivalent of `DownloadSchedule`'s start/end fields. `end < start` means the
-/// window wraps past midnight (e.g. 23:00-06:00).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DownloadSchedule {
     pub start_minutes: u32,
@@ -124,7 +79,6 @@ pub struct DownloadSchedule {
 }
 
 impl DownloadSchedule {
-    /// Whether `minutes_since_midnight` (0..1440) falls inside this window.
     pub fn is_active_at(&self, minutes_since_midnight: u32) -> bool {
         let m = minutes_since_midnight % 1440;
         if self.start_minutes <= self.end_minutes {
@@ -135,8 +89,6 @@ impl DownloadSchedule {
     }
 }
 
-/// An ordered group of downloads with an optional schedule window, the Rust
-/// equivalent of `DownloadQueue`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadQueueDef {
     pub id: String,

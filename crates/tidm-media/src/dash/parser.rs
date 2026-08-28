@@ -59,9 +59,6 @@ fn parse_i64(v: Option<&str>, tag: &'static str, attr: &'static str) -> Result<i
     }
 }
 
-/// Parses a DASH MPD manifest into per-period video/audio representation
-/// pairings. Equivalent of `MpdParser.Parse`. Rejects dynamic (live) manifests
-/// and encrypted (ContentProtection) manifests, same as the original.
 pub fn parse(manifest_text: &str, playlist_url: &str) -> Result<Vec<PeriodPairings>, DashParseError> {
     let doc = Document::parse(manifest_text)?;
     let root = doc.root_element();
@@ -215,9 +212,6 @@ fn parse_representation(
     };
 
     if child(xml_repr, "SegmentBase").is_some() || has_parent_segment_base {
-        // Index addressing: XDM's own parser is shallow here too - it doesn't parse
-        // sidx boxes, it just yields the representation's base URL as the one
-        // "segment" and leaves byte-range indexing to a later stage.
         return Ok(Some(make(vec![base_url])));
     }
 
@@ -347,10 +341,7 @@ fn parse_explicit_addressing(
     Ok(if segments.is_empty() { None } else { Some(segments) })
 }
 
-/// Expands `$Number$`, `$Number%0Nd$`, `$Time$`, `$Time%0Nd$`, `$RepresentationID$`,
-/// `$Bandwidth$`, and `$$` (literal `$`) tokens in a DASH URL template.
 fn expand_template(template: &str, number: i64, time: i64, bandwidth: &str, representation_id: &str) -> String {
-    // Protect literal `$$` before token scanning, matching the original's `\0` placeholder trick.
     let protected = template.replace("$$", "\u{0}");
     let mut out = String::with_capacity(protected.len());
     let bytes = protected.as_bytes();
@@ -396,7 +387,6 @@ fn expand_token(token: &str, number: i64, time: i64, bandwidth: &str, representa
     None
 }
 
-/// `fmt` is e.g. `"3d"` (3-digit decimal) or `"4x"` (4-digit hex).
 fn format_digit(value: i64, fmt: &str) -> String {
     let (digits, radix) = match fmt.chars().last() {
         Some('d') | Some('D') => (&fmt[..fmt.len() - 1], 10),
@@ -491,7 +481,6 @@ mod tests {
 
         assert_eq!(video.width, 1920);
         assert_eq!(video.bandwidth, 5_000_000);
-        // init + 5 segments (10s / 2s = 5)
         assert_eq!(video.segments.len(), 6);
         assert_eq!(video.segments[0].as_str(), "https://cdn.example/videos/init-v1.m4s");
         assert_eq!(video.segments[1].as_str(), "https://cdn.example/videos/chunk-v1-001.m4s");
@@ -520,7 +509,6 @@ mod tests {
 
         let periods = parse(xml, URL).unwrap();
         let video = periods[0][0].0.as_ref().unwrap();
-        // r=3 means the S element repeats 3 additional times => 4 segments total.
         assert_eq!(video.segments.len(), 4);
         assert_eq!(video.segments[0].as_str(), "https://cdn.example/videos/seg-1.m4s");
         assert_eq!(video.segments[3].as_str(), "https://cdn.example/videos/seg-4.m4s");

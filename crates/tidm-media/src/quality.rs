@@ -1,10 +1,3 @@
-//! Source-agnostic quality-variant options surfaced to callers *before* a
-//! download starts, so the GUI/extension can show a picker instead of the
-//! job runner (`tidm_core::jobs::run_hls`/`run_dash`) silently auto-picking
-//! the highest-bandwidth variant. `hls_variant_key`/`dash_variant_key` are
-//! shared between probing (building the list shown to the user) and
-//! selection (re-matching the user's choice once the manifest is re-parsed
-//! for the real download), so the two can never drift out of sync.
 
 use anyhow::Result;
 use tidm_net::{HttpClient, RequestContext};
@@ -12,32 +5,18 @@ use tidm_net::{HttpClient, RequestContext};
 use crate::dash::{self, Representation};
 use crate::hls::{parse_master_playlist, HlsPlaylistContainer};
 
-/// One selectable quality variant of an HLS master playlist or DASH manifest.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QualityOption {
-    /// Human-readable label, e.g. "1920x1080" or "4200000 bps".
     pub label: String,
     pub bandwidth: u64,
     pub resolution: Option<(u32, u32)>,
-    /// Stable identifier for re-selecting this exact variant later - matched
-    /// against by `jobs::run_hls`/`run_dash` when the entry carries a
-    /// quality hint, rather than re-derived from list position, since list
-    /// order isn't guaranteed stable across two separate fetches of the same
-    /// manifest.
     pub variant_key: String,
 }
 
-/// The stable key for one HLS master-playlist variant - its `BANDWIDTH`
-/// attribute, verbatim. Two separate parses of the same manifest always
-/// produce the same containers in the same order with the same attributes,
-/// so this is deterministic across the probe call and the later real download.
 pub fn hls_variant_key(container: &HlsPlaylistContainer) -> String {
     container.attributes.get("BANDWIDTH").cloned().unwrap_or_default()
 }
 
-/// The stable key for one DASH (video, audio) representation pairing -
-/// `"{width}x{height}-{bandwidth}"` when a video representation with real
-/// dimensions is present, else just the combined bandwidth.
 pub fn dash_variant_key(video: Option<&Representation>, audio: Option<&Representation>) -> String {
     let bandwidth = video.map(|r| r.bandwidth).unwrap_or(0) + audio.map(|r| r.bandwidth).unwrap_or(0);
     match video {
@@ -46,9 +25,6 @@ pub fn dash_variant_key(video: Option<&Representation>, audio: Option<&Represent
     }
 }
 
-/// Fetches and parses `url` as an HLS master playlist, returning every
-/// variant as a pickable option. Returns an empty list (not an error) for a
-/// media (leaf) playlist, which has no variants to choose between.
 pub async fn probe_hls_qualities(client: &HttpClient, url: &str, ctx: &RequestContext) -> Result<Vec<QualityOption>> {
     let text = client.get_text(url, &ctx.to_options(None)).await?;
     let lines: Vec<&str> = text.lines().collect();
@@ -69,8 +45,6 @@ pub async fn probe_hls_qualities(client: &HttpClient, url: &str, ctx: &RequestCo
         .collect())
 }
 
-/// Fetches and parses `url` as a DASH manifest, returning every (video,
-/// audio) pairing across every period as a pickable option.
 pub async fn probe_dash_qualities(client: &HttpClient, url: &str, ctx: &RequestContext) -> Result<Vec<QualityOption>> {
     let manifest = client.get_text(url, &ctx.to_options(None)).await?;
     let periods = dash::parse(&manifest, url)?;
@@ -120,8 +94,6 @@ mod tests {
 
     #[test]
     fn hls_variant_key_is_stable_across_two_separate_parses() {
-        // Simulates the probe call and the later real-download call each
-        // re-parsing the same manifest independently - the key must match.
         let a = hls_container("2100000", Some("1280x720"));
         let b = hls_container("2100000", Some("1280x720"));
         assert_eq!(hls_variant_key(&a), hls_variant_key(&b));

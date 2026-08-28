@@ -1,7 +1,3 @@
-//! Runs a single download job to completion (HTTP, HLS, or DASH). This is the
-//! shared execution path used by both `tidm-cli` and the Tauri GUI (M5) so a
-//! download behaves identically regardless of which frontend started it -
-//! previously this logic lived duplicated inline in the CLI.
 
 use std::path::{Path, PathBuf};
 
@@ -16,7 +12,6 @@ use tidm_net::{HttpClient, ProgressTx, RequestContext};
 use crate::naming::cache_dir_for;
 use crate::progressive;
 
-/// What kind of downloader a URL needs. `Http` covers any plain file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DownloadKind {
     Http,
@@ -25,8 +20,6 @@ pub enum DownloadKind {
 }
 
 impl DownloadKind {
-    /// Best-effort sniff from the URL's extension, matching the CLI's original
-    /// heuristic (checked against the manifest body for Hls/Dash once fetched).
     pub fn guess_from_url(url: &str) -> DownloadKind {
         let path = url.split(['?', '#']).next().unwrap_or(url);
         if path.ends_with(".m3u8") {
@@ -39,22 +32,6 @@ impl DownloadKind {
     }
 }
 
-/// Callers that don't know the real output container up front (a URL detected
-/// by the browser extension with no explicit filename, say) default to naming
-/// the destination after the *source manifest's own* last path segment - for
-/// an HLS/DASH URL that means a `.m3u8`/`.mpd` (or extension-less) `dest`. If
-/// that literal path is handed to `ffmpeg` as a mux target, ffmpeg picks its
-/// muxer from the extension: a `.m3u8` destination makes it write a *new* HLS
-/// playlist plus a pile of freshly-numbered `.ts` segments next to it instead
-/// of one video file - the exact "downloaded as hundreds of files, never
-/// merged" bug this guards against. Real user-chosen extensions (`.mkv`, an
-/// explicit `.mp4`, ...) are left alone, and `Http` downloads are never
-/// touched (an extension-less or oddly-named plain file is normal for those).
-///
-/// Called both where a `DownloadEntry` is first created (so the persisted
-/// `dest` - used later for cleanup/display - is correct from the start) and
-/// defensively again at the top of `run_hls`/`run_dash` in case some other
-/// caller ever constructs an entry without going through that path.
 pub fn sanitize_dest_for_kind(dest: &Path, kind: DownloadKind) -> PathBuf {
     if matches!(kind, DownloadKind::Http) {
         return dest.to_path_buf();
@@ -66,11 +43,6 @@ pub fn sanitize_dest_for_kind(dest: &Path, kind: DownloadKind) -> PathBuf {
     }
 }
 
-/// Moves a mux's actual output (which may be `output` itself, or its `.mkv`
-/// fallback - see `mux::mux_single`/`mux_demuxed`) into the real `dest`,
-/// adjusting `dest`'s own extension to match if the mkv fallback fired, so
-/// the returned path always reflects what's actually on disk rather than
-/// what the caller originally assumed the container would be.
 async fn finish_mux(produced: PathBuf, dest: &Path) -> Result<PathBuf> {
     let final_dest = if produced.extension() == dest.extension() { dest.to_path_buf() } else { dest.with_extension("mkv") };
     tokio::fs::rename(&produced, &final_dest).await.context("moving muxed output into place")?;
@@ -106,12 +78,6 @@ pub async fn run_hls(
 
     let final_dest = if text.contains("#EXT-X-STREAM-INF") {
         let containers = parse_master_playlist(&lines, url)?;
-        // Prefer the caller's explicit choice (from `naming`/`quality::probe_hls_qualities`,
-        // surfaced to the user before this job ever started) when it still
-        // matches a variant in this fetch of the manifest; fall back to the
-        // highest-bandwidth variant otherwise - either no choice was made
-        // (the extension's fast auto-run path never probes), or the manifest
-        // changed since the choice was made and the exact variant is gone.
         let best = quality
             .and_then(|q| containers.iter().find(|c| hls_variant_key(c) == q))
             .or_else(|| {
@@ -134,9 +100,6 @@ pub async fn run_hls(
 
                 let video_tmp = cache_dir.join("video.ts");
                 let audio_tmp = cache_dir.join("audio.ts");
-                // Only the (usually larger, slower) video track drives progress -
-                // reporting both would need combining two independent totals into
-                // one number, not worth the complexity for a progress indicator.
                 download_playlist(client, &video_playlist, &video_tmp, &cache_dir.join("video-segments"), concurrency, ctx, progress).await?;
                 download_playlist(client, &audio_playlist, &audio_tmp, &cache_dir.join("audio-segments"), concurrency, ctx, None).await?;
                 tidm_net::report_converting(progress);
@@ -162,12 +125,6 @@ pub async fn run_hls(
         let produced = mux_single(&assembled_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
         finish_mux(produced, dest).await?
     } else {
-        // A 200 response that's neither a master nor media playlist is almost
-        // always an auth/bot-protection page (login wall, Cloudflare
-        // challenge, error page) served with a success status instead of a
-        // real 4xx - the earlier status-code check never catches it. Include
-        // a snippet and what was actually sent so this is diagnosable instead
-        // of a bare "not HLS" with no further clue.
         let snippet: String = text.chars().take(200).collect();
         bail!(
             "URL did not look like a master or media HLS playlist ({}). First bytes of response: {snippet:?}",
@@ -192,9 +149,6 @@ pub async fn run_dash(
     tokio::fs::create_dir_all(&cache_dir).await?;
     let manifest = client.get_text(url, &ctx.to_options(None)).await?;
     let periods = tidm_media::dash::parse(&manifest, url)?;
-    // Same reasoning as `run_hls`: prefer the caller's explicit choice when
-    // it still matches a pairing in this fetch, else fall back to highest
-    // combined bandwidth.
     let pairing = quality
         .and_then(|q| periods.iter().flatten().find(|(v, a)| dash_variant_key(v.as_ref(), a.as_ref()) == q))
         .or_else(|| {
@@ -237,9 +191,6 @@ pub async fn run_dash(
     Ok(final_dest)
 }
 
-/// Dispatches to the right job runner based on `kind`. Returns the actual
-/// final path the download landed at - normally `dest`, but may differ if
-/// muxing fell back to `.mkv` (see `finish_mux`).
 pub async fn run(
     client: &HttpClient,
     kind: DownloadKind,

@@ -47,10 +47,6 @@ export default class Connector {
         });
     }
 
-    // Returns the resolved JSON body (or `null` on failure/disconnect) so
-    // callers like `queueVideo` can await the real outcome instead of firing
-    // and forgetting - needed to show the popup whether a click actually
-    // queued in the GUI.
     postMessage(url, data) {
         return fetch(APP_BASE_URL + url, { method: "POST", body: JSON.stringify(data) })
             .then(this.onResponse.bind(this))

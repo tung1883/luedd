@@ -1,9 +1,3 @@
-//! Chrome/Firefox native-messaging wire format: each message is a 4-byte
-//! little-endian length prefix followed by that many bytes of UTF-8 JSON. This
-//! is the actual browser-defined protocol (not an XDM invention) used by
-//! whatever process a browser launches via `chrome.runtime.connectNative` /
-//! `sendNativeMessage` - the Rust equivalent of `XDM.Messaging`'s
-//! `NativeMessageSerializer`.
 
 use std::io::{Read, Write};
 
@@ -11,10 +5,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use thiserror::Error;
 
-/// Chrome documents a 1MB limit on messages sent *to* a native host and a 1MB
-/// limit (4GB before Chrome 129) on messages sent *from* one; guard well above
-/// the smaller bound only to reject obviously-corrupt input, not to enforce
-/// the spec limit itself.
 const MAX_MESSAGE_LEN: u32 = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
@@ -27,9 +17,6 @@ pub enum WireError {
     Json(#[from] serde_json::Error),
 }
 
-/// Reads one length-prefixed JSON message from `r`. Returns `Ok(None)` on a
-/// clean EOF before any bytes of the next length prefix are read (the normal
-/// way a browser signals "no more messages, host may exit").
 pub fn read_message<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<Option<T>, WireError> {
     let mut len_buf = [0u8; 4];
     match r.read_exact(&mut len_buf) {
@@ -48,7 +35,6 @@ pub fn read_message<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<Option<T>
     Ok(Some(value))
 }
 
-/// Writes one length-prefixed JSON message to `w` and flushes.
 pub fn write_message<W: Write, T: Serialize>(w: &mut W, value: &T) -> Result<(), WireError> {
     let payload = serde_json::to_vec(value)?;
     if payload.len() as u64 > MAX_MESSAGE_LEN as u64 {

@@ -18,15 +18,6 @@ export default class App {
         this.onTabUpdateCallback = this.onTabUpdate.bind(this);
         this.activeTabId = -1;
         this.connector = new Connector(this.onMessage.bind(this), this.onDisconnect.bind(this));
-        // A detection can now be reported twice for the same URL - once
-        // locally the instant it's seen (`recordLocalDetection`), and again
-        // when/if the app confirms it (`onMessage`'s `newDetection`) - this
-        // dedups the resulting detection popup to once per URL per session.
-        this.notifiedUrls = new Set();
-        // Tracks the id of the floating detection window (if one is
-        // currently open), so a second detection while it's still open
-        // reuses/refocuses it instead of spawning another window on top.
-        this.detectionWindowId = null;
     }
 
     start() {
@@ -47,11 +38,6 @@ export default class App {
         this.fileExts = msg.fileExts;
         this.blockedHosts = msg.blockedHosts;
         this.tabsWatcher = msg.tabsWatcher;
-        // The server's list is authoritative for anything it already knows
-        // about, but keep any locally-tracked item (see `recordLocalDetection`)
-        // it doesn't yet know about - e.g. something detected while the app
-        // was closed, or between this response and the request that produced
-        // it - rather than dropping it the instant a server response arrives.
         const serverList = msg.videoList || [];
         const serverUrls = new Set(serverList.map(v => v.url));
         const localOnly = (this.videoList || []).filter(v => this.isLocalId(v.id) && !serverUrls.has(v.url));
@@ -63,68 +49,8 @@ export default class App {
             mediaTypes: msg.mediaTypes
         });
         this.updateActionIcon();
-        // `newDetection` is only present on the one /media response that just
-        // added a genuinely new item (server-side dedup by URL) - never on
-        // /sync polls or repeat detections of something already known. This
-        // is usually already covered by `recordLocalDetection`'s own
-        // notification for the same URL (deduped in `notifyNewDetection`
-        // below) - kept as a fallback for the case where the app confirms a
-        // detection this extension instance didn't record locally itself
-        // (e.g. reported by another window/tab sharing the same app).
-        if (msg.newDetection) {
-            this.notifyNewDetection(msg.newDetection);
-        }
     }
 
-    // Pops the detection list up on screen the instant something new is
-    // found - a real standalone browser window (chrome.windows.create with
-    // type "popup"), not an OS notification (easy to miss/dismiss, subject
-    // to OS-level notification permissions the user can't easily debug) and
-    // not a content script injected into the page (subject to that page's
-    // CSP, and invisible for anything rendered inside a cross-origin iframe -
-    // see the Facebook reels investigation this session, where exactly that
-    // blocked a DOM-based approach entirely). It's just popup.html/popup.js
-    // reused as-is, so it has the full list/search/quality-picker UI, not a
-    // stripped-down toast.
-    notifyNewDetection(item) {
-        if (!item || !item.url || this.notifiedUrls.has(item.url)) return;
-        this.notifiedUrls.add(item.url);
-        this.openDetectionWindow();
-    }
-
-    openDetectionWindow() {
-        if (this.detectionWindowId !== null) {
-            // Already open from an earlier detection - bring it forward and
-            // ask it to re-pull the current list rather than opening a
-            // second window on top of it.
-            chrome.windows.update(this.detectionWindowId, { focused: true }, () => {
-                if (chrome.runtime.lastError) {
-                    // The window was closed without us hearing about it yet
-                    // (onRemoved hasn't fired) - fall through to opening a
-                    // fresh one below instead of silently doing nothing.
-                    this.detectionWindowId = null;
-                    this.openDetectionWindow();
-                    return;
-                }
-                chrome.runtime.sendMessage({ type: "refresh" });
-            });
-            return;
-        }
-        chrome.windows.create(
-            { type: "popup", url: chrome.runtime.getURL("popup.html"), width: 440, height: 420, focused: true },
-            win => { this.detectionWindowId = win.id; }
-        );
-    }
-
-    // Queues a detected video for download by id, the same request the popup
-    // sends when a list entry is clicked - shared so a notification click can
-    // trigger the same download without opening the popup at all. Returns
-    // `true`/`false` (from the GUI's `vidQueued`) or `null` if the app never
-    // responded, so the popup can show whether the click actually worked.
-    // `quality` (a `variant_key` from `probeQuality`) is only set when the
-    // user expanded the row's details panel and picked a specific rendition
-    // there - the plain one-click path always omits it, keeping the app's
-    // own auto-best fallback for the fast path.
     async queueVideo(itemId, quality) {
         const body = { vid: itemId + "" };
         if (quality) body.quality = quality;
@@ -132,20 +58,9 @@ export default class App {
         return res ? res.vidQueued ?? null : null;
     }
 
-    // Fetches the selectable quality variants for a detected item (empty for
-    // plain HTTP, or an HLS/DASH URL with only one rendition) - called when
-    // a row's details panel is expanded, not eagerly for every detected item.
-    // The response is still the full state blob (see `onMessage`'s doc) with
-    // a `qualityVariants` field added on top, not a bespoke shape.
     async probeQuality(itemId) {
         const res = await this.connector.postMessage("/probe-quality", { vid: itemId + "" });
         return (res && res.qualityVariants) || [];
-    }
-
-    onWindowRemoved(windowId) {
-        if (windowId === this.detectionWindowId) {
-            this.detectionWindowId = null;
-        }
     }
 
     onDisconnect() {
@@ -159,12 +74,6 @@ export default class App {
         return this.appEnabled === true && this.userDisabled === false && this.connector.isConnected();
     }
 
-    // Whether detection should run at all - unlike `isMonitoringEnabled()`,
-    // this doesn't require the app to be reachable: the whole point is that
-    // detected links keep showing up in the popup even with the app closed,
-    // so only the user's own toggle gates this, not connectivity or the
-    // app's own enabled/disabled state (which defaults to false/unknown
-    // until a connection is actually made).
     isDetectionEnabled() {
         return this.userDisabled === false;
     }
@@ -183,11 +92,6 @@ export default class App {
         }
     }
 
-    // Adds a freshly-detected item to `videoList` immediately, under a
-    // locally-generated id, so it shows in the popup right away regardless
-    // of whether `/media` below ever reaches the app - `onMessage` reconciles
-    // this against the server's own list once/if a response does arrive
-    // (matching by URL), replacing the local id with the server's real one.
     recordLocalDetection(data) {
         if (this.videoList.some(v => v.url === data.url)) return;
         this.localDetectionCounter = (this.localDetectionCounter || 0) + 1;
@@ -200,18 +104,14 @@ export default class App {
         };
         this.videoList = [...this.videoList, item];
         this.updateActionIcon();
-        this.notifyNewDetection(item);
     }
 
     onRequestDataReceived(data) {
-        //Streaming video data received, send to native messaging application
         this.logger.log("onRequestDataReceived");
         this.logger.log(data);
         if (!this.isDetectionEnabled()) return;
         this.recordLocalDetection(data);
-        if (this.connector.isConnected()) {
-            this.connector.postMessage("/media", data);
-        }
+        this.connector.postMessage("/media", data);
     }
 
     onDeterminingFilename(download, suggest) {
@@ -275,7 +175,6 @@ export default class App {
         this.requestWatcher.register();
         this.attachContextMenu();
         chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
-        chrome.windows.onRemoved.addListener(this.onWindowRemoved.bind(this));
     }
 
     isSupportedProtocol(url) {
@@ -310,27 +209,9 @@ export default class App {
                 vc = len + "";
             }
         }
-        // if (this.videoList && this.videoList.length > 0) {
-        //     let len = this.videoList.filter(vid => {
-        //         if (!vid.tabId) {
-        //             return true;
-        //         }
-        //         if (vid.tabId == '-1') {
-        //             return true;
-        //         }
-        //         return (vid.tabId == this.activeTabId);
-        //     }).length;
-        //     if (len > 0) {
-        //         vc = len + "";
-        //     }
-        // }
         chrome.action.setBadgeText({ text: vc });
         if (!this.connector.isConnected()) {
             this.logger.log("Not connected...");
-            // Still show whatever's been detected locally (see
-            // `recordLocalDetection`) rather than the "can't connect" page -
-            // only fall back to that when there's genuinely nothing to show
-            // yet, since it's more useful than an empty list either way.
             const hasDetections = this.videoList && this.videoList.length > 0;
             chrome.action.setPopup({ popup: hasDetections ? "./popup.html" : "./error.html" });
             return;
@@ -342,9 +223,6 @@ export default class App {
         else {
             chrome.action.setPopup({ popup: "./popup.html" });
             return;
-            // if (this.videoList && this.videoList.length > 0) {
-            //     chrome.action.setBadgeText({ text: this.videoList.length + "" });
-            // }
         }
     }
 
@@ -404,12 +282,6 @@ export default class App {
             let resp = {
                 enabled: this.isMonitoringEnabled(),
                 list: this.videoList
-                // list: this.videoList.filter(vid => {
-                //     if (!vid.tabId) {
-                //         return true;
-                //     }
-                //     return (vid.tabId == this.activeTabId);
-                // })
             };
             sendResponse(resp);
         }
@@ -455,13 +327,6 @@ export default class App {
     }
 
     attachContextMenu() {
-        // The service worker can restart (extension reload, idle eviction,
-        // browser restart) without the previously-registered menu items ever
-        // going away - they're owned by the browser, not the worker's
-        // lifetime. Re-creating them with the same ids without clearing first
-        // throws "duplicate id", which can leave registration half-done.
-        // removeAll() makes this idempotent regardless of how many times the
-        // worker (re)starts.
         chrome.contextMenus.removeAll(() => {
             chrome.contextMenus.create({
                 id: 'download-image-link',

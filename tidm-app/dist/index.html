@@ -15,10 +15,6 @@
   button.danger { background: #a33; }
   button.small { padding: 3px 8px; font-size: 12px; }
   button:disabled { opacity: 0.4; cursor: default; }
-  /* table-layout: fixed plus an explicit width on every column (via <colgroup>
-     below) so text-length changes (status transitions, "5%"->"100%",
-     "12 KB/s"->"1.2 MB/s") never reflow the table - each column holds its
-     width regardless of what's currently in it. */
   table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; vertical-align: middle; overflow: hidden; }
   th.checkbox-col, td.checkbox-col { width: 24px; padding-right: 0; }
@@ -131,19 +127,8 @@
 const { invoke } = window.__TAURI__.core;
 const selected = new Set();
 const detailsOpen = new Set();
-// id -> { done, time } from the previous refresh() tick, so speed can be
-// computed client-side (delta done / delta time) with no backend changes.
-// `done` is real bytes for every kind now: Http always was, and Hls/Dash
-// report cumulative segment bytes downloaded (with an extrapolated-from-
-// average-segment-size "total" for the percentage bar, since there's no
-// single upfront Content-Length across N separate segment requests).
 const lastProgress = new Map();
 
-// Shows the shared confirm/delete-files modal and resolves once the user
-// picks Confirm or Cancel - used by Remove, Remove selected, and Clear
-// finished so none of them act immediately without asking, and the
-// "also delete files" choice is made per-action instead of a sticky toolbar
-// toggle that's easy to forget is still checked.
 function confirmAction(message) {
   return new Promise(resolve => {
     const overlay = document.getElementById("confirm-overlay");
@@ -174,10 +159,6 @@ function confirmAction(message) {
   });
 }
 
-// Shows the quality-picker modal for a list of `QualityOption`s (from the
-// `probe_qualities` command) and resolves with the chosen `variant_key`, or
-// null if the user cancelled - used by the Add form so an HLS/DASH URL with
-// multiple renditions doesn't silently auto-queue the highest-bandwidth one.
 function pickQuality(options) {
   return new Promise(resolve => {
     const overlay = document.getElementById("quality-overlay");
@@ -232,15 +213,6 @@ function speedLabel(e, done) {
     return "";
   }
   if (done <= prev.done) {
-    // No forward progress since the last real measurement - Hls/Dash only
-    // report progress once per *completed* segment, which routinely takes
-    // longer than the 2s poll interval, so this isn't unusual. Show the last
-    // known rate instead of blanking, and - this is the important part -
-    // leave `prev` untouched rather than sliding its timestamp forward to
-    // "now". Unconditionally updating `time` here was the actual bug: once a
-    // slow segment finally completed, its (large) byte jump got divided by
-    // only the last ~2s tick instead of the true stall duration, producing
-    // an absurd spike (e.g. 80 MB/s) instead of the real average rate.
     return prev.speedText || "";
   }
   const dtSeconds = (now - prev.time) / 1000;
@@ -251,19 +223,9 @@ function speedLabel(e, done) {
 }
 
 function formatProgress(e) {
-  // A backend that finishes without ever reporting a final 100% tick would
-  // otherwise leave whatever percentage was last recorded stuck on screen
-  // forever - a completed entry always shows full regardless of e.progress.
   if (e.status === "Finished") {
     return `<div class="progress-wrap"><div class="progress-bar" style="width:100%"></div></div><div class="progress-text">100%</div>`;
   }
-  // Converting reuses the same bar/percentage as Downloading - ffmpeg reports
-  // its own (done, total) = (elapsed ms, total duration ms) through the same
-  // progress channel once muxing starts, so this doesn't need a separate
-  // branch beyond falling straight through to the shared rendering below.
-  // Before that first mux-progress tick arrives, e.progress is still
-  // whatever the download phase last reported (typically 100% of segments/
-  // bytes), which reads fine as "converting, starting from full".
   if (!e.progress) {
     return e.status === "Converting" ? `<div class="progress-text">Converting…</div>` : "";
   }
@@ -273,7 +235,6 @@ function formatProgress(e) {
   return `<div class="progress-wrap"><div class="progress-bar" style="width:${pct}%"></div></div><div class="progress-text">${pct}%</div>`;
 }
 
-// Speed lives in its own column now rather than inline in the Progress cell.
 function formatSpeed(e) {
   if (e.status !== "Downloading" || !e.progress) return "";
   const [done] = e.progress;
@@ -285,10 +246,6 @@ function kindLabel(kind) {
   return KIND_LABELS[kind] ?? kind;
 }
 
-// Display-only rename ("Running" reads better than "Downloading" for what's
-// otherwise a generic in-progress state) - the underlying DownloadStatus
-// enum/CSS class (`status-Downloading`) is untouched, same pattern as
-// KIND_LABELS/kindLabel above.
 const STATUS_LABELS = { Downloading: "Running" };
 function statusLabel(status) {
   return STATUS_LABELS[status] ?? status;
@@ -384,8 +341,6 @@ async function refresh() {
   });
   rows.querySelectorAll(".resume-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
-      // Resuming a paused entry is the same Queued transition as a retry -
-      // it just needs "Run queue" clicked afterward to actually continue.
       await invoke("retry_entry", { id: btn.dataset.id });
       await refresh();
     });
@@ -474,9 +429,6 @@ document.getElementById("add-form").addEventListener("submit", async (ev) => {
   const filename = document.getElementById("filename").value.trim() || null;
   if (!url) return;
 
-  // Probe for selectable HLS/DASH variants before queuing - empty for plain
-  // HTTP (or a single-rendition manifest), in which case this is a no-op
-  // extra round-trip and we fall straight through to adding as before.
   let quality = null;
   const submitBtn = ev.target.querySelector("button[type=submit]");
   submitBtn.disabled = true;
@@ -485,8 +437,6 @@ document.getElementById("add-form").addEventListener("submit", async (ev) => {
     if (variants.length > 0) {
       quality = await pickQuality(variants);
       if (quality === null && variants.length > 0) {
-        // User cancelled the picker - abort the add entirely rather than
-        // falling back to auto-best, since they clearly wanted to choose.
         return;
       }
     }

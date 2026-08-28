@@ -18,12 +18,6 @@ pub enum HlsParseError {
     Malformed { tag: &'static str, detail: String },
 }
 
-/// Derive the AES-128 IV from the media sequence number when no explicit `IV=` attribute
-/// is present, per RFC 8216 §5.2: a 16-byte (32 hex char) big-endian value, zero-padded.
-///
-/// XDM's original `HlsParser.cs` used `mediaSequence.ToString("X")` here with no
-/// zero-padding, which produces a short IV for small sequence numbers and is not
-/// spec-compliant. Fixed here rather than replicated.
 pub fn iv_from_media_sequence(sequence: u64) -> [u8; 16] {
     let mut iv = [0u8; 16];
     iv[8..].copy_from_slice(&sequence.to_be_bytes());
@@ -48,8 +42,6 @@ struct KeyState {
     encrypted: bool,
 }
 
-/// Parses an HLS media (leaf) playlist: a flat list of segment URIs plus metadata tags.
-/// Equivalent of `HlsParser.ParseMediaSegments`.
 pub fn parse_media_playlist(lines: &[&str], base_url: &str) -> Result<HlsPlaylist, HlsParseError> {
     let base = Url::parse(base_url)?;
 
@@ -145,11 +137,8 @@ pub fn parse_media_playlist(lines: &[&str], base_url: &str) -> Result<HlsPlaylis
         } else if line == "#EXT-X-I-FRAMES-ONLY" {
             playlist.is_key_i_frame_only = true;
         } else if line.starts_with('#') {
-            // Unrecognized tag (#EXT-X-TARGETDURATION, #EXT-X-ENDLIST, etc.) - ignored,
-            // matching the original one-shot VOD parser's scope.
             continue;
         } else {
-            // Segment URI line.
             let url = base.join(line)?;
             let iv = if key.encrypted {
                 Some(key.iv_attr.unwrap_or_else(|| iv_from_media_sequence(media_sequence)))
@@ -177,9 +166,6 @@ pub fn parse_media_playlist(lines: &[&str], base_url: &str) -> Result<HlsPlaylis
     Ok(playlist)
 }
 
-/// Parses an HLS master playlist into per-variant video/audio playlist pairings.
-/// Equivalent of `HlsParser.ParseMasterPlaylist`. Relies on positional coupling:
-/// each `#EXT-X-STREAM-INF` line is followed by its URI line.
 pub fn parse_master_playlist(
     lines: &[&str],
     base_url: &str,
@@ -282,8 +268,6 @@ mod tests {
 
     #[test]
     fn parses_disguised_segment_extensions_transparently() {
-        // Segments named .png/.woff2/.txt should parse identically to .ts - the
-        // parser never inspects extensions, only URIs.
         let text = "#EXTM3U\n#EXTINF:6.0,\nseg_0001.png\n#EXTINF:6.0,\nseg_0002.woff2\n#EXTINF:6.0,\nseg_0003.txt\n";
         let lines: Vec<&str> = text.lines().collect();
         let playlist = parse_media_playlist(&lines, BASE).unwrap();
@@ -320,7 +304,6 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         let playlist = parse_media_playlist(&lines, BASE).unwrap();
         let iv = playlist.media_segments[0].iv.unwrap();
-        // Zero-padded big-endian 5, NOT XDM's unpadded "5" hex string bug.
         let mut expected = [0u8; 16];
         expected[15] = 5;
         assert_eq!(iv, expected);

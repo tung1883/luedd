@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tidm_core::jobs::DownloadKind;
 use tidm_core::queue::{
     default_data_dir, default_settings_path, default_store_path, DownloadEntry, DownloadManager, DownloadStore,
@@ -11,11 +11,6 @@ use tidm_core::queue::{
 use tidm_net::HttpClient;
 use tokio::sync::RwLock;
 
-/// Shared backend state, the GUI's equivalent of XDM's `ApplicationCore`: one
-/// persisted download store, one settings store, and one queue runner (rebuilt
-/// whenever settings change, since concurrency limits are fixed at
-/// construction) - reused by every Tauri command and by the M4 IPC server this
-/// process also hosts.
 struct AppState {
     store: Arc<DownloadStore>,
     settings: Arc<SettingsStore>,
@@ -32,10 +27,6 @@ fn build_manager(store: Arc<DownloadStore>, settings: &Settings) -> Result<Arc<D
     )))
 }
 
-/// Best-effort detection of what kind a URL really is, beyond its own
-/// extension - shared by `add_download` and `probe_qualities` so a URL that
-/// looks like a plain file but is actually a disguised HLS/DASH manifest
-/// (see `m3u8-guide.txt`) gets routed the same way in both.
 async fn detect_kind(client: &HttpClient, url: &str) -> (DownloadKind, Option<String>) {
     let guessed_kind = DownloadKind::guess_from_url(url);
     let detected_ext = if matches!(guessed_kind, DownloadKind::Http) {
@@ -71,13 +62,6 @@ async fn add_download(state: State<'_, AppState>, url: String, filename: Option<
     state.store.add_entry(entry).await.map_err(|e| e.to_string())
 }
 
-/// Fetches and parses `url`'s manifest for its selectable quality variants
-/// (empty for a plain HTTP URL, or an HLS/DASH URL with only one rendition),
-/// so the GUI's "Add" flow can show a picker before actually queuing -
-/// called separately from `add_download` rather than folded into it, since
-/// probing needs a network round-trip the caller may not want to pay for
-/// every add (a plain-HTTP URL skips it entirely, matching `add_download`'s
-/// own kind detection).
 #[tauri::command]
 async fn probe_qualities(state: State<'_, AppState>, url: String) -> Result<Vec<tidm_media::quality::QualityOption>, String> {
     let client = state.manager.read().await.http_client();
@@ -128,22 +112,12 @@ async fn clear_finished(state: State<'_, AppState>, delete_files: bool) -> Resul
 #[tauri::command]
 async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    // The dialog plugin's own async API takes a callback; running the
-    // blocking variant on a dedicated thread keeps this command a plain
-    // async fn returning a value, like every other command here.
     tokio::task::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
         .await
         .map_err(|e| e.to_string())
         .map(|picked| picked.map(|p| p.to_string()))
 }
 
-/// Opens a downloaded file with the OS's default handler for its type (video
-/// player, image viewer, PDF reader, ...) - the "Preview" action per entry.
-/// The frontend only shows this button once `path` (the entry's `dest`)
-/// exists (`Finished`) or for a plain HTTP download mid-transfer, where
-/// `progressive::download` writes the growing file inside the per-download
-/// cache dir (not `dest` itself - see `naming::cache_dir_for`) until it's
-/// complete, so that's the path opened in the latter case.
 #[tauri::command]
 async fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
@@ -156,11 +130,6 @@ async fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     app.opener().open_path(target.to_string_lossy().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
-/// Opens the file's containing folder in the OS file manager with the file
-/// itself selected/highlighted if it already exists (`Finished`); otherwise
-/// falls back to the per-download cache dir (exists once the download has
-/// started) and finally to the configured downloads folder itself, so the
-/// button always opens something reasonable at any stage.
 #[tauri::command]
 async fn open_containing_folder(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
@@ -186,9 +155,6 @@ async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 async fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
     tokio::fs::create_dir_all(&settings.download_dir).await.map_err(|e| e.to_string())?;
     state.settings.set(settings.clone()).await.map_err(|e| e.to_string())?;
-    // Concurrency limits are fixed at `DownloadManager` construction, so a
-    // changed setting needs a fresh manager - existing in-flight downloads
-    // keep running under the old one since they hold their own `Arc` clone.
     let new_manager = build_manager(state.store.clone(), &settings)?;
     *state.manager.write().await = new_manager;
     Ok(())
@@ -215,30 +181,24 @@ fn main() {
             let initial_settings = tauri::async_runtime::block_on(settings.get());
             let manager = build_manager(store.clone(), &initial_settings).expect("failed to build download manager");
 
-            // M4: the same local server the browser extension's connector.js
-            // talks to runs in-process here, sharing the exact store the GUI
-            // reads/writes - a download added from the browser shows up in the
-            // GUI's list on its next 2s poll with no extra wiring. It shares
-            // the live `SettingsStore` too, so a folder changed in the GUI's
-            // Settings panel applies immediately to extension-triggered
-            // downloads as well, not just ones added from the GUI.
             let server_store = store.clone();
             let server_manager = manager.clone();
             let server_settings = settings.clone();
+            let (detection_tx, mut detection_rx) = tokio::sync::mpsc::unbounded_channel();
             tauri::async_runtime::spawn(async move {
-                let config = tidm_ipc::server::ServerConfig { settings: server_settings };
+                let config = tidm_ipc::server::ServerConfig { settings: server_settings, on_new_detection: Some(detection_tx) };
                 if let Err(e) = tidm_ipc::server::serve(server_store, server_manager, config, 8597).await {
                     tracing::warn!(error = %e, "tidm-ipc server exited");
                 }
             });
 
-            // Auto-retries `Failed` entries on a backoff and drives any
-            // configured schedule window - dead code until this spawn (the
-            // loop itself already existed, just unwired). Same "captures the
-            // manager Arc at startup, not settings-change-aware" pattern as
-            // the tidm-ipc server spawn above, since concurrency limits
-            // aren't relevant to what the scheduler itself does (retry
-            // bookkeeping + kicking `run_queued`).
+            let detection_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while detection_rx.recv().await.is_some() {
+                    show_or_refresh_detection_window(&detection_app_handle);
+                }
+            });
+
             let scheduler_store = store.clone();
             let scheduler_manager = manager.clone();
             tauri::async_runtime::spawn(tidm_core::queue::run_scheduler_forever(scheduler_store, scheduler_manager));
@@ -259,8 +219,56 @@ fn main() {
             set_settings,
             pick_folder,
             open_file,
-            open_containing_folder
+            open_containing_folder,
+            detection_window_set_pinned,
+            detection_window_hide
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+const DETECTION_WINDOW_LABEL: &str = "detection";
+
+fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window(DETECTION_WINDOW_LABEL) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = win.emit("detection-updated", ());
+        return;
+    }
+    let win = tauri::WebviewWindowBuilder::new(app, DETECTION_WINDOW_LABEL, tauri::WebviewUrl::App("detected.html".into()))
+        .title("Detected downloads")
+        .inner_size(420.0, 480.0)
+        .resizable(true)
+        .always_on_top(true)
+        .focused(true)
+        .build();
+    match win {
+        Ok(win) => {
+            let win_for_close = win.clone();
+            win.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = win_for_close.hide();
+                }
+            });
+        }
+        Err(e) => tracing::warn!(error = %e, "failed to open detection window"),
+    }
+}
+
+#[tauri::command]
+fn detection_window_set_pinned(app: tauri::AppHandle, pinned: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(DETECTION_WINDOW_LABEL) {
+        win.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn detection_window_hide(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(DETECTION_WINDOW_LABEL) {
+        win.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }

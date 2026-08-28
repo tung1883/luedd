@@ -1,30 +1,14 @@
-//! Filename/extension inference shared by every entry-creation path (browser
-//! extension, GUI "Add", CLI). The raw source URL is often a meaningless CDN
-//! path or token and frequently omits or misstates the real file type (e.g. a
-//! URL ending in a bare `m` that's actually an `.mp4`), so this combines the
-//! page title (when the browser extension supplied one) with a type detected
-//! straight from the server's response instead of trusting the URL alone -
-//! the same idea as XDM's page-title-based auto-naming.
 
 use std::path::{Path, PathBuf};
 
 use tidm_net::{HttpClient, RequestContext};
 
-/// Extensions we already trust from the URL/filename alone - if the current
-/// name ends in one of these there's no ambiguity worth spending a network
-/// round-trip resolving. Kept deliberately broad so detection only kicks in
-/// for the genuinely unclear cases (missing extension, or something we don't
-/// recognize at all). Deliberately excludes `.txt`: streaming sites disguise
-/// HLS/DASH manifests behind generic extensions specifically to evade naive
-/// "is this a video?" detection (see `m3u8-guide.txt`), and `.txt` is exactly
-/// the disguise observed in practice - so it always gets sniffed instead.
 const TRUSTED_EXTS: &[&str] = &[
     "mp4", "mkv", "webm", "mov", "avi", "flv", "ts", "m3u8", "mpd", "mp3", "m4a", "aac", "wav", "ogg", "flac", "pdf",
     "zip", "rar", "7z", "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "doc", "docx", "xls", "xlsx", "ppt",
     "pptx", "csv", "json", "exe", "msi", "dmg", "apk", "srt", "vtt",
 ];
 
-/// Maps a `Content-Type` value (ignoring charset/params) to a file extension.
 pub fn extension_for_mime(mime: &str) -> Option<&'static str> {
     let base = mime.split(';').next().unwrap_or(mime).trim().to_ascii_lowercase();
     Some(match base.as_str() {
@@ -56,15 +40,7 @@ pub fn extension_for_mime(mime: &str) -> Option<&'static str> {
     })
 }
 
-/// Sniffs a real file type from the first bytes of a response body via known
-/// magic-number signatures - a last resort for servers that send a generic or
-/// missing `Content-Type` (`application/octet-stream`, or nothing at all).
 pub fn sniff_extension_from_bytes(bytes: &[u8]) -> Option<&'static str> {
-    // HLS/DASH manifests are plain text, not binary, but they're exactly the
-    // thing streaming sites like to disguise behind a generic extension
-    // (`.txt`, `.dat`, ...) - #EXTM3U is mandated as the literal first line of
-    // any valid HLS playlist, and a DASH MPD's root element appears within the
-    // first few hundred bytes right after the XML declaration.
     if bytes.starts_with(b"#EXTM3U") {
         return Some("m3u8");
     }
@@ -75,7 +51,6 @@ pub fn sniff_extension_from_bytes(bytes: &[u8]) -> Option<&'static str> {
         return Some("mp4");
     }
     if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
-        // EBML container; webm and mkv share this header, webm is the common web case.
         return Some("webm");
     }
     if bytes.starts_with(b"%PDF-") {
@@ -121,19 +96,6 @@ fn current_extension(name: &str) -> String {
     Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
 }
 
-/// Best-effort detection of the real file extension for `url`, skipped
-/// entirely when the URL/filename already ends in something we already trust
-/// (no need to spend a request resolving what isn't ambiguous). Tries the
-/// server's declared `Content-Type` first (from the same GET used for
-/// sniffing below, not a separate HEAD - some manifest-disguising servers
-/// respond differently to HEAD than GET), then falls back to sniffing
-/// whatever arrives in the first few
-/// KB via magic numbers/text signatures - safe regardless of the resource's
-/// real size (even an unbounded live stream), since the response is dropped
-/// (canceling the underlying connection) the moment enough bytes are in hand,
-/// rather than ever waiting for or buffering the whole body. Returns `None`
-/// if nothing conclusive was found; the caller should keep whatever extension
-/// it already had.
 pub async fn resolve_real_extension(client: &HttpClient, url_or_filename: &str, ctx: &RequestContext) -> Option<String> {
     if TRUSTED_EXTS.contains(&current_extension(url_or_filename).as_str()) {
         return None;
@@ -162,13 +124,6 @@ pub async fn resolve_real_extension(client: &HttpClient, url_or_filename: &str, 
     sniff_extension_from_bytes(&buf).map(str::to_string)
 }
 
-/// Decodes the handful of HTML entities that sometimes leak into
-/// `document.title` (observed: `&#39;` showing up literally in a saved
-/// filename instead of `'`) - some pages set their title via `innerHTML`
-/// without decoding it first, or a template escapes it for HTML embedding
-/// and never unescapes it back into plain text. Covers the standard named
-/// entities plus numeric character references (`&#39;`, `&#x27;`); anything
-/// unrecognized is left as-is rather than guessed at or dropped.
 fn decode_html_entities(input: &str) -> String {
     if !input.contains('&') {
         return input.to_string();
@@ -213,9 +168,6 @@ fn decode_one_html_entity(entity: &str) -> Option<char> {
     }
 }
 
-/// Strips characters illegal in Windows/Unix filenames and collapses
-/// whitespace, so a page title like `Some Show: Episode 4 | Streaming*Site`
-/// becomes a usable filename component.
 pub fn sanitize_filename_component(input: &str) -> String {
     let input = decode_html_entities(input);
     let cleaned: String = input
@@ -234,18 +186,11 @@ pub fn sanitize_filename_component(input: &str) -> String {
     s
 }
 
-/// Last-path-segment fallback naming, used only when there's no page title to
-/// work with (a manual GUI/CLI "Add", or a browser tab the extension couldn't
-/// read a title for).
 pub fn filename_from_url(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("download").to_string()
 }
 
-/// Builds a filename the way XDM does: prefer the page/tab title over the raw
-/// (often meaningless CDN) URL path, paired with whatever real extension was
-/// determined. A detected extension always wins over the URL's own claimed
-/// one, since the URL's extension is exactly what can't be trusted here.
 pub fn suggest_filename(title: Option<&str>, url: &str, detected_ext: Option<&str>) -> String {
     let url_derived = filename_from_url(url);
     let url_ext = current_extension(&url_derived);
@@ -260,10 +205,6 @@ pub fn suggest_filename(title: Option<&str>, url: &str, detected_ext: Option<&st
     }
 }
 
-/// Short, non-cryptographic hash (FNV-1a, 8 hex chars) - not for security,
-/// just to guarantee two downloads never silently collide/overwrite each
-/// other on disk (nothing that writes a fresh download's first bytes checks
-/// path existence beforehand).
 fn short_hash(input: &str) -> String {
     let mut hash: u32 = 0x811c_9dc5;
     for byte in input.as_bytes() {
@@ -273,18 +214,6 @@ fn short_hash(input: &str) -> String {
     format!("{hash:08x}")
 }
 
-/// Final on-disk destination for a new download: flat inside `download_dir`,
-/// with `filename`'s stem suffixed by a short hash. The hash is over `url`
-/// *plus* the moment this particular download was added (nanosecond-precision
-/// wall clock) rather than the URL alone, so every individual download gets
-/// its own hash - re-adding the exact same URL a second time is a distinct
-/// download with its own path, not one that silently collides with or
-/// resumes into the first. Only called once per new download (the result is
-/// persisted on the entry, never recomputed), so this being time-dependent
-/// doesn't affect retry - a retry reuses the already-stored `dest` untouched.
-/// Composes cleanly with `jobs::sanitize_dest_for_kind`, which only ever
-/// rewrites the extension via `.with_extension(...)` - the hashed stem passes
-/// through untouched.
 pub fn dest_path(download_dir: &Path, url: &str, filename: &str) -> PathBuf {
     let now_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let hash = short_hash(&format!("{url}#{now_ns}"));
@@ -297,13 +226,6 @@ pub fn dest_path(download_dir: &Path, url: &str, filename: &str) -> PathBuf {
     download_dir.join(hashed_filename)
 }
 
-/// Every download's intermediate/temp artifacts (resumable-download state,
-/// HLS/DASH segments, ffmpeg mux inputs) live in one dedicated cache folder
-/// per download, derived from `dest`'s own filename (which already contains
-/// the hash from `dest_path`) rather than the URL - so nothing downstream
-/// needs the URL again, and a retry (which never changes `dest`) naturally
-/// finds the same cache dir a prior failed attempt left behind. Deleted once
-/// the finished file has been moved into place at `dest`.
 pub fn cache_dir_for(dest: &Path) -> PathBuf {
     let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("download");
     dest.parent().unwrap_or_else(|| Path::new(".")).join(".tidm-cache").join(stem)
@@ -364,7 +286,6 @@ mod tests {
         assert_eq!(sanitize_filename_component("Who Hadn&#39;t Had"), "Who Hadn't Had");
         assert_eq!(sanitize_filename_component("Who Hadn&#x27;t Had"), "Who Hadn't Had");
         assert_eq!(sanitize_filename_component("Tom &amp; Jerry"), "Tom & Jerry");
-        // "&" alone (not part of a real entity) must be left alone, not eaten.
         assert_eq!(sanitize_filename_component("R&D Update"), "R&D Update");
     }
 

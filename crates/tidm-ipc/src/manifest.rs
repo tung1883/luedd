@@ -1,17 +1,8 @@
-//! Generates the native-messaging host manifest browsers require to launch
-//! `tidm-nmhost`. Registering it (writing this file to the browser-specific
-//! path, plus a registry key on Windows) is a system-wide, user-profile-level
-//! change, so this module only *produces* the manifest content - actually
-//! installing it is left to an explicit, user-run step.
 
 use serde_json::{json, Value};
 
 pub const HOST_NAME: &str = "com.tidm.nmhost";
 
-/// Chrome/Edge/Firefox native messaging host manifest for `tidm-nmhost`.
-/// `extension_id` is the packed extension's id (Chrome/Edge) or its
-/// `browser_specific_settings.gecko.id` (Firefox); `allowed_origins`/
-/// `allowed_extensions` differ by browser, so the caller picks the right key.
 pub fn manifest(exe_path: &str, chrome_extension_id: Option<&str>, firefox_extension_id: Option<&str>) -> Value {
     let mut m = json!({
         "name": HOST_NAME,

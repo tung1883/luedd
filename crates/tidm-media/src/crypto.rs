@@ -1,6 +1,3 @@
-//! AES-128-CBC segment decryption for `#EXT-X-KEY:METHOD=AES-128` playlists.
-//! XDM's `HlsParser` only extracts key metadata (URL + IV); actual decryption
-//! never existed in that codebase's parser layer, so this is new in the Rust port.
 
 use aes::Aes128;
 use cbc::cipher::block_padding::Pkcs7;
@@ -17,9 +14,6 @@ pub enum DecryptError {
     BadPadding,
 }
 
-/// Decrypts an AES-128-CBC encrypted segment in place, given the raw 16-byte key
-/// and 16-byte IV (as produced by `hls::iv_from_media_sequence` or parsed from
-/// `IV=` in the playlist). Assumes PKCS7 padding, per RFC 8216 §5.2.
 pub fn decrypt_segment(ciphertext: &[u8], key: &[u8], iv: &[u8; 16]) -> Result<Vec<u8>, DecryptError> {
     if key.len() != 16 {
         return Err(DecryptError::BadKeyLength(key.len()));

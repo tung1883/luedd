@@ -4,10 +4,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-/// User-configurable defaults, the Rust equivalent of the handful of
-/// `Config.Instance` fields XDM exposed in its Settings dialog (download
-/// folder, connection counts) - persisted separately from `downloads.json`
-/// since it's app-wide state, not a download record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub download_dir: PathBuf,
@@ -31,8 +27,6 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// Loads settings from `path` if present, otherwise starts from defaults
-    /// derived from `data_dir` (used for the default download folder).
     pub async fn open(path: impl Into<PathBuf>, data_dir: &Path) -> Result<Self> {
         let path = path.into();
         let data = match tokio::fs::read(&path).await {

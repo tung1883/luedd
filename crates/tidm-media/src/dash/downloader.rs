@@ -5,16 +5,6 @@ use tidm_net::{HttpClient, ProgressTx, RequestContext};
 
 use super::model::Representation;
 
-/// Downloads every segment of a DASH `Representation` concurrently (bounded by
-/// `concurrency`) and concatenates them in order into `dest`. DASM segments are
-/// typically fMP4 (init segment + media segments) so, unlike HLS, there's no
-/// disguise-detection or AES-128 step here - just fetch and concatenate. `ctx`
-/// carries any Referer/Origin/Cookie/User-Agent captured at detection time.
-/// `segments_dir` is the caller-owned scratch folder for this representation's
-/// per-segment files - callers downloading multiple representations for one
-/// logical download (demuxed video + audio) pass distinct `segments_dir`s so
-/// they don't collide, but both live inside that download's single shared
-/// cache folder.
 pub async fn download_representation(
     client: &HttpClient,
     representation: &Representation,
@@ -40,12 +30,6 @@ pub async fn download_representation(
         tasks.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore closed");
 
-            // A retry re-runs this whole representation from segment 0 with
-            // the same `dest` (and therefore the same `tmp_dir`), so a prior
-            // attempt's already-complete segments are still sitting on disk -
-            // skip re-fetching them. Safe because `seg_path` is only ever
-            // created by the atomic rename below, so its mere existence means
-            // a full, uncorrupted write already happened.
             if let Ok(meta) = tokio::fs::metadata(&seg_path).await {
                 return Ok::<_, anyhow::Error>(meta.len());
             }
@@ -57,11 +41,6 @@ pub async fn download_representation(
             .await
             .with_context(|| format!("segment {url} failed after retries"))?;
             let len = bytes.len() as u64;
-            // Write to a sibling temp path and rename into place, rather than
-            // writing `seg_path` directly - a rename is effectively atomic,
-            // so a segment interrupted mid-write never leaves a truncated
-            // file under the final name for the skip check above to mistake
-            // for complete.
             let tmp_path = seg_path.with_extension("seg.part");
             tokio::fs::write(&tmp_path, bytes).await?;
             tokio::fs::rename(&tmp_path, &seg_path).await?;
@@ -79,10 +58,6 @@ pub async fn download_representation(
         seg_paths.push(tmp_dir.join(format!("{index:08}.seg")));
         bytes_so_far += segment_bytes;
 
-        // See the equivalent comment in tidm-media's HLS downloader: no single
-        // upfront Content-Length exists across N separate segment requests, so
-        // the "total" is an estimate extrapolated from the average segment
-        // size seen so far.
         let done = index as u64 + 1;
         let estimated_total = (bytes_so_far / done) * total_segments;
         tidm_net::report_progress(progress, bytes_so_far, estimated_total);

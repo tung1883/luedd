@@ -9,15 +9,8 @@ use super::model::{DownloadEntry, DownloadStatus};
 use super::store::DownloadStore;
 use crate::jobs;
 
-/// Currently-running entries by id, so `pause_entry` can find and abort the
-/// right task. A plain `std::sync::Mutex` is enough - every critical section
-/// is a single non-blocking HashMap operation, never held across an `.await`.
 type RunningTasks = Arc<StdMutex<HashMap<String, AbortHandle>>>;
 
-/// Runs queued entries with up to `max_concurrent` running at once, the Rust
-/// equivalent of `QueueManager`/`AppController` dispatching downloads. Each
-/// entry's actual transfer goes through `jobs::run`, the same code path
-/// `tidm-cli` and the GUI both use.
 pub struct DownloadManager {
     store: Arc<DownloadStore>,
     client: HttpClient,
@@ -37,16 +30,10 @@ impl DownloadManager {
         }
     }
 
-    /// Lets callers that need to probe a URL before queuing it (real-extension
-    /// detection in `naming::resolve_real_extension`) reuse the manager's own
-    /// client rather than building a throwaway one.
     pub fn http_client(&self) -> HttpClient {
         self.client.clone()
     }
 
-    /// Runs every entry currently `Queued`, respecting `max_concurrent`. Returns
-    /// once all of them have finished (successfully or not) - callers that want
-    /// a persistent background queue should call this from a loop or spawn it.
     pub async fn run_queued(&self) -> anyhow::Result<()> {
         let queued: Vec<_> = self
             .store
@@ -76,36 +63,17 @@ impl DownloadManager {
         Ok(())
     }
 
-    /// Runs one entry immediately, bypassing the `max_concurrent` queue-scan
-    /// gate entirely (still uses the same `per_download_concurrency` for its
-    /// own internal connections). For URLs from short-lived signed links
-    /// (common on video CDNs - a token good for only a few minutes), waiting
-    /// for a separate "run the queue" step to notice a newly `Queued` entry is
-    /// exactly the kind of delay that expires the token before the download
-    /// ever starts; the browser extension's `/vid` click uses this instead of
-    /// just enqueuing so the download starts the instant it's requested.
     pub async fn run_entry_now(&self, id: &str) -> anyhow::Result<()> {
         let Some(entry) = self.store.get_entry(id).await else {
             anyhow::bail!("no entry with id {id}");
         };
         if !matches!(entry.status, DownloadStatus::Queued) {
-            return Ok(()); // already running/finished/failed - nothing to do
+            return Ok(());
         }
         run_tracked(self.store.clone(), self.client.clone(), entry, self.per_download_concurrency, self.running.clone()).await;
         Ok(())
     }
 
-    /// Aborts a currently-running entry's transfer and marks it `Paused`
-    /// rather than `Failed`/`Cancelled`, so "Resume" (the same transition as
-    /// `retry_entry`) picks it back up later. Returns `false` if the entry
-    /// isn't actually running right now (already finished, or never started).
-    ///
-    /// The abort is a hard cancellation, not a graceful stop - whatever byte
-    /// range or segment was in flight is simply dropped. For a plain HTTP
-    /// download this is fine: progress is checkpointed periodically and
-    /// resuming picks up from the last checkpoint. HLS/DASH have no
-    /// segment-level resume yet, so pausing one of those restarts its segment
-    /// downloads from scratch on resume - wasteful but not broken.
     pub async fn pause_entry(&self, id: &str) -> anyhow::Result<bool> {
         let handle = { self.running.lock().unwrap().remove(id) };
         let Some(handle) = handle else {
@@ -116,8 +84,6 @@ impl DownloadManager {
         Ok(true)
     }
 
-    /// Removes one entry from the list; pass `delete_files: true` to also best-
-    /// effort delete its output file and any leftover temp/cache artifacts.
     pub async fn remove_entry(&self, id: &str, delete_files: bool) -> anyhow::Result<bool> {
         let removed = self.store.remove_entry(id).await?;
         if let Some(entry) = &removed {
@@ -128,15 +94,10 @@ impl DownloadManager {
         Ok(removed.is_some())
     }
 
-    /// Resets a failed/cancelled entry back to `Queued`.
     pub async fn retry_entry(&self, id: &str) -> anyhow::Result<bool> {
         self.store.retry_entry(id).await
     }
 
-    /// Removes every Finished/Failed/Cancelled entry; pass `delete_files: true`
-    /// to also best-effort delete each one's output file and any leftover
-    /// temp/cache artifacts (assembled-segment temp files, `.segments` dirs,
-    /// resumable-download state files).
     pub async fn clear_finished(&self, delete_files: bool) -> anyhow::Result<usize> {
         let removed = self.store.clear_finished().await?;
         let count = removed.len();
@@ -149,13 +110,6 @@ impl DownloadManager {
     }
 }
 
-/// Wraps `run_single` in its own task and registers that task's `AbortHandle`
-/// in `running` for the duration, so `DownloadManager::pause_entry` can find
-/// and cancel it by id. Insertion happens strictly before removal from this
-/// function's own sequential control flow regardless of how fast the inner
-/// task actually finishes - `handle.await` is what drives the removal, not
-/// the inner task removing itself - so there's no race where a fast-failing
-/// download could leave a stale (or missing) map entry.
 async fn run_tracked(store: Arc<DownloadStore>, client: HttpClient, entry: DownloadEntry, concurrency: usize, running: RunningTasks) {
     let id = entry.id.clone();
     let handle = tokio::spawn(async move {
@@ -166,15 +120,9 @@ async fn run_tracked(store: Arc<DownloadStore>, client: HttpClient, entry: Downl
     running.lock().unwrap().remove(&id);
 }
 
-/// Runs one entry to completion, updating its status/progress/error in the
-/// store as it goes. Shared by the batch `run_queued` path and the immediate
-/// `run_entry_now` path so both behave identically.
 async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: DownloadEntry, concurrency: usize) {
     store.update_entry(&entry.id, |e| e.status = DownloadStatus::Downloading).await.ok();
 
-    // Forward progress/phase events into the persisted entry so the GUI sees
-    // them the same way it already polls status - a separate task rather
-    // than an inline await so `jobs::run` never blocks on the store write.
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
     let progress_store = store.clone();
     let progress_id = entry.id.clone();
@@ -185,13 +133,6 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
                     progress_store.update_entry(&progress_id, |e| e.progress = Some((done, total))).await.ok();
                 }
                 tidm_net::JobEvent::Converting => {
-                    // Clear the download phase's leftover (done, total) rather
-                    // than leaving it on screen under the new status - it's
-                    // about to be replaced by ffmpeg's own mux progress on a
-                    // completely different scale (elapsed/total duration, not
-                    // bytes/segments), and showing the stale byte-based
-                    // percentage first would just flash to a different number
-                    // once the first real mux-progress tick arrives.
                     progress_store
                         .update_entry(&progress_id, |e| {
                             e.status = DownloadStatus::Converting;
@@ -212,10 +153,6 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
 
     match result {
         Ok(final_dest) => {
-            // `final_dest` normally equals `entry.dest`, but can differ if HLS/DASH
-            // muxing fell back to `.mkv` (see `jobs::finish_mux`) - keep the
-            // persisted entry pointing at whatever's actually on disk, so
-            // Preview/Open-folder/cleanup all target the real file.
             store
                 .update_entry(&entry.id, |e| {
                     e.status = DownloadStatus::Finished;
@@ -225,16 +162,7 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
                 .ok();
         }
         Err(e) => {
-            // `e.to_string()` (equivalent to `{e}`) shows only the outermost
-            // context ("GET {url} failed") and drops every underlying cause -
-            // exactly the layer that actually explains *why* (DNS failure,
-            // TLS handshake failure, connection refused/reset, timeout, a
-            // real HTTP status...). The alternate Display (`{:#}`) chains all
-            // of them together, which is what actually gets shown in the GUI.
             let msg = format!("{e:#}");
-            // Schedule the next auto-retry (if any auto-attempts remain) off
-            // this run's own `retry_count` - a manual retry resets it to 0,
-            // so failing again after one always gets a fresh backoff sequence.
             let next_retry_at = super::scheduler::next_auto_retry_at(entry.retry_count);
             store
                 .update_entry(&entry.id, |entry| {
@@ -248,12 +176,6 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
     }
 }
 
-/// Best-effort deletion of `dest` plus every temp/cache artifact a download of
-/// any kind might have left behind. Every kind's intermediate files (resumable
-/// state, HLS/DASH segments, ffmpeg mux inputs) live in one place -
-/// `naming::cache_dir_for(dest)` - so cleanup is just those two paths, not a
-/// list of naming conventions to keep in sync with each downloader. Missing
-/// files/dirs are silently ignored - this is cleanup, not correctness-critical.
 async fn delete_artifacts(dest: &std::path::Path) {
     tokio::fs::remove_file(dest).await.ok();
     tokio::fs::remove_dir_all(crate::naming::cache_dir_for(dest)).await.ok();
@@ -317,9 +239,6 @@ mod tests {
         let store = Arc::new(DownloadStore::open(dir.join("downloads.json")).await.unwrap());
         let client = HttpClient::new().unwrap();
 
-        // Accepts connections but never writes a response, so the client's
-        // request sits waiting indefinitely - a reliable window to pause the
-        // download mid-flight without racing a real transfer's completion.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

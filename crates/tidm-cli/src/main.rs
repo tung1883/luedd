@@ -16,7 +16,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Download an HLS (.m3u8) stream to a playable file.
     Hls {
         url: String,
         #[arg(short, long, default_value = "out.mp4")]
@@ -24,7 +23,6 @@ enum Command {
         #[arg(short, long, default_value_t = 8)]
         concurrency: usize,
     },
-    /// Download a plain file over HTTP with multi-connection resume support.
     Get {
         url: String,
         #[arg(short, long, default_value = "out.bin")]
@@ -32,7 +30,6 @@ enum Command {
         #[arg(short, long, default_value_t = 8)]
         concurrency: usize,
     },
-    /// Download a DASH (.mpd) stream to a playable file.
     Dash {
         url: String,
         #[arg(short, long, default_value = "out.mp4")]
@@ -40,12 +37,10 @@ enum Command {
         #[arg(short, long, default_value_t = 8)]
         concurrency: usize,
     },
-    /// Persisted download queue (M3): add entries, list them, or run everything queued.
     Queue {
         #[command(subcommand)]
         action: QueueAction,
     },
-    /// Run the local server (M4) the browser extension's connector.js talks to.
     Serve {
         #[arg(short, long, default_value_t = 8597)]
         port: u16,
@@ -56,31 +51,24 @@ enum Command {
 
 #[derive(Subcommand)]
 enum QueueAction {
-    /// Add a URL to the persisted queue (kind auto-detected from the URL/extension).
     Add {
         url: String,
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// List all entries and their status.
     List,
-    /// Run every entry currently queued, up to --max-concurrent at once.
     Run {
         #[arg(short, long, default_value_t = 2)]
         max_concurrent: usize,
         #[arg(short, long, default_value_t = 8)]
         concurrency: usize,
     },
-    /// Remove one entry by id. Pass --delete-files to also delete its output/temp files.
     Remove {
         id: String,
         #[arg(long)]
         delete_files: bool,
     },
-    /// Reset a Failed/Cancelled entry back to Queued so the next `run` retries it.
     Retry { id: String },
-    /// Remove every Finished/Failed/Cancelled entry. Pass --delete-files to also
-    /// delete each one's output/temp files.
     ClearFinished {
         #[arg(long)]
         delete_files: bool,
@@ -117,7 +105,7 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
     tokio::fs::create_dir_all(&settings.get().await.download_dir).await.ok();
     let client = HttpClient::new().context("building http client")?;
     let manager = Arc::new(DownloadManager::new(store.clone(), client, 2, 8));
-    tidm_ipc::server::serve(store, manager, tidm_ipc::server::ServerConfig { settings }, port).await
+    tidm_ipc::server::serve(store, manager, tidm_ipc::server::ServerConfig { settings, on_new_detection: None }, port).await
 }
 
 async fn run_job(kind: DownloadKind, url: &str, output: &PathBuf, concurrency: usize) -> Result<()> {

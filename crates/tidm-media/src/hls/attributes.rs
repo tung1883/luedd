@@ -1,8 +1,5 @@
 use std::collections::HashMap;
 
-/// Parses a comma-separated `KEY=VALUE` attribute list, respecting double-quoted
-/// values that may themselves contain commas. Equivalent of XDM's
-/// `HlsHelper.ParseAttributes`. Values are trimmed of surrounding `"`, `'`, and spaces.
 pub fn parse_attributes(input: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut chars = input.chars().peekable();
