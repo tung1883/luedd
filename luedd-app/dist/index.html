@@ -200,10 +200,24 @@
     border-radius: 0 0 10px 10px; background: var(--surface-2); }
 
   /* row details */
-  .details-cell { background: var(--surface-2); font-size: 12px; color: var(--dim); padding: 12px 16px 14px; }
-  .details-cell div { padding: 3px 0; }
-  .details-cell strong { color: var(--dim); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; margin-right: 8px; }
-  .details-cell .selectable { font-family: var(--mono); font-size: 11px; word-break: break-all; user-select: text; color: var(--disc); }
+  .details-cell { background: var(--surface-2); font-size: 12px; color: var(--dim); padding: 0; }
+  /* first column is a gutter that lines the field block up with the ID column;
+     the preview column's right edge lines up with the Actions column. */
+  .detgrid { display: grid; grid-template-columns: 34px minmax(0,1fr) 208px; gap: 0 16px; padding: 12px 8px 15px 0; }
+  .detgrid .df { display: grid; grid-template-columns: max-content 1fr; gap: 7px 14px; align-items: baseline; min-width: 0; }
+  .detgrid .df dt { color: var(--dim); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; }
+  .detgrid .df dd { margin: 0; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .detgrid .df dd.selectable { font-family: var(--mono); font-size: 11px; color: var(--disc); word-break: break-all; white-space: normal; user-select: text; }
+  .det-preview { width: 200px; align-self: start; }
+  .det-thumb { width: 200px; height: 112px; border-radius: 6px; border: 1px solid var(--line); overflow: hidden;
+    background: linear-gradient(135deg,#2a2d34,#12303b); display: flex; align-items: center; justify-content: center;
+    color: #46505c; position: relative; }
+  .det-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+  .det-thumb .glyph { font-size: 26px; }
+  .det-thumb .full { position: absolute; right: 5px; bottom: 5px; background: rgba(0,0,0,.6); color: #fff; border: 0;
+    border-radius: 4px; font-size: 10px; padding: 2px 7px; cursor: pointer; }
+  .det-cap { font-size: 10px; color: var(--dim); margin-top: 5px; text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* overlays */
   .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1000; }
@@ -358,6 +372,45 @@ const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "s
 function isImageFile(path) {
   const ext = (path.split(".").pop() || "").toLowerCase();
   return IMAGE_EXTENSIONS.has(ext);
+}
+
+// id -> data URL | null (null = tried, nothing to show). Persists across the
+// 2s re-renders so a video frame is grabbed by ffmpeg at most once.
+const detailPreview = new Map();
+
+function previewGlyph(dest) {
+  const ext = (String(dest || "").split(".").pop() || "").toLowerCase();
+  if (["mp4","mkv","webm","mov","m4v","avi","ts","flv"].includes(ext)) return "▶";
+  if (IMAGE_EXTENSIONS.has(ext)) return "▦";
+  if (["zip","rar","7z","tar","gz"].includes(ext)) return "🗜";
+  if (["mp3","m4a","flac","wav","ogg","opus"].includes(ext)) return "♪";
+  if (["pdf","doc","docx","txt"].includes(ext)) return "▤";
+  return "◫";
+}
+
+async function loadDetailPreview(detailsTr) {
+  const box = detailsTr.querySelector(".det-thumb");
+  if (!box || box.dataset.done) return;
+  box.dataset.done = "1";
+  const id = box.dataset.id;
+  let url = detailPreview.get(id);
+  if (url === undefined) {
+    try { url = (await invoke("read_preview", { path: box.dataset.dest })).data_url; }
+    catch { url = null; }
+    detailPreview.set(id, url);
+  }
+  if (!url) return; // keep the glyph
+  box.querySelector(".glyph")?.remove();
+  const img = document.createElement("img");
+  img.src = url; img.alt = "";
+  img.addEventListener("click", () => showImagePreview(url));
+  box.appendChild(img);
+  const full = document.createElement("button");
+  full.className = "full"; full.textContent = t("full_size");
+  full.addEventListener("click", (ev) => { ev.stopPropagation(); showImagePreview(url); });
+  box.appendChild(full);
+  const cap = detailsTr.querySelector(".det-cap");
+  if (cap) cap.textContent = (box.dataset.dest || "").split(/[\\/]/).pop();
 }
 
 const previewImg = document.getElementById("image-preview-img");
@@ -666,15 +719,25 @@ async function refresh() {
     const headerNames = Object.keys(e.headers ?? {});
     detailsTr.innerHTML = `
       <td colspan="10" class="details-cell">
-        <div><strong>${t("d_site")}</strong> ${site}</div>
-        <div><strong>${t("d_full_link")}</strong> <span class="selectable">${e.url}</span></div>
-        <div><strong>${t("d_saving_to")}</strong> <span class="selectable">${e.dest}</span></div>
-        <div><strong>${t("d_headers")}</strong> ${headerNames.length ? headerNames.join(", ") : t("val_none")}</div>
-        <div><strong>${t("d_cookie")}</strong> ${e.cookie ? t("val_yes") : t("val_no")}</div>
-        <div><strong>${t("d_added")}</strong> ${new Date(e.created_at * 1000).toLocaleString(window.I18N.lang)}</div>
+        <div class="detgrid">
+          <div></div>
+          <dl class="df">
+            <dt>${t("d_site")}</dt><dd>${site}</dd>
+            <dt>${t("d_full_link")}</dt><dd class="selectable">${e.url}</dd>
+            <dt>${t("d_saving_to")}</dt><dd class="selectable">${e.dest}</dd>
+            <dt>${t("d_headers")}</dt><dd>${headerNames.length ? headerNames.join(", ") : t("val_none")}</dd>
+            <dt>${t("d_cookie")}</dt><dd>${e.cookie ? t("val_yes") : t("val_no")}</dd>
+            <dt>${t("d_added")}</dt><dd>${new Date(e.created_at * 1000).toLocaleString(window.I18N.lang)}</dd>
+          </dl>
+          <div class="det-preview">
+            <div class="det-thumb" data-id="${e.id}" data-dest="${(e.dest ?? "").replace(/"/g, "&quot;")}"><span class="glyph">${previewGlyph(e.dest)}</span></div>
+            <div class="det-cap"></div>
+          </div>
+        </div>
       </td>
     `;
     rows.appendChild(detailsTr);
+    if (isOpen) loadDetailPreview(detailsTr);
 
     tr.addEventListener("click", (ev) => {
       if (ev.target.closest("button, input, a")) return;
@@ -700,7 +763,7 @@ async function refresh() {
       const nowOpen = detailsTr.style.display === "none";
       detailsTr.style.display = nowOpen ? "table-row" : "none";
       btn.textContent = nowOpen ? "▾" : "▸";
-      if (nowOpen) detailsOpen.add(id); else detailsOpen.delete(id);
+      if (nowOpen) { detailsOpen.add(id); loadDetailPreview(detailsTr); } else { detailsOpen.delete(id); }
     });
   });
   rows.querySelectorAll(".retry-btn").forEach(btn => {

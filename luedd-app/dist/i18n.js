@@ -46,6 +46,7 @@
       act_pause: "Pause", act_resume: "Resume", act_retry: "Retry", act_preview: "Preview", act_open: "Open File",
       open_folder: "Open folder", remove: "Remove", remux: "remux",
 
+      full_size: "Full size",
       d_site: "Site", d_full_link: "Full link", d_saving_to: "Saving to",
       d_headers: "Headers captured", d_cookie: "Cookie captured", d_added: "Added",
       val_none: "none", val_yes: "yes", val_no: "no", val_unknown: "(unknown)",
@@ -105,6 +106,7 @@
       act_pause: "Pause", act_resume: "Fortsetzen", act_retry: "Wiederholen", act_preview: "Vorschau", act_open: "Datei öffnen",
       open_folder: "Ordner öffnen", remove: "Entfernen", remux: "Remux",
 
+      full_size: "Vollansicht",
       d_site: "Seite", d_full_link: "Vollständiger Link", d_saving_to: "Speicherort",
       d_headers: "Erfasste Header", d_cookie: "Erfasstes Cookie", d_added: "Hinzugefügt",
       val_none: "keine", val_yes: "ja", val_no: "nein", val_unknown: "(unbekannt)",

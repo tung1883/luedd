@@ -148,6 +148,59 @@ async fn read_image_data_url(path: String) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
+#[derive(serde::Serialize)]
+struct PreviewOut {
+    data_url: String,
+    kind: String,
+}
+
+/// A preview image for a queue entry's file: the image itself for image files,
+/// a single grabbed frame for video (also works on the in-progress `.partial`),
+/// and an error otherwise so the UI can fall back to a file-type glyph.
+#[tauri::command]
+async fn read_preview(path: String) -> Result<PreviewOut, String> {
+    const IMG: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp"];
+    const VID: &[&str] = &["mp4", "mkv", "webm", "mov", "m4v", "avi", "ts", "m2ts", "flv"];
+
+    let p = std::path::PathBuf::from(&path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+
+    if IMG.contains(&ext.as_str()) {
+        let mime = match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            _ => "image/png",
+        };
+        let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        return Ok(PreviewOut { data_url: format!("data:{mime};base64,{b64}"), kind: "image".into() });
+    }
+
+    let target = if tokio::fs::metadata(&p).await.is_ok() {
+        p.clone()
+    } else {
+        luedd_core::naming::cache_dir_for(&p).join("output.partial")
+    };
+    if !VID.contains(&ext.as_str()) && tokio::fs::metadata(&target).await.is_err() {
+        return Err("no preview for this file type".into());
+    }
+
+    let out = tokio::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-ss", "1", "-i"])
+        .arg(&target)
+        .args(["-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-"])
+        .output()
+        .await
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return Err(format!("ffmpeg: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&out.stdout);
+    Ok(PreviewOut { data_url: format!("data:image/jpeg;base64,{b64}"), kind: "video".into() })
+}
+
 #[tauri::command]
 async fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
@@ -277,6 +330,7 @@ fn main() {
             pick_folder,
             open_file,
             read_image_data_url,
+            read_preview,
             open_containing_folder,
             open_external_url,
             detection_window_set_pinned,
