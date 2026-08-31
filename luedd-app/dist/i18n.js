@@ -42,7 +42,7 @@
       status_Queued: "Queued", status_Running: "Running", status_Converting: "Converting",
       status_Finished: "Finished", status_Failed: "Failed", status_Cancelled: "Cancelled",
       status_Paused: "Paused",
-      act_pause: "Pause", act_resume: "Resume", act_retry: "Retry", act_preview: "Preview",
+      act_pause: "Pause", act_resume: "Resume", act_retry: "Retry", act_preview: "Preview", act_open: "Open File",
       open_folder: "Open folder", remove: "Remove", remux: "remux",
 
       d_site: "Site", d_full_link: "Full link", d_saving_to: "Saving to",
@@ -100,7 +100,7 @@
       status_Queued: "Wartend", status_Running: "Läuft", status_Converting: "Konvertiert",
       status_Finished: "Fertig", status_Failed: "Fehlgeschlagen", status_Cancelled: "Abgebrochen",
       status_Paused: "Pausiert",
-      act_pause: "Pause", act_resume: "Fortsetzen", act_retry: "Wiederholen", act_preview: "Vorschau",
+      act_pause: "Pause", act_resume: "Fortsetzen", act_retry: "Wiederholen", act_preview: "Vorschau", act_open: "Datei öffnen",
       open_folder: "Ordner öffnen", remove: "Entfernen", remux: "Remux",
 
       d_site: "Seite", d_full_link: "Vollständiger Link", d_saving_to: "Speicherort",

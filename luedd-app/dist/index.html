@@ -68,7 +68,7 @@
 
   /* table — only this scrolls (both axes); header/form/toolbar stay put */
   .table-wrap { flex: 1; min-height: 0; overflow: auto; }
-  table { width: 100%; min-width: 1330px; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+  table { width: 100%; min-width: 1225px; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
   th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow: hidden; }
   thead th { background: var(--bg);
     font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; padding-top: 8px; padding-bottom: 8px; }
@@ -79,12 +79,12 @@
   th.toggle-col, td.toggle-col { width: 18px; padding-right: 0; padding-left: 8px; }
   th.id-col, td.id-col { width: 70px; white-space: nowrap; }
   th.kind-col, td.kind-col { width: 55px; white-space: nowrap; }
-  th.status-col, td.status-col { width: 90px; white-space: nowrap; }
+  th.status-col, td.status-col { width: 122px; white-space: nowrap; }
   th.progress-col, td.progress-col { width: 210px; white-space: nowrap; }
   th.speed-col, td.speed-col { width: 74px; white-space: nowrap; }
   th.url-col, td.url-col { width: 340px; padding-right: 22px; }
   th.error-col, td.error-col { width: 180px; padding-left: 14px; }
-  th.actions-col, td.actions-col { width: 268px; text-align: right; }
+  th.actions-col, td.actions-col { width: 128px; text-align: right; }
 
   .details-toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0; width: 16px; }
   .details-toggle-btn:hover { color: var(--text); }
@@ -125,8 +125,10 @@
   /* the (done/total) segment count drops out only when the window is genuinely cramped */
   @media (max-width: 900px) { .seg { display: none; } }
   .actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
-  .actions .act-primary { width: 76px; text-align: center; flex-shrink: 0; padding-left: 4px; padding-right: 4px; }
-  .actions span.act-primary { display: inline-block; }
+  .actions .icon-act { width: 30px; height: 28px; padding: 0; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .actions .icon-act svg { width: 15px; height: 15px; display: block; }
+  .actions span.icon-act { display: inline-block; }
 
   /* progress meter */
   .meter { display: flex; align-items: center; gap: 10px; }
@@ -578,18 +580,29 @@ function applyFont(key) {
   else { s.removeProperty("--sans"); s.removeProperty("--mono"); }
 }
 
-// The leading, fixed-width slot in the Actions column: one contextual verb
-// (or an empty spacer for Queued) so the trio stays aligned across every row.
+// Row actions are icon buttons (locale-proof); the localized word is the
+// tooltip. Feather-style 24px stroke icons.
+const ICONS = {
+  pause:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="5" x2="8" y2="19"/><line x1="16" y1="5" x2="16" y2="19"/></svg>',
+  play:   '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+  retry:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
+  file:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  trash:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M9 7V4h6v3"/></svg>',
+};
+
+// The leading slot in the Actions column: one contextual icon (or an empty
+// spacer for Queued) so the trio stays aligned across every row.
 function primaryActionBtn(e) {
-  const b = (cls, key) => `<button class="small secondary act-primary ${cls}" data-id="${e.id}">${t(key)}</button>`;
+  const b = (cls, key, svg) => `<button class="small secondary icon-act act-primary ${cls}" data-id="${e.id}" title="${t(key)}" aria-label="${t(key)}">${svg}</button>`;
   switch (e.status) {
-    case "Downloading": return b("pause-btn", "act_pause");
-    case "Paused":      return b("resume-btn", "act_resume");
+    case "Downloading": return b("pause-btn", "act_pause", ICONS.pause);
+    case "Paused":      return b("resume-btn", "act_resume", ICONS.play);
     case "Failed":
     case "Cancelled":
-    case "Converting":  return b("retry-btn", "act_retry");
-    case "Finished":    return b("preview-btn", "act_preview");
-    default:            return `<span class="act-primary"></span>`;
+    case "Converting":  return b("retry-btn", "act_retry", ICONS.retry);
+    case "Finished":    return b("open-file-btn", "act_open", ICONS.file);
+    default:            return `<span class="icon-act act-primary"></span>`;
   }
 }
 
@@ -634,8 +647,8 @@ async function refresh() {
       <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n" + t("dbl_copy") : ""}">${e.error ?? ""}</td>
       <td class="actions-col"><div class="actions">
         ${primaryActionBtn(e)}
-        <button class="small secondary open-folder-btn" data-id="${e.id}">${t("open_folder")}</button>
-        <button class="small danger remove-btn" data-id="${e.id}">${t("remove")}</button>
+        <button class="small secondary icon-act open-folder-btn" data-id="${e.id}" title="${t("open_folder")}" aria-label="${t("open_folder")}">${ICONS.folder}</button>
+        <button class="small danger icon-act remove-btn" data-id="${e.id}" title="${t("remove")}" aria-label="${t("remove")}">${ICONS.trash}</button>
       </div></td>
     `;
     rows.appendChild(tr);
@@ -704,20 +717,10 @@ async function refresh() {
       await refresh();
     });
   });
-  rows.querySelectorAll(".preview-btn").forEach(btn => {
+  rows.querySelectorAll(".open-file-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const entry = entries.find(x => x.id === btn.dataset.id);
-      if (!entry) return;
-      if (isImageFile(entry.dest)) {
-        try {
-          const dataUrl = await invoke("read_image_data_url", { path: entry.dest });
-          showImagePreview(dataUrl);
-          return;
-        } catch (err) {
-          console.error("image preview failed, falling back to external viewer", err);
-        }
-      }
-      await invoke("open_file", { path: entry.dest });
+      if (entry) await invoke("open_file", { path: entry.dest });
     });
   });
   rows.querySelectorAll(".open-folder-btn").forEach(btn => {
