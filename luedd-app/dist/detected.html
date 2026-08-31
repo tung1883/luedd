@@ -16,13 +16,17 @@
   input[type=text] { width: 100%; box-sizing: border-box; padding: 6px 8px; background: #2a2a2a; border: 1px solid #444; color: #eee; border-radius: 4px; font-size: 13px; }
   #list { flex: 1; overflow-y: auto; padding: 0 12px; }
   .empty { padding: 20px; color: #888; font-size: 13px; text-align: center; }
-  .row { padding: 10px 0; border-bottom: 1px solid #333; min-width: 0; }
+  .row { padding: 10px 0; border-bottom: 1px solid #333; min-width: 0; display: flex; gap: 10px; align-items: flex-start; }
+  .row-body { flex: 1; min-width: 0; }
+  .row-preview { flex-shrink: 0; width: 120px; display: flex; justify-content: flex-end; }
   .row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .toggle-btn { background: none; border: none; color: #888; cursor: pointer; font-size: 12px; padding: 0; width: 14px; flex-shrink: 0; }
   .title-btn { background: none; border: none; color: #ddd; cursor: pointer; text-align: left; font-size: 14px; padding: 4px 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .info-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 20px; min-width: 0; }
   .info-text { font-size: 12px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
   .preview-link { background: none; border: none; color: #4af; cursor: pointer; font-size: 11px; padding: 0; flex-shrink: 0; }
+  .thumb { max-height: 90px; max-width: 120px; border-radius: 4px; border: 1px solid #333; cursor: zoom-in; display: block; background: #232323; object-fit: cover; }
+  .thumb-pdf { width: 120px; height: 90px; cursor: default; }
   .details-panel { display: none; font-size: 11px; color: #aaa; background: #232323; border-radius: 4px; padding: 6px 8px; margin-top: 4px; margin-left: 20px; min-width: 0; overflow: hidden; }
   .details-panel.open { display: block; }
   .copyable-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; margin-bottom: 4px; max-width: 100%; }
@@ -49,6 +53,17 @@
   </footer>
 
 <script>
+  window.addEventListener("error", e => {
+    let bar = document.getElementById("js-error-bar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "js-error-bar";
+      bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#a33;color:#fff;font:11px/1.4 monospace;padding:6px 10px;white-space:pre-wrap;";
+      document.body.appendChild(bar);
+    }
+    bar.textContent = "JS error: " + (e.message || e.error) + " @ " + (e.filename || "") + ":" + (e.lineno || "");
+  });
+
   const APP_BASE_URL = "http://127.0.0.1:8597";
   let allItems = [];
   let pinned = true;
@@ -173,6 +188,54 @@
   // just opened right back up before they could read it.
   const expandedIds = new Set();
 
+  // id -> { url, kind } | null, so a re-render never re-fetches a thumbnail.
+  const previewCache = new Map();
+
+  function showImageOverlay(src) {
+    document.getElementById("image-preview-img").src = src;
+    document.getElementById("image-preview-overlay").style.display = "flex";
+  }
+
+  // Only fetch a preview once its row is (near) visible - a page can detect
+  // hundreds of media requests and each preview is an HTTP fetch or an ffmpeg
+  // frame-grab on the backend.
+  const previewObserver = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        previewObserver.unobserve(e.target);
+        if (e.target._loadPreview) e.target._loadPreview();
+      }
+    }
+  }, { root: document.getElementById("list"), rootMargin: "150px" });
+
+  async function loadPreview(item, col) {
+    if (col.dataset.loaded) return;
+    col.dataset.loaded = "1";
+
+    let data = previewCache.get(item.id);
+    if (data === undefined) {
+      const res = await post("/preview", { vid: item.id });
+      data = (res && res.previewDataUrl) ? { url: res.previewDataUrl, kind: res.previewKind || "image" } : null;
+      previewCache.set(item.id, data);
+    }
+    if (!data) return; // no preview available - column stays empty
+
+    let el;
+    if (data.kind === "pdf") {
+      el = document.createElement("embed");
+      el.type = "application/pdf";
+      el.src = data.url;
+      el.className = "thumb thumb-pdf";
+    } else {
+      el = document.createElement("img");
+      el.className = "thumb";
+      el.alt = "";
+      el.src = data.url;
+      el.addEventListener("click", ev => { ev.stopPropagation(); showImageOverlay(data.url); });
+    }
+    col.appendChild(el);
+  }
+
   async function probeQualityFor(item, qualityBox) {
     const res = await post("/probe-quality", { vid: item.id });
     const variants = (res && res.qualityVariants) || [];
@@ -268,15 +331,9 @@
     infoText.className = "info-text";
     infoText.innerText = item.info;
 
-    const preview = document.createElement("button");
-    preview.className = "preview-link";
-    preview.innerText = "Preview";
-    preview.title = "Open this link in a new tab to view it before downloading";
-
     const infoRow = document.createElement("div");
     infoRow.className = "info-row";
     infoRow.appendChild(infoText);
-    infoRow.appendChild(preview);
 
     const detailsPanel = document.createElement("div");
     detailsPanel.className = "details-panel";
@@ -295,9 +352,21 @@
       probeQualityFor(item, qualityBox);
     }
 
-    row.appendChild(titleRow);
-    row.appendChild(infoRow);
-    row.appendChild(detailsPanel);
+    const body = document.createElement("div");
+    body.className = "row-body";
+    body.appendChild(titleRow);
+    body.appendChild(infoRow);
+    body.appendChild(detailsPanel);
+
+    // Preview thumbnail column, right side of the row. Populated lazily once the
+    // row scrolls into view; stays empty when there's nothing to show.
+    const previewCol = document.createElement("div");
+    previewCol.className = "row-preview";
+    previewCol._loadPreview = () => loadPreview(item, previewCol);
+    previewObserver.observe(previewCol);
+
+    row.appendChild(body);
+    row.appendChild(previewCol);
 
     titleBtn.addEventListener("click", async () => {
       const original = titleBtn.innerText;
@@ -306,16 +375,6 @@
         : res && res.vidQueued === false ? "Failed - link may have expired"
         : "Could not reach Lüdd";
       setTimeout(() => { titleBtn.innerText = original; }, 1500);
-    });
-
-    preview.addEventListener("click", e => {
-      e.stopPropagation();
-      if (isImageUrl(item.url)) {
-        document.getElementById("image-preview-img").src = item.url;
-        document.getElementById("image-preview-overlay").style.display = "flex";
-        return;
-      }
-      window.__TAURI__.core.invoke("open_external_url", { url: item.url });
     });
 
     toggle.addEventListener("click", async e => {

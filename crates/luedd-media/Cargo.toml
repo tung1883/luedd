@@ -18,3 +18,4 @@ once_cell.workspace = true
 luedd-net = { path = "../luedd-net" }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util", "time"] }

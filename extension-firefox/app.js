@@ -90,6 +90,11 @@ export default class App {
         return (res && res.qualityVariants) || [];
     }
 
+    async previewImage(itemId) {
+        const res = await this.connector.postMessage("/preview", { vid: itemId + "" });
+        return (res && res.previewDataUrl) || null;
+    }
+
     onDisconnect() {
         this.logger.log("Disconnected from native host!");
         this.logger.log("Disconnected...");
@@ -332,6 +337,10 @@ export default class App {
         }
         else if (request.type === "probe-quality") {
             this.probeQuality(request.itemId).then(variants => sendResponse({ variants }));
+            return true;
+        }
+        else if (request.type === "preview") {
+            this.previewImage(request.itemId).then(previewDataUrl => sendResponse({ previewDataUrl }));
             return true;
         }
         else if (request.type === "clear") {

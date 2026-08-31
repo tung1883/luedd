@@ -17,6 +17,22 @@ pub enum DownloadStatus {
     Cancelled,
 }
 
+/// Live progress snapshot for a running download, written by the manager's
+/// progress task and read by the UI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DownloadProgress {
+    /// Bytes transferred so far.
+    pub downloaded_bytes: u64,
+    /// Total bytes, when the size is known (HTTP with Content-Length).
+    pub total_bytes: Option<u64>,
+    /// Completed segments (HLS/DASH); 0 for byte-only downloads.
+    pub done_units: u64,
+    /// Total segments; 0 when there is no segment count.
+    pub total_units: u64,
+    /// Throughput over a recent sliding window, bytes per second.
+    pub speed_bps: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadEntry {
     pub id: String,
@@ -31,7 +47,7 @@ pub struct DownloadEntry {
     #[serde(default)]
     pub cookie: Option<String>,
     #[serde(default)]
-    pub progress: Option<(u64, u64)>,
+    pub progress: Option<DownloadProgress>,
     #[serde(default)]
     pub retry_count: u32,
     #[serde(default)]

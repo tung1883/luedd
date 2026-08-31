@@ -5,7 +5,7 @@ use luedd_net::{HttpClient, RequestContext};
 use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 
-use super::model::{DownloadEntry, DownloadStatus};
+use super::model::{DownloadEntry, DownloadProgress, DownloadStatus};
 use super::store::DownloadStore;
 use crate::jobs;
 
@@ -129,8 +129,19 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
     let progress_task = tokio::spawn(async move {
         while let Some(event) = progress_rx.recv().await {
             match event {
-                luedd_net::JobEvent::Progress { done, total } => {
-                    progress_store.update_entry(&progress_id, |e| e.progress = Some((done, total))).await.ok();
+                luedd_net::JobEvent::Progress { downloaded_bytes, total_bytes, done_units, total_units, speed_bps } => {
+                    progress_store
+                        .update_entry(&progress_id, |e| {
+                            e.progress = Some(DownloadProgress {
+                                downloaded_bytes,
+                                total_bytes,
+                                done_units,
+                                total_units,
+                                speed_bps,
+                            })
+                        })
+                        .await
+                        .ok();
                 }
                 luedd_net::JobEvent::Converting => {
                     progress_store

@@ -1,6 +1,5 @@
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -9,13 +8,14 @@ use axum::extract::State;
 use axum::http::Method;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
 use luedd_core::jobs::DownloadKind;
 use luedd_core::queue::{DownloadEntry, DownloadManager, DownloadStore, SettingsStore};
-use luedd_net::RequestContext;
+use luedd_net::{HttpClient, RequestContext};
 
 pub struct ServerConfig {
     pub settings: Arc<SettingsStore>,
@@ -32,7 +32,13 @@ struct DetectedMedia {
     request_headers: HashMap<String, Vec<String>>,
     cookie: Option<String>,
     user_agent: Option<String>,
+    /// Whether this detection is an image (from the response Content-Type the
+    /// extension captured, or the URL extension). Drives the inline thumbnail.
+    is_image: bool,
 }
+
+/// A generated thumbnail plus how the client should render it.
+type Preview = (String, &'static str); // (data URL, kind: "image" | "video" | "pdf")
 
 struct AppState {
     store: Arc<DownloadStore>,
@@ -40,6 +46,16 @@ struct AppState {
     config: ServerConfig,
     detected: Mutex<Vec<DetectedMedia>>,
     next_id: AtomicU64,
+    /// url -> resolved preview (None = tried, nothing to show). Previews are
+    /// expensive (an HTTP fetch or an ffmpeg spawn) and the client re-polls, so
+    /// every result is memoised, successes and failures alike.
+    preview_cache: Mutex<HashMap<String, Option<Preview>>>,
+    /// url -> quality variants, memoised like previews (probing re-fetches the
+    /// playlist each time otherwise).
+    quality_cache: Mutex<HashMap<String, Vec<luedd_media::quality::QualityOption>>>,
+    /// Caps concurrent ffmpeg thumbnail jobs so a page full of video detections
+    /// can't fork-bomb the machine.
+    ffmpeg_slots: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,6 +81,10 @@ struct SyncResponse {
     vid_queued: Option<bool>,
     #[serde(rename = "qualityVariants", skip_serializing_if = "Option::is_none")]
     quality_variants: Option<Vec<luedd_media::quality::QualityOption>>,
+    #[serde(rename = "previewDataUrl", skip_serializing_if = "Option::is_none")]
+    preview_data_url: Option<String>,
+    #[serde(rename = "previewKind", skip_serializing_if = "Option::is_none")]
+    preview_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -75,6 +95,8 @@ pub struct VideoListItem {
     url: String,
     #[serde(rename = "pageUrl")]
     page_url: Option<String>,
+    #[serde(rename = "isImage")]
+    is_image: bool,
 }
 
 const DEFAULT_MEDIA_EXTS: &[&str] = &[
@@ -110,6 +132,8 @@ fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoList
         new_detection,
         vid_queued: None,
         quality_variants: None,
+        preview_data_url: None,
+        preview_kind: None,
     }
 }
 
@@ -135,9 +159,16 @@ struct MediaRequest {
     tab_url: Option<String>,
     #[serde(default, rename = "requestHeaders")]
     request_headers: HashMap<String, Vec<String>>,
+    #[serde(default, rename = "responseHeaders")]
+    response_headers: HashMap<String, Vec<String>>,
     cookie: Option<String>,
     #[serde(rename = "userAgent")]
     user_agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PreviewRequest {
+    vid: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,10 +187,18 @@ pub async fn serve(
     store: Arc<DownloadStore>,
     manager: Arc<DownloadManager>,
     config: ServerConfig,
-    port: u16,
+    listener: std::net::TcpListener,
 ) -> anyhow::Result<()> {
-    let state =
-        Arc::new(AppState { store, manager, config, detected: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) });
+    let state = Arc::new(AppState {
+        store,
+        manager,
+        config,
+        detected: Mutex::new(Vec::new()),
+        next_id: AtomicU64::new(1),
+        preview_cache: Mutex::new(HashMap::new()),
+        quality_cache: Mutex::new(HashMap::new()),
+        ffmpeg_slots: Arc::new(tokio::sync::Semaphore::new(6)),
+    });
 
     let cors = CorsLayer::new().allow_methods([Method::GET, Method::POST]).allow_origin(Any);
 
@@ -170,13 +209,14 @@ pub async fn serve(
         .route("/tab-update", post(ignored))
         .route("/vid", post(vid))
         .route("/probe-quality", post(probe_quality))
+        .route("/preview", post(preview))
         .route("/clear", post(clear))
         .layer(cors)
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    tracing::info!(%addr, "luedd-ipc server listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(addr = ?listener.local_addr().ok(), "luedd-ipc server listening");
+    listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(listener)?;
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -187,6 +227,7 @@ fn to_video_list_item(
     tab_url: Option<&str>,
     page_title: Option<&str>,
     page_url: Option<&str>,
+    is_image: bool,
 ) -> VideoListItem {
     let text = tab_url.or(page_title).unwrap_or(url).to_string();
     let info = luedd_core::naming::suggest_filename(page_title, url, None);
@@ -196,7 +237,31 @@ fn to_video_list_item(
         info,
         url: url.to_string(),
         page_url: page_url.map(str::to_string),
+        is_image,
     }
+}
+
+/// First value for a header name (case-insensitive) from an extension-captured
+/// header dict.
+fn first_header<'a>(headers: &'a HashMap<String, Vec<String>>, name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .and_then(|(_, v)| v.first())
+        .map(String::as_str)
+}
+
+const IMAGE_URL_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif"];
+
+fn url_looks_like_image(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    IMAGE_URL_EXTS.contains(&ext.as_str())
+}
+
+fn looks_like_image(content_type: Option<&str>, url: &str) -> bool {
+    content_type.map(|ct| ct.trim().to_ascii_lowercase().starts_with("image/")).unwrap_or(false)
+        || url_looks_like_image(url)
 }
 
 async fn video_list(state: &AppState) -> Vec<VideoListItem> {
@@ -205,7 +270,9 @@ async fn video_list(state: &AppState) -> Vec<VideoListItem> {
         .lock()
         .await
         .iter()
-        .map(|m| to_video_list_item(&m.id, &m.url, m.tab_url.as_deref(), m.page_title.as_deref(), m.page_url.as_deref()))
+        .map(|m| {
+            to_video_list_item(&m.id, &m.url, m.tab_url.as_deref(), m.page_title.as_deref(), m.page_url.as_deref(), m.is_image)
+        })
         .collect()
 }
 
@@ -237,12 +304,14 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
             if !detected.iter().any(|m| m.url == req.url) {
                 let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
                 tracing::info!(url = %req.url, %id, "detected media from browser extension");
+                let is_image = looks_like_image(first_header(&req.response_headers, "content-type"), &req.url);
                 new_item = Some(to_video_list_item(
                     &id,
                     &req.url,
                     req.tab_url.as_deref(),
                     req.file.as_deref(),
                     req.tab_url.as_deref(),
+                    is_image,
                 ));
                 if let Some(item) = &new_item {
                     if let Some(tx) = &state.config.on_new_detection {
@@ -258,6 +327,7 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
                     request_headers: req.request_headers,
                     cookie: req.cookie,
                     user_agent: req.user_agent,
+                    is_image,
                 });
             }
         }
@@ -304,24 +374,436 @@ async fn probe_quality(State(state): State<Arc<AppState>>, body: Bytes) -> Json<
         return Json(default_sync_response(video_list(&state).await));
     };
 
+    if let Some(cached) = state.quality_cache.lock().await.get(&media.url).cloned() {
+        let mut resp = default_sync_response(video_list(&state).await);
+        resp.quality_variants = Some(cached);
+        return Json(resp);
+    }
+
     let client = state.manager.http_client();
     let ctx = RequestContext {
         headers: flatten_headers(media.request_headers, media.user_agent),
         cookie: media.cookie,
     };
-    let guessed_kind = DownloadKind::guess_from_url(&media.url);
-    let variants = match guessed_kind {
-        DownloadKind::Hls => luedd_media::quality::probe_hls_qualities(&client, &media.url, &ctx).await.unwrap_or_default(),
-        DownloadKind::Dash => luedd_media::quality::probe_dash_qualities(&client, &media.url, &ctx).await.unwrap_or_default(),
-        DownloadKind::Http => Vec::new(),
+
+    // Progressive files have no alternate renditions to choose - don't spend a
+    // request finding that out.
+    let variants = if PROGRESSIVE_EXTS.iter().any(|e| url_ends_with(&media.url, e)) {
+        Vec::new()
+    } else {
+        // A streaming URL carrying auth tokens or no ".m3u8"/".mpd" suffix guesses
+        // as Http; sniff the real content type before probing, or the panel
+        // silently offers no quality choice for HLS/DASH.
+        match resolve_download_kind(&client, &media.url, &ctx).await {
+            DownloadKind::Hls => {
+                luedd_media::quality::probe_hls_qualities(&client, &media.url, &ctx).await.unwrap_or_default()
+            }
+            DownloadKind::Dash => {
+                luedd_media::quality::probe_dash_qualities(&client, &media.url, &ctx).await.unwrap_or_default()
+            }
+            DownloadKind::Http => Vec::new(),
+        }
     };
+
+    state.quality_cache.lock().await.insert(media.url.clone(), variants.clone());
     let mut resp = default_sync_response(video_list(&state).await);
     resp.quality_variants = Some(variants);
     Json(resp)
 }
 
+/// Cap on bytes pulled for an image thumbnail.
+const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// Cap on bytes pulled for a PDF preview (the client renders page 1 in a small
+/// embed; whole-file is what a data: URL needs).
+const MAX_PDF_BYTES: u64 = 16 * 1024 * 1024;
+/// Cap on an ffmpeg-produced thumbnail frame.
+const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+/// How much of a progressive video/audio file to pull (via the Chrome-emulated
+/// client) and pipe into ffmpeg for a frame. Enough for a faststart mp4's moov
+/// atom + a keyframe; if the moov is at the tail, we fall back to letting ffmpeg
+/// fetch the URL itself. Kept small so the preview lands in a couple of seconds.
+const MAX_FFMPEG_INPUT_BYTES: usize = 3 * 1024 * 1024;
+/// Hard ceiling on a single ffmpeg thumbnail attempt.
+const FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+/// Sent to ffmpeg when the detection captured no User-Agent, so CDNs that reject
+/// ffmpeg's default `Lavf/*` UA still serve the segment/frame.
+const FALLBACK_UA: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+
+const PROGRESSIVE_EXTS: &[&str] =
+    &["mp4", "m4v", "m4a", "webm", "mkv", "mov", "ts", "mp3", "aac", "flac", "ogg", "opus", "wav", "avi", "flv"];
+
+/// Generate an inline preview for a detected item, using the detection's
+/// captured headers/cookies so auth- or hotlink-protected media still renders.
+///
+/// - images (svg/png/jpg/gif/webp/bmp/ico/avif/…) -> fetched as a data URL
+/// - PDFs -> fetched (capped) as a data URL for the client to embed
+/// - anything ffmpeg can demux (mp4/mkv/webm/mov/ts/avi/flv, HLS .m3u8, DASH
+///   .mpd, and audio with cover art) -> a single decoded frame as a JPEG
+///
+/// Results (including "nothing to show") are memoised per URL.
+async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResponse> {
+    let Ok(req) = serde_json::from_slice::<PreviewRequest>(&body) else {
+        return Json(default_sync_response(video_list(&state).await));
+    };
+    let found = {
+        let detected = state.detected.lock().await;
+        detected.iter().find(|m| m.id == req.vid).cloned()
+    };
+    let Some(media) = found else {
+        tracing::warn!(vid = %req.vid, "preview for an unknown/expired video id");
+        return Json(default_sync_response(video_list(&state).await));
+    };
+
+    if let Some(cached) = state.preview_cache.lock().await.get(&media.url).cloned() {
+        return Json(preview_response(video_list(&state).await, cached));
+    }
+
+    let client = state.manager.http_client();
+    let mut headers = flatten_headers(media.request_headers, media.user_agent);
+    // Firefox's webRequest can't expose Referer/User-Agent (no `extraHeaders`),
+    // and private windows hide cookies - so the captured headers are often bare.
+    // Media hosts behind Cloudflare then reject the fetch. Backfill a plausible
+    // Referer from the page the media was detected on, and a browser UA.
+    if !headers.keys().any(|k| k.eq_ignore_ascii_case("referer")) {
+        if let Some(page) = media.page_url.as_deref().or(media.tab_url.as_deref()) {
+            let referer = page
+                .split_once("://")
+                .and_then(|(scheme, rest)| rest.split('/').next().map(|host| format!("{scheme}://{host}/")))
+                .unwrap_or_else(|| page.to_string());
+            headers.insert("Referer".to_string(), referer);
+        }
+    }
+    if !headers.keys().any(|k| k.eq_ignore_ascii_case("user-agent")) {
+        headers.insert("User-Agent".to_string(), FALLBACK_UA.to_string());
+    }
+    let ctx = RequestContext { headers, cookie: media.cookie };
+
+    let result = build_preview(&state, &client, &media.url, &ctx).await;
+    if result.is_none() {
+        tracing::warn!(url = %media.url, "no preview available");
+    }
+    state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
+    Json(preview_response(video_list(&state).await, result))
+}
+
+fn preview_response(video_list: Vec<VideoListItem>, preview: Option<Preview>) -> SyncResponse {
+    let mut resp = default_sync_response(video_list);
+    if let Some((data_url, kind)) = preview {
+        resp.preview_data_url = Some(data_url);
+        resp.preview_kind = Some(kind.to_string());
+    }
+    resp
+}
+
+async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &RequestContext) -> Option<Preview> {
+    // One request through the Chrome-emulated client. Its headers classify the
+    // target; its body feeds whichever path applies.
+    let mut response = match client.get_response(url, &ctx.to_options(Some((0, MAX_PDF_BYTES)))).await {
+        Ok(r) => Some(r),
+        Err(e) => {
+            tracing::warn!(%url, error = %e, "preview: initial request failed");
+            None
+        }
+    };
+    let mut content_type = String::new();
+    if let Some(r) = response.as_ref() {
+        let status = r.status();
+        let ct = r
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        tracing::debug!(%url, %status, content_type = %ct, "preview: got response");
+        if status.is_success() || status.as_u16() == 206 {
+            content_type = ct;
+        } else {
+            tracing::warn!(%url, %status, "preview: non-success response");
+            response = None;
+        }
+    }
+
+    // Images and PDFs render directly as a data URL.
+    if let Some(resp) = response.as_mut() {
+        if content_type.starts_with("image/") {
+            return read_capped(resp, MAX_IMAGE_BYTES as usize)
+                .await
+                .filter(|b| !b.is_empty())
+                .map(|b| (data_url(&content_type, &b), "image"));
+        }
+        if is_pdf(&content_type, url) {
+            return read_capped(resp, MAX_PDF_BYTES as usize)
+                .await
+                .filter(|b| !b.is_empty())
+                .map(|b| (data_url("application/pdf", &b), "pdf"));
+        }
+    }
+
+    let _slot = state.ffmpeg_slots.acquire().await.ok()?;
+
+    // Progressive video/audio: pull a prefix ourselves (past the CDN) and decode
+    // it. If that yields nothing (e.g. a non-faststart mp4 with a trailing moov),
+    // fall through to letting ffmpeg fetch the whole URL.
+    let progressive = content_type.starts_with("video/")
+        || content_type.starts_with("audio/")
+        || PROGRESSIVE_EXTS.iter().any(|e| url_ends_with(url, e));
+    if progressive {
+        if let Some(resp) = response.as_mut() {
+            match read_capped(resp, MAX_FFMPEG_INPUT_BYTES).await {
+                Some(head) if !head.is_empty() => {
+                    if let Some(frame) = ffmpeg_frame_from_bytes(&head).await {
+                        return Some((data_url("image/jpeg", &frame), "video"));
+                    }
+                    tracing::warn!(%url, prefix_bytes = head.len(), "preview: ffmpeg could not decode the fetched prefix");
+                }
+                other => tracing::warn!(%url, empty = other.is_none(), "preview: could not read a video prefix"),
+            }
+        } else {
+            tracing::warn!(%url, "preview: progressive by url but no usable response to read");
+        }
+    }
+    drop(response);
+
+    // HLS: fetch the playlist and one segment ourselves, through the
+    // Chrome-emulated client, so Cloudflare-gated hosts (which reject ffmpeg's
+    // TLS fingerprint even with the cf_clearance cookie) still preview.
+    if url_ends_with(url, "m3u8") {
+        if let Some(seg) = hls_first_segment_bytes(client, ctx, url).await {
+            if let Some(frame) = ffmpeg_frame_from_bytes(&seg).await {
+                return Some((data_url("image/jpeg", &frame), "video"));
+            }
+        }
+    }
+
+    // Last resort (DASH, or HLS the above couldn't handle): ffmpeg opens the URL
+    // directly with the detection's headers.
+    let frame = ffmpeg_frame_from_url(url, ctx).await?;
+    Some((data_url("image/jpeg", &frame), "video"))
+}
+
+/// Pull an HLS playlist and its first segment (init segment prepended for fMP4,
+/// AES-128 decrypted, TS-disguise stripped) via the emulated client, ready to
+/// pipe into ffmpeg.
+async fn hls_first_segment_bytes(client: &HttpClient, ctx: &RequestContext, url: &str) -> Option<Vec<u8>> {
+    use luedd_media::hls::{parse_master_playlist, parse_media_playlist};
+
+    let text = client.get_text(url, &ctx.to_options(None)).await.ok()?;
+
+    // Resolve a media playlist: follow the lowest-bitrate variant of a master.
+    let (media_text, media_url) = if text.contains("#EXT-X-STREAM-INF") {
+        let lines: Vec<&str> = text.lines().collect();
+        let containers = parse_master_playlist(&lines, url).ok()?;
+        let best = containers.iter().min_by_key(|c| {
+            c.attributes.get("BANDWIDTH").and_then(|b| b.parse::<u64>().ok()).unwrap_or(u64::MAX)
+        })?;
+        let variant = best.video_playlist.as_ref().or(best.audio_playlist.as_ref())?.clone();
+        let vt = client.get_text(variant.as_str(), &ctx.to_options(None)).await.ok()?;
+        (vt, variant.to_string())
+    } else {
+        (text, url.to_string())
+    };
+
+    let lines: Vec<&str> = media_text.lines().collect();
+    let playlist = parse_media_playlist(&lines, &media_url).ok()?;
+
+    // Key (if the stream is AES-128 encrypted).
+    let mut key_cache: Option<Vec<u8>> = None;
+    if let Some(seg) = playlist.media_segments.iter().find(|s| s.key_url.is_some()) {
+        let key_url = seg.key_url.clone()?;
+        key_cache = client.get_bytes(key_url.as_str(), &ctx.to_options(None)).await.ok();
+    }
+
+    let fetch_one = |segment: &luedd_media::hls::HlsMediaSegment| {
+        let opts = ctx.to_options(segment.byte_range);
+        let url = segment.url.to_string();
+        let key = segment.key_url.as_ref().and_then(|_| key_cache.clone());
+        let iv = segment.iv;
+        async move {
+            let raw = client.get_bytes(&url, &opts).await.ok()?;
+            let payload = match (key, iv) {
+                (Some(k), Some(iv)) => luedd_media::crypto::decrypt_segment(&raw, &k, &iv).ok()?,
+                _ => luedd_media::disguise::extract_ts_payload(&raw).to_vec(),
+            };
+            Some(payload)
+        }
+    };
+
+    let mut out = Vec::new();
+    let mut media_taken = 0;
+    for segment in playlist.media_segments.iter() {
+        if segment.is_init_segment {
+            out.extend_from_slice(&fetch_one(segment).await?);
+            continue;
+        }
+        out.extend_from_slice(&fetch_one(segment).await?);
+        media_taken += 1;
+        if media_taken >= 1 || out.len() >= MAX_FFMPEG_INPUT_BYTES {
+            break;
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+fn is_pdf(content_type: &str, url: &str) -> bool {
+    content_type == "application/pdf"
+        || (matches!(content_type, "application/octet-stream" | "") && url_ends_with(url, "pdf"))
+}
+
+/// Read at most `cap` bytes of a response body. Returns None on a read error.
+async fn read_capped(response: &mut luedd_net::wreq::Response, cap: usize) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    while buf.len() < cap {
+        match response.chunk().await {
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
+    buf.truncate(cap);
+    Some(buf)
+}
+
+fn url_ends_with(url: &str, ext: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('.').next().map(|e| e.eq_ignore_ascii_case(ext)).unwrap_or(false)
+}
+
+/// Decode one frame from bytes already in hand (a media-file prefix or an HLS
+/// segment). The bytes are written to a temp file rather than piped, because a
+/// pipe isn't seekable and many mp4s keep their moov atom at the tail.
+async fn ffmpeg_frame_from_bytes(input: &[u8]) -> Option<Vec<u8>> {
+    let tmp = std::env::temp_dir().join(format!(
+        "luedd-prev-{}-{}.bin",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+    ));
+    if tokio::fs::write(&tmp, input).await.is_err() {
+        return None;
+    }
+
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.kill_on_drop(true);
+    cmd.args([
+        "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-i", &tmp.to_string_lossy(),
+        "-frames:v", "1",
+        "-vf", "scale='min(400,iw)':-2",
+        "-f", "image2", "-vcodec", "mjpeg", "-q:v", "4",
+        "pipe:1",
+    ]);
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let out = match cmd.spawn() {
+        Ok(child) => tokio::time::timeout(FFMPEG_TIMEOUT, child.wait_with_output()).await.ok().and_then(|r| r.ok()),
+        Err(_) => None,
+    };
+    tokio::fs::remove_file(&tmp).await.ok();
+
+    let out = out?;
+    (out.status.success() && !out.stdout.is_empty() && out.stdout.len() <= MAX_FRAME_BYTES).then_some(out.stdout)
+}
+
+/// Let ffmpeg open the URL itself (HLS/DASH, or media the prefix decode missed),
+/// replaying the detection's headers/cookies plus a browser User-Agent.
+async fn ffmpeg_frame_from_url(url: &str, ctx: &RequestContext) -> Option<Vec<u8>> {
+    let mut header_blob = String::new();
+    let mut have_ua = false;
+    for (k, v) in &ctx.headers {
+        let lk = k.to_ascii_lowercase();
+        if matches!(lk.as_str(), "host" | "accept-encoding" | "connection" | "content-length") {
+            continue;
+        }
+        if lk == "user-agent" {
+            have_ua = true;
+        }
+        header_blob.push_str(k);
+        header_blob.push_str(": ");
+        header_blob.push_str(v);
+        header_blob.push_str("\r\n");
+    }
+    if let Some(cookie) = &ctx.cookie {
+        header_blob.push_str("Cookie: ");
+        header_blob.push_str(cookie);
+        header_blob.push_str("\r\n");
+    }
+
+    // For a playlist (HLS/DASH) seeking means fetching every segment up to the
+    // offset, so take frame 0 in a single attempt. For a plain media URL, one
+    // seeked attempt (nicer frame) then an unseeked fallback.
+    let is_playlist = url_ends_with(url, "m3u8") || url_ends_with(url, "mpd");
+    let seeks: &[&str] = if is_playlist { &["0"] } else { &["1", "0"] };
+
+    for seek in seeks {
+        let mut cmd = tokio::process::Command::new("ffmpeg");
+        cmd.kill_on_drop(true);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-rw_timeout", "10000000"]);
+        if is_playlist {
+            cmd.args(["-probesize", "800000", "-analyzeduration", "2000000"]);
+        }
+        if !have_ua {
+            cmd.args(["-user_agent", FALLBACK_UA]);
+        }
+        if !header_blob.is_empty() {
+            cmd.args(["-headers", &header_blob]);
+        }
+        cmd.args([
+            "-ss", seek,
+            "-i", url,
+            "-frames:v", "1",
+            "-vf", "scale='min(400,iw)':-2",
+            "-f", "image2",
+            "-vcodec", "mjpeg",
+            "-q:v", "4",
+            "pipe:1",
+        ]);
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let Ok(child) = cmd.spawn() else { return None };
+        let out = match tokio::time::timeout(FFMPEG_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            _ => continue,
+        };
+        if out.status.success() && !out.stdout.is_empty() && out.stdout.len() <= MAX_FRAME_BYTES {
+            return Some(out.stdout);
+        }
+    }
+    None
+}
+
+/// URL-suffix guess, upgraded by a real content-type sniff when the guess is
+/// Http (mirrors the reclassification in `queue_url` and the desktop app's
+/// `detect_kind`).
+async fn resolve_download_kind(client: &HttpClient, url: &str, ctx: &RequestContext) -> DownloadKind {
+    let guessed = DownloadKind::guess_from_url(url);
+    if !matches!(guessed, DownloadKind::Http) {
+        return guessed;
+    }
+    match luedd_core::naming::resolve_real_extension(client, url, ctx).await.as_deref() {
+        Some("m3u8") => DownloadKind::Hls,
+        Some("mpd") => DownloadKind::Dash,
+        _ => guessed,
+    }
+}
+
 async fn clear(State(state): State<Arc<AppState>>, _body: Bytes) -> Json<SyncResponse> {
     state.detected.lock().await.clear();
+    state.preview_cache.lock().await.clear();
+    state.quality_cache.lock().await.clear();
     Json(default_sync_response(video_list(&state).await))
 }
 
@@ -410,6 +892,7 @@ mod tests {
             None,
             Some("My Cool Video"),
             Some("https://site.example/watch?v=1"),
+            false,
         );
         assert_eq!(item.info, "My Cool Video.mp4");
         assert_eq!(item.url, "https://cdn.example/abc123.mp4?token=secret");
@@ -418,9 +901,18 @@ mod tests {
 
     #[test]
     fn video_list_item_falls_back_to_url_derived_name_without_a_title() {
-        let item = to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None);
+        let item = to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None, false);
         assert_eq!(item.info, "movie.mkv");
         assert_eq!(item.page_url, None);
+    }
+
+    #[test]
+    fn looks_like_image_uses_content_type_then_url_extension() {
+        assert!(looks_like_image(Some("image/jpeg"), "https://cdn.example/x"));
+        assert!(looks_like_image(Some("IMAGE/PNG; charset=binary"), "https://cdn.example/x"));
+        assert!(looks_like_image(None, "https://cdn.example/photo.WEBP?v=2"));
+        assert!(!looks_like_image(Some("video/mp4"), "https://cdn.example/clip.mp4"));
+        assert!(!looks_like_image(None, "https://cdn.example/stream.m3u8"));
     }
 
     #[test]

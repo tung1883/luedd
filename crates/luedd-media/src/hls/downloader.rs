@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use luedd_net::{HttpClient, ProgressTx, RequestContext};
+use luedd_net::{HttpClient, ProgressTracker, RequestContext};
 
 use super::model::{HlsMediaSegment, HlsPlaylist};
 use crate::crypto::decrypt_segment;
@@ -14,9 +14,9 @@ pub async fn download_playlist(
     segments_dir: &Path,
     concurrency: usize,
     ctx: &RequestContext,
-    progress: Option<&ProgressTx>,
+    tracker: &ProgressTracker,
 ) -> Result<()> {
-    let total_segments = playlist.media_segments.len() as u64;
+    let total_segments = playlist.media_segments.len();
     let tmp_dir = segments_dir;
     tokio::fs::create_dir_all(tmp_dir).await?;
 
@@ -28,7 +28,7 @@ pub async fn download_playlist(
     }
 
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
-    let mut tasks = Vec::with_capacity(playlist.media_segments.len());
+    let mut set = tokio::task::JoinSet::new();
 
     for (index, segment) in playlist.media_segments.iter().cloned().enumerate() {
         let client = client.clone();
@@ -37,27 +37,23 @@ pub async fn download_playlist(
         let key = key_cache.clone();
         let ctx = ctx.clone();
 
-        tasks.push(tokio::spawn(async move {
+        set.spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore closed");
-            download_one_segment(&client, &segment, &key, &seg_path, &ctx).await
-        }));
+            let result = download_one_segment(&client, &segment, &key, &seg_path, &ctx).await;
+            (index, result)
+        });
     }
 
-    let mut seg_paths = Vec::with_capacity(tasks.len());
-    let mut bytes_so_far: u64 = 0;
-    for (index, task) in tasks.into_iter().enumerate() {
-        let segment_bytes = task
-            .await
-            .context("segment download task panicked")?
-            .with_context(|| format!("failed to download segment {index}"))?;
-        seg_paths.push(tmp_dir.join(format!("{index:08}.seg")));
-        bytes_so_far += segment_bytes;
-
-        let done = index as u64 + 1;
-        let estimated_total = (bytes_so_far / done) * total_segments;
-        luedd_net::report_progress(progress, bytes_so_far, estimated_total);
+    // Account for each segment the moment it finishes — in completion order, not
+    // playlist order — so one slow early segment can't freeze the whole bar.
+    while let Some(joined) = set.join_next().await {
+        let (index, result) = joined.context("segment download task panicked")?;
+        let segment_bytes = result.with_context(|| format!("failed to download segment {index}"))?;
+        tracker.add_unit(segment_bytes);
     }
 
+    let seg_paths: Vec<PathBuf> =
+        (0..total_segments).map(|i| tmp_dir.join(format!("{i:08}.seg"))).collect();
     assemble(&seg_paths, dest).await?;
     tokio::fs::remove_dir_all(&tmp_dir).await.ok();
     Ok(())
@@ -108,4 +104,109 @@ async fn assemble(seg_paths: &[PathBuf], dest: &Path) -> Result<()> {
     }
     out.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Minimal HTTP/1.1 server. `GET /seg/N` returns 16 bytes; segment 0 is
+    /// delayed so it is the last to finish even though it is first in playlist
+    /// order.
+    async fn spawn_segment_server(slow_first: Duration) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req.split_whitespace().nth(1).unwrap_or("/");
+                    let idx: usize = path.rsplit('/').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    if idx == 0 {
+                        tokio::time::sleep(slow_first).await;
+                    }
+                    let body = vec![b'x'; 16];
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    sock.write_all(resp.as_bytes()).await.ok();
+                    sock.write_all(&body).await.ok();
+                    sock.flush().await.ok();
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn playlist(base: &str, count: usize) -> HlsPlaylist {
+        HlsPlaylist {
+            media_segments: (0..count)
+                .map(|i| HlsMediaSegment {
+                    url: url::Url::parse(&format!("{base}/seg/{i}")).unwrap(),
+                    byte_range: None,
+                    duration: 1.0,
+                    key_url: None,
+                    iv: None,
+                    is_init_segment: false,
+                })
+                .collect(),
+            is_encrypted: false,
+            total_duration: 10.0,
+            has_byte_range: false,
+            is_key_i_frame_only: false,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn progress_advances_before_a_slow_leading_segment_finishes() {
+        let base = spawn_segment_server(Duration::from_millis(1500)).await;
+        let pl = playlist(&base, 10);
+        let dir = std::env::temp_dir().join(format!("luedd-hls-ooo-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tracker = ProgressTracker::with_emit_interval(Some(&tx), None, 10, Duration::from_millis(1));
+
+        let client = HttpClient::new().unwrap();
+        let dl = tokio::spawn({
+            let dest = dir.join("out.ts");
+            let segs = dir.join("segs");
+            async move { download_playlist(&client, &pl, &dest, &segs, 8, &RequestContext::default(), &tracker).await }
+        });
+
+        // Segment 0 sleeps for 1500 ms. Long before then, the other 9 finish and
+        // must already be reflected in an emitted event. The old in-playlist-order
+        // await produced no event at all until segment 0 returned.
+        let mut best = 0u64;
+        for _ in 0..6 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            while let Ok(ev) = rx.try_recv() {
+                if let luedd_net::JobEvent::Progress { done_units, .. } = ev {
+                    best = best.max(done_units);
+                }
+            }
+            if best >= 1 {
+                break;
+            }
+        }
+        assert!(best >= 1, "progress froze behind slow segment 0 (no event within 600ms)");
+
+        let r = dl.await.unwrap();
+        r.unwrap();
+
+        // Every fast segment eventually accounted for, count exact.
+        while let Ok(ev) = rx.try_recv() {
+            if let luedd_net::JobEvent::Progress { done_units, .. } = ev {
+                best = best.max(done_units);
+            }
+        }
+        assert_eq!(best, 10, "final progress must reflect all 10 completed segments");
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
 }

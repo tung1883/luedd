@@ -7,7 +7,7 @@ use luedd_media::hls::{download_playlist, parse_master_playlist, parse_media_pla
 use luedd_media::mux::{mux_demuxed, mux_single};
 use luedd_media::mux::MuxProgress;
 use luedd_media::quality::{dash_variant_key, hls_variant_key};
-use luedd_net::{HttpClient, ProgressTx, RequestContext};
+use luedd_net::{HttpClient, ProgressTracker, ProgressTx, RequestContext};
 
 use crate::naming::cache_dir_for;
 use crate::progressive;
@@ -100,8 +100,12 @@ pub async fn run_hls(
 
                 let video_tmp = cache_dir.join("video.ts");
                 let audio_tmp = cache_dir.join("audio.ts");
-                download_playlist(client, &video_playlist, &video_tmp, &cache_dir.join("video-segments"), concurrency, ctx, progress).await?;
-                download_playlist(client, &audio_playlist, &audio_tmp, &cache_dir.join("audio-segments"), concurrency, ctx, None).await?;
+                let total_segments =
+                    (video_playlist.media_segments.len() + audio_playlist.media_segments.len()) as u64;
+                let tracker = ProgressTracker::new(progress, None, total_segments);
+                download_playlist(client, &video_playlist, &video_tmp, &cache_dir.join("video-segments"), concurrency, ctx, &tracker).await?;
+                download_playlist(client, &audio_playlist, &audio_tmp, &cache_dir.join("audio-segments"), concurrency, ctx, &tracker).await?;
+                tracker.finish();
                 luedd_net::report_converting(progress);
                 let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, (video_playlist.total_duration * 1000.0) as u64));
                 let produced = mux_demuxed(&video_tmp, &audio_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
@@ -109,7 +113,10 @@ pub async fn run_hls(
             }
             None => {
                 let assembled_tmp = cache_dir.join("assembled.ts");
-                download_playlist(client, &video_playlist, &assembled_tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
+                let tracker =
+                    ProgressTracker::new(progress, None, video_playlist.media_segments.len() as u64);
+                download_playlist(client, &video_playlist, &assembled_tmp, &cache_dir.join("segments"), concurrency, ctx, &tracker).await?;
+                tracker.finish();
                 luedd_net::report_converting(progress);
                 let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, (video_playlist.total_duration * 1000.0) as u64));
                 let produced = mux_single(&assembled_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
@@ -119,7 +126,9 @@ pub async fn run_hls(
     } else if text.contains("#EXTINF") {
         let playlist = parse_media_playlist(&lines, url)?;
         let assembled_tmp = cache_dir.join("assembled.ts");
-        download_playlist(client, &playlist, &assembled_tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
+        let tracker = ProgressTracker::new(progress, None, playlist.media_segments.len() as u64);
+        download_playlist(client, &playlist, &assembled_tmp, &cache_dir.join("segments"), concurrency, ctx, &tracker).await?;
+        tracker.finish();
         luedd_net::report_converting(progress);
         let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, (playlist.total_duration * 1000.0) as u64));
         let produced = mux_single(&assembled_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
@@ -162,8 +171,11 @@ pub async fn run_dash(
         (Some(video), Some(audio)) => {
             let video_tmp = cache_dir.join("video.m4s");
             let audio_tmp = cache_dir.join("audio.m4s");
-            download_representation(client, video, &video_tmp, &cache_dir.join("video-segments"), concurrency, ctx, progress).await?;
-            download_representation(client, audio, &audio_tmp, &cache_dir.join("audio-segments"), concurrency, ctx, None).await?;
+            let total_segments = (video.segments.len() + audio.segments.len()) as u64;
+            let tracker = ProgressTracker::new(progress, None, total_segments);
+            download_representation(client, video, &video_tmp, &cache_dir.join("video-segments"), concurrency, ctx, &tracker).await?;
+            download_representation(client, audio, &audio_tmp, &cache_dir.join("audio-segments"), concurrency, ctx, &tracker).await?;
+            tracker.finish();
             luedd_net::report_converting(progress);
             let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, video.duration_ms.max(0) as u64));
             let produced = mux_demuxed(&video_tmp, &audio_tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
@@ -171,7 +183,9 @@ pub async fn run_dash(
         }
         (Some(video), None) => {
             let tmp = cache_dir.join("video.m4s");
-            download_representation(client, video, &tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
+            let tracker = ProgressTracker::new(progress, None, video.segments.len() as u64);
+            download_representation(client, video, &tmp, &cache_dir.join("segments"), concurrency, ctx, &tracker).await?;
+            tracker.finish();
             luedd_net::report_converting(progress);
             let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, video.duration_ms.max(0) as u64));
             let produced = mux_single(&tmp, &cache_dir.join("output.mp4"), mux_progress).await?;
@@ -179,7 +193,9 @@ pub async fn run_dash(
         }
         (None, Some(audio)) => {
             let tmp = cache_dir.join("audio.m4s");
-            download_representation(client, audio, &tmp, &cache_dir.join("segments"), concurrency, ctx, progress).await?;
+            let tracker = ProgressTracker::new(progress, None, audio.segments.len() as u64);
+            download_representation(client, audio, &tmp, &cache_dir.join("segments"), concurrency, ctx, &tracker).await?;
+            tracker.finish();
             luedd_net::report_converting(progress);
             let mux_progress: Option<MuxProgress> = progress.map(|tx| (tx, audio.duration_ms.max(0) as u64));
             let produced = mux_single(&tmp, &cache_dir.join("output.mp4"), mux_progress).await?;

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::future::Future;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use wreq::Client;
@@ -13,15 +15,157 @@ pub const DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy)]
 pub enum JobEvent {
-    Progress { done: u64, total: u64 },
+    Progress {
+        /// Bytes actually transferred so far.
+        downloaded_bytes: u64,
+        /// Total bytes, when known (HTTP with Content-Length, or mux total-ms).
+        total_bytes: Option<u64>,
+        /// Completed units (HLS/DASH segments); 0 for byte-only downloads.
+        done_units: u64,
+        /// Total units; 0 when there is no unit count.
+        total_units: u64,
+        /// Backend-computed throughput over a recent sliding window.
+        speed_bps: u64,
+    },
     Converting,
 }
 
 pub type ProgressTx = tokio::sync::mpsc::UnboundedSender<JobEvent>;
 
+/// Convenience emitter for one-shot progress points (completion markers, mux
+/// progress). Streaming downloads should use [`ProgressTracker`] instead so the
+/// speed window and event throttling are handled for them.
 pub fn report_progress(tx: Option<&ProgressTx>, done: u64, total: u64) {
     if let Some(tx) = tx {
-        let _ = tx.send(JobEvent::Progress { done, total });
+        let _ = tx.send(JobEvent::Progress {
+            downloaded_bytes: done,
+            total_bytes: (total > 0).then_some(total),
+            done_units: 0,
+            total_units: 0,
+            speed_bps: 0,
+        });
+    }
+}
+
+const SPEED_WINDOW: Duration = Duration::from_secs(5);
+const EMIT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Shared progress accounting for a streaming download. Cheap to share behind an
+/// `Arc`; every mutating call takes `&self`. Emits `JobEvent::Progress` at most
+/// once per [`EMIT_INTERVAL`] (plus a forced final event from [`finish`]),
+/// carrying a throughput figure measured over the last [`SPEED_WINDOW`] of real
+/// wall-clock time — not over the UI poll interval.
+pub struct ProgressTracker {
+    tx: Option<ProgressTx>,
+    emit_interval: Duration,
+    inner: Mutex<TrackerInner>,
+}
+
+struct TrackerInner {
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    done_units: u64,
+    total_units: u64,
+    /// (timestamp, cumulative bytes) samples within the speed window.
+    samples: VecDeque<(Instant, u64)>,
+    last_emit: Option<Instant>,
+}
+
+impl ProgressTracker {
+    pub fn new(tx: Option<&ProgressTx>, total_bytes: Option<u64>, total_units: u64) -> Self {
+        Self::with_emit_interval(tx, total_bytes, total_units, EMIT_INTERVAL)
+    }
+
+    /// Like [`new`] but with a custom minimum interval between emitted events.
+    /// Primarily useful in tests that need finer-grained event streams.
+    pub fn with_emit_interval(
+        tx: Option<&ProgressTx>,
+        total_bytes: Option<u64>,
+        total_units: u64,
+        emit_interval: Duration,
+    ) -> Self {
+        Self {
+            tx: tx.cloned(),
+            emit_interval,
+            inner: Mutex::new(TrackerInner {
+                downloaded_bytes: 0,
+                total_bytes,
+                done_units: 0,
+                total_units,
+                samples: VecDeque::new(),
+                last_emit: None,
+            }),
+        }
+    }
+
+    /// Record `delta` freshly transferred bytes (no unit completed).
+    pub fn add_bytes(&self, delta: u64) {
+        self.record(0, delta, false);
+    }
+
+    /// Record a completed unit (e.g. one HLS/DASH segment) worth `bytes`.
+    pub fn add_unit(&self, bytes: u64) {
+        self.record(1, bytes, false);
+    }
+
+    /// Force a final event: clamp counters to their totals and emit immediately.
+    pub fn finish(&self) {
+        {
+            let mut g = self.inner.lock().unwrap();
+            if let Some(tb) = g.total_bytes {
+                g.downloaded_bytes = g.downloaded_bytes.max(tb);
+            }
+            if g.total_units > 0 {
+                g.done_units = g.total_units;
+            }
+        }
+        self.record(0, 0, true);
+    }
+
+    fn record(&self, units_delta: u64, bytes_delta: u64, force: bool) {
+        let mut g = self.inner.lock().unwrap();
+        g.done_units += units_delta;
+        g.downloaded_bytes += bytes_delta;
+
+        let now = Instant::now();
+        let cumulative = g.downloaded_bytes;
+        g.samples.push_back((now, cumulative));
+        while g.samples.len() > 1 {
+            let (oldest, _) = *g.samples.front().unwrap();
+            if now.duration_since(oldest) > SPEED_WINDOW {
+                g.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        let due = force || g.last_emit.is_none_or(|last| now.duration_since(last) >= self.emit_interval);
+        if !due {
+            return;
+        }
+        g.last_emit = Some(now);
+
+        let speed_bps = match (g.samples.front(), g.samples.back()) {
+            (Some(&(t0, b0)), Some(&(t1, b1))) if t1 > t0 && b1 > b0 => {
+                let secs = t1.duration_since(t0).as_secs_f64();
+                if secs > 0.0 {
+                    ((b1 - b0) as f64 / secs) as u64
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
+
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(JobEvent::Progress {
+                downloaded_bytes: g.downloaded_bytes,
+                total_bytes: g.total_bytes,
+                done_units: g.done_units,
+                total_units: g.total_units,
+                speed_bps,
+            });
+        }
     }
 }
 
@@ -143,7 +287,11 @@ impl HttpClient {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(180))
             .redirect(wreq::redirect::Policy::default())
-            .pool_max_idle_per_host(0)
+            // Reuse connections: media hosts (and Cloudflare-fronted ones
+            // especially) charge a full TLS handshake per new connection, and a
+            // download or a preview burst hits the same host dozens of times.
+            .pool_max_idle_per_host(16)
+            .pool_idle_timeout(Duration::from_secs(30))
             .build()
             .context("failed to build wreq client")?;
         Ok(Self { client })
@@ -199,6 +347,91 @@ impl HttpClient {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<JobEvent>) -> Vec<JobEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    fn last_progress(events: &[JobEvent]) -> (u64, Option<u64>, u64, u64, u64) {
+        events
+            .iter()
+            .rev()
+            .find_map(|e| match *e {
+                JobEvent::Progress { downloaded_bytes, total_bytes, done_units, total_units, speed_bps } => {
+                    Some((downloaded_bytes, total_bytes, done_units, total_units, speed_bps))
+                }
+                _ => None,
+            })
+            .expect("expected at least one Progress event")
+    }
+
+    #[test]
+    fn tracker_units_are_monotonic_and_capped_under_out_of_order_completion() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tracker = ProgressTracker::new(Some(&tx), None, 3);
+
+        // Segments "complete" in the order 2, 0, 1 — order must not matter.
+        tracker.add_unit(100);
+        tracker.add_unit(100);
+        tracker.add_unit(100);
+        tracker.finish();
+
+        let events = drain(&mut rx);
+        let mut seen = 0u64;
+        for e in &events {
+            if let JobEvent::Progress { done_units, total_units, .. } = *e {
+                assert!(done_units >= seen, "done_units went backwards");
+                assert!(done_units <= total_units, "done_units exceeded total");
+                seen = done_units;
+            }
+        }
+        let (bytes, _, done_units, total_units, _) = last_progress(&events);
+        assert_eq!((done_units, total_units), (3, 3));
+        assert_eq!(bytes, 300);
+    }
+
+    #[test]
+    fn tracker_finish_always_emits_even_without_progress() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tracker = ProgressTracker::new(Some(&tx), Some(500), 0);
+        tracker.finish();
+        let events = drain(&mut rx);
+        let (bytes, total, _, _, _) = last_progress(&events);
+        assert_eq!(bytes, 500, "finish clamps downloaded up to the known total");
+        assert_eq!(total, Some(500));
+    }
+
+    #[test]
+    fn tracker_throttles_a_burst_of_updates_into_few_events() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tracker = ProgressTracker::new(Some(&tx), Some(10_000), 0);
+        // 1000 tiny synchronous updates: without throttling this is 1000 events.
+        for _ in 0..1000 {
+            tracker.add_bytes(10);
+        }
+        let mid = drain(&mut rx);
+        assert!(mid.len() < 50, "burst was not throttled: {} events", mid.len());
+        // The forced final event still carries the true total.
+        tracker.finish();
+        let (bytes, ..) = last_progress(&drain(&mut rx));
+        assert_eq!(bytes, 10_000);
+    }
+
+    #[tokio::test]
+    async fn tracker_reports_a_plausible_speed_over_real_time() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tracker = ProgressTracker::new(Some(&tx), None, 0);
+        tracker.add_bytes(1_000_000);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        tracker.add_bytes(1_000_000); // ~2 MB over ~0.4 s => ~5 MB/s
+        let events = drain(&mut rx);
+        let (_, _, _, _, speed) = last_progress(&events);
+        assert!(speed > 1_000_000 && speed < 20_000_000, "implausible speed: {speed}");
+    }
 
     #[tokio::test]
     async fn retry_succeeds_after_transient_failures() {

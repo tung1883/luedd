@@ -10,7 +10,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use luedd_net::{HttpClient, ProgressTx, RequestContext};
+use luedd_net::{HttpClient, ProgressTracker, ProgressTx, RequestContext};
 
 use crate::naming::cache_dir_for;
 
@@ -131,7 +131,7 @@ async fn download_resumable(
     let claimed = vec![false; state.pieces.len()];
     let shared = Arc::new(Mutex::new(Shared { state, claimed }));
     let last_saved = Arc::new(Mutex::new(Instant::now()));
-    let progress = progress.cloned();
+    let tracker = Arc::new(ProgressTracker::new(progress, (total_size > 0).then_some(total_size), 0));
 
     let mut workers: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::with_capacity(concurrency);
     for _ in 0..concurrency {
@@ -142,7 +142,7 @@ async fn download_resumable(
         let state_file = state_file.to_path_buf();
         let url = url.clone();
         let ctx = ctx.clone();
-        let progress = progress.clone();
+        let tracker = tracker.clone();
 
         workers.push(tokio::spawn(async move {
             loop {
@@ -157,7 +157,7 @@ async fn download_resumable(
                 let Some(index) = piece_index else { break };
 
                 luedd_net::retry(luedd_net::DEFAULT_RETRY_ATTEMPTS, luedd_net::DEFAULT_RETRY_DELAY, || {
-                    download_piece(&client, &url, &work_path, shared.clone(), index, &last_saved, &state_file, &ctx, progress.as_ref())
+                    download_piece(&client, &url, &work_path, shared.clone(), index, &last_saved, &state_file, &ctx, &tracker)
                 })
                 .await
                 .with_context(|| format!("piece {index} failed after retries"))?;
@@ -179,7 +179,7 @@ async fn download_resumable(
     }
     tokio::fs::rename(work_path, dest).await.context("moving finished download into place")?;
     tokio::fs::remove_dir_all(cache_dir).await.ok();
-    luedd_net::report_progress(progress.as_ref(), total_size, total_size);
+    tracker.finish();
     tracing::info!(total_size, path = %dest.display(), "download complete");
     Ok(())
 }
@@ -197,7 +197,7 @@ async fn download_piece(
     last_saved: &Arc<Mutex<Instant>>,
     state_file: &Path,
     ctx: &RequestContext,
-    progress: Option<&ProgressTx>,
+    tracker: &ProgressTracker,
 ) -> Result<()> {
     let (offset, length, downloaded) = {
         let s = shared.lock().await;
@@ -227,12 +227,11 @@ async fn download_piece(
         let chunk = chunk.context("error reading response body")?;
         file.write_all(&chunk).await?;
         written += chunk.len() as u64;
+        tracker.add_bytes(chunk.len() as u64);
 
         let should_save = {
             let mut s = shared.lock().await;
             s.state.pieces[index].downloaded += chunk.len() as u64;
-            let total_downloaded: u64 = s.state.pieces.iter().map(|p| p.downloaded).sum();
-            luedd_net::report_progress(progress, total_downloaded, s.state.total_size);
 
             let mut ls = last_saved.lock().await;
             if ls.elapsed() >= STATE_SAVE_INTERVAL {
@@ -274,6 +273,7 @@ async fn download_single_stream(
         bail!("GET {url} returned status {status} ({})", luedd_net::describe_sent_headers(&opts));
     }
     let total_size = response.content_length().unwrap_or(0);
+    let tracker = ProgressTracker::new(progress, (total_size > 0).then_some(total_size), 0);
 
     let work_path = cache_dir.join("output.partial");
     let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(&work_path).await?;
@@ -283,13 +283,13 @@ async fn download_single_stream(
         let chunk = chunk.context("error reading response body")?;
         file.write_all(&chunk).await?;
         total += chunk.len() as u64;
-        luedd_net::report_progress(progress, total, total_size);
+        tracker.add_bytes(chunk.len() as u64);
     }
     file.flush().await?;
     drop(file);
     tokio::fs::rename(&work_path, dest).await.context("moving finished download into place")?;
     tokio::fs::remove_dir_all(cache_dir).await.ok();
-    luedd_net::report_progress(progress, total, total);
+    tracker.finish();
     tracing::info!(total, path = %dest.display(), "download complete (non-resumable single stream)");
     Ok(())
 }

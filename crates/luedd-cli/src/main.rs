@@ -105,7 +105,8 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
     tokio::fs::create_dir_all(&settings.get().await.download_dir).await.ok();
     let client = HttpClient::new().context("building http client")?;
     let manager = Arc::new(DownloadManager::new(store.clone(), client, 2, 8));
-    luedd_ipc::server::serve(store, manager, luedd_ipc::server::ServerConfig { settings, on_new_detection: None }, port).await
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).with_context(|| format!("binding 127.0.0.1:{port}"))?;
+    luedd_ipc::server::serve(store, manager, luedd_ipc::server::ServerConfig { settings, on_new_detection: None }, listener).await
 }
 
 async fn run_job(kind: DownloadKind, url: &str, output: &PathBuf, concurrency: usize) -> Result<()> {

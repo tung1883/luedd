@@ -6,6 +6,18 @@ class VideoPopup {
     onLoad() {
         document.getElementById('content').style.display = 'none';
 
+        // id -> { url, kind } | null. Survives re-renders so a thumbnail is
+        // fetched from the app at most once per popup session.
+        this.previewCache = new Map();
+        this.previewObserver = new IntersectionObserver(entries => {
+            for (const e of entries) {
+                if (e.isIntersecting) {
+                    this.previewObserver.unobserve(e.target);
+                    if (e.target._loadPreview) e.target._loadPreview();
+                }
+            }
+        }, { root: document.getElementById("list"), rootMargin: "150px" });
+
         document.getElementById("chk").addEventListener('click', (e) => {
             chrome.runtime.sendMessage({ type: "cmd", enabled: document.getElementById("chk").checked });
             window.close();
@@ -80,9 +92,36 @@ class VideoPopup {
         return line;
     }
 
+    async loadPreview(listItem, col) {
+        if (col.dataset.loaded) return;
+        col.dataset.loaded = "1";
+
+        let data = this.previewCache.get(listItem.id);
+        if (data === undefined) {
+            data = await new Promise(resolve => {
+                chrome.runtime.sendMessage({ type: "preview", itemId: listItem.id }, response => {
+                    const url = response && response.previewDataUrl;
+                    resolve(url ? { url, kind: response.previewKind || "image" } : null);
+                });
+            });
+            this.previewCache.set(listItem.id, data);
+        }
+        // The popup's extension CSP (object-src 'self') can't embed a data: PDF.
+        if (!data || data.kind === "pdf") return;
+
+        let img = document.createElement('img');
+        img.className = 'thumb';
+        img.alt = '';
+        img.title = 'Open in a new tab';
+        img.src = data.url;
+        img.addEventListener('click', e => { e.stopPropagation(); chrome.tabs.create({ url: listItem.url }); });
+        col.appendChild(img);
+    }
+
     renderList(arr) {
         let list = document.getElementById("list");
         list.innerHTML = "";
+        this.previewObserver.disconnect();
 
         if (arr.length === 0) {
             let empty = document.createElement('div');
@@ -115,15 +154,9 @@ class VideoPopup {
             infoText.className = 'info-text';
             infoText.innerText = listItem.info;
 
-            let preview = document.createElement('button');
-            preview.className = 'preview-link';
-            preview.innerText = "Preview";
-            preview.title = "Open this link in a new tab to view it before downloading";
-
             let infoRow = document.createElement('div');
             infoRow.className = 'info-row';
             infoRow.appendChild(infoText);
-            infoRow.appendChild(preview);
 
             let detailsPanel = document.createElement('div');
             detailsPanel.className = 'details-panel';
@@ -135,9 +168,21 @@ class VideoPopup {
             detailsPanel.appendChild(qualityBox);
             let qualityProbed = false;
 
-            row.appendChild(titleRow);
-            row.appendChild(infoRow);
-            row.appendChild(detailsPanel);
+            let body = document.createElement('div');
+            body.className = 'row-body';
+            body.appendChild(titleRow);
+            body.appendChild(infoRow);
+            body.appendChild(detailsPanel);
+
+            // Preview thumbnail column on the right; populated lazily when the row
+            // scrolls into view, empty when there's nothing to show.
+            let previewCol = document.createElement('div');
+            previewCol.className = 'row-preview';
+            previewCol._loadPreview = () => this.loadPreview(listItem, previewCol);
+            this.previewObserver.observe(previewCol);
+
+            row.appendChild(body);
+            row.appendChild(previewCol);
             list.appendChild(row);
 
             button.addEventListener('click', e => {
@@ -149,10 +194,6 @@ class VideoPopup {
                         : "Lüdd app not running";
                     setTimeout(() => { button.innerText = original; }, 1500);
                 });
-            });
-            preview.addEventListener('click', e => {
-                e.stopPropagation();
-                chrome.tabs.create({ url: listItem.url });
             });
             toggle.addEventListener('click', e => {
                 e.stopPropagation();

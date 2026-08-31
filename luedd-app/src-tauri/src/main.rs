@@ -190,13 +190,31 @@ async fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<
     Ok(())
 }
 
+const IPC_PORT: u16 = 8597;
+
 fn main() {
     tracing_subscriber::fmt::init();
+
+    // The frontend is a handful of embedded HTML files served over an unchanging
+    // internal URL; WebView2's HTTP cache otherwise keeps serving a stale build
+    // after an upgrade. Disable it - there is nothing here worth caching.
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-http-cache");
+
+    // Single-instance guard: claim the IPC port *before* any window exists. A
+    // second copy would otherwise flash a window and then die when the bind
+    // fails, and would fight the first for the WebView2 user-data lock.
+    let ipc_listener = match std::net::TcpListener::bind(("127.0.0.1", IPC_PORT)) {
+        Ok(l) => l,
+        Err(_) => {
+            tracing::info!("luedd-app is already running; exiting this instance");
+            return;
+        }
+    };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
             let data_dir = default_data_dir();
             let store_path = default_store_path(&data_dir);
             let settings_path = default_settings_path(&data_dir);
@@ -217,7 +235,7 @@ fn main() {
             let (detection_tx, mut detection_rx) = tokio::sync::mpsc::unbounded_channel();
             tauri::async_runtime::spawn(async move {
                 let config = luedd_ipc::server::ServerConfig { settings: server_settings, on_new_detection: Some(detection_tx) };
-                if let Err(e) = luedd_ipc::server::serve(server_store, server_manager, config, 8597).await {
+                if let Err(e) = luedd_ipc::server::serve(server_store, server_manager, config, ipc_listener).await {
                     tracing::warn!(error = %e, "luedd-ipc server exited");
                 }
             });
@@ -276,7 +294,8 @@ fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
         let _ = win.emit("detection-updated", ());
         return;
     }
-    let win = tauri::WebviewWindowBuilder::new(app, DETECTION_WINDOW_LABEL, tauri::WebviewUrl::App("detected.html".into()))
+    let detected_url = format!("detected.html?v={}", env!("LUEDD_ASSET_VER"));
+    let win = tauri::WebviewWindowBuilder::new(app, DETECTION_WINDOW_LABEL, tauri::WebviewUrl::App(detected_url.into()))
         .title("Detected downloads")
         .inner_size(420.0, 480.0)
         .resizable(true)

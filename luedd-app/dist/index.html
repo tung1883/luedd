@@ -131,7 +131,6 @@
 const { invoke } = window.__TAURI__.core;
 const selected = new Set();
 const detailsOpen = new Set();
-const lastProgress = new Map();
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"]);
 
@@ -227,40 +226,35 @@ function formatBytes(bytes) {
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-function speedLabel(e, done) {
-  const now = Date.now();
-  const prev = lastProgress.get(e.id);
-  if (!prev) {
-    lastProgress.set(e.id, { done, time: now, speedText: "" });
-    return "";
-  }
-  if (done <= prev.done) {
-    return prev.speedText || "";
-  }
-  const dtSeconds = (now - prev.time) / 1000;
-  const rate = dtSeconds > 0 ? (done - prev.done) / dtSeconds : 0;
-  const speedText = rate > 0 ? formatBytesPerSec(rate) : "";
-  lastProgress.set(e.id, { done, time: now, speedText });
-  return speedText;
+function progressBar(pct, label) {
+  return `<div class="progress-wrap"><div class="progress-bar" style="width:${pct}%"></div></div><div class="progress-text">${label ?? pct + "%"}</div>`;
 }
 
 function formatProgress(e) {
   if (e.status === "Finished") {
-    return `<div class="progress-wrap"><div class="progress-bar" style="width:100%"></div></div><div class="progress-text">100%</div>`;
+    return progressBar(100, "100%");
   }
   if (!e.progress) {
     return e.status === "Converting" ? `<div class="progress-text">Converting…</div>` : "";
   }
-  const [done, total] = e.progress;
-  if (!total) return formatBytes(done);
-  const pct = Math.min(100, Math.round((done / total) * 100));
-  return `<div class="progress-wrap"><div class="progress-bar" style="width:${pct}%"></div></div><div class="progress-text">${pct}%</div>`;
+  const p = e.progress;
+  // HLS/DASH: honest percentage from the known segment count.
+  if (p.total_units > 0) {
+    const pct = Math.min(100, Math.round((p.done_units / p.total_units) * 100));
+    return progressBar(pct, `${pct}% (${p.done_units}/${p.total_units})`);
+  }
+  // HTTP with a known Content-Length.
+  if (p.total_bytes) {
+    const pct = Math.min(100, Math.round((p.downloaded_bytes / p.total_bytes) * 100));
+    return progressBar(pct);
+  }
+  // HTTP, unknown size: show bytes transferred, no bar.
+  return formatBytes(p.downloaded_bytes);
 }
 
 function formatSpeed(e) {
-  if (e.status !== "Downloading" || !e.progress) return "";
-  const [done] = e.progress;
-  return speedLabel(e, done);
+  if (e.status !== "Downloading" || !e.progress || !e.progress.speed_bps) return "";
+  return formatBytesPerSec(e.progress.speed_bps);
 }
 
 const KIND_LABELS = { Http: "HTTP", Hls: "HLS", Dash: "DASH" };
@@ -284,9 +278,6 @@ async function refresh() {
   const liveIds = new Set(entries.map(e => e.id));
   for (const id of [...selected]) {
     if (!liveIds.has(id)) selected.delete(id);
-  }
-  for (const id of [...lastProgress.keys()]) {
-    if (!liveIds.has(id)) lastProgress.delete(id);
   }
 
   const rows = document.getElementById("rows");
@@ -370,7 +361,6 @@ async function refresh() {
   rows.querySelectorAll(".pause-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       await invoke("pause_entry", { id: btn.dataset.id });
-      lastProgress.delete(btn.dataset.id);
       await refresh();
     });
   });
