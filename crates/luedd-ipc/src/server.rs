@@ -1,6 +1,6 @@
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -115,13 +115,18 @@ const DEFAULT_MEDIA_TYPES: &[&str] = &[
     "image/",
 ];
 
+/// Whether the browser extension should keep feeding detections. Toggled from
+/// the detection window (`POST /monitoring`); the extension reads it off every
+/// sync response and stops sending when it's false.
+static MONITORING: AtomicBool = AtomicBool::new(true);
+
 fn default_sync_response(video_list: Vec<VideoListItem>) -> SyncResponse {
     sync_response(video_list, None)
 }
 
 fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoListItem>) -> SyncResponse {
     SyncResponse {
-        enabled: true,
+        enabled: MONITORING.load(Ordering::Relaxed),
         file_exts: Vec::new(),
         blocked_hosts: Vec::new(),
         tabs_watcher: Vec::new(),
@@ -211,6 +216,7 @@ pub async fn serve(
         .route("/probe-quality", post(probe_quality))
         .route("/preview", post(preview))
         .route("/clear", post(clear))
+        .route("/monitoring", post(set_monitoring))
         .layer(cors)
         .with_state(state);
 
@@ -297,6 +303,9 @@ async fn download(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncR
 }
 
 async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResponse> {
+    if !MONITORING.load(Ordering::Relaxed) {
+        return Json(default_sync_response(video_list(&state).await));
+    }
     let mut new_item = None;
     match serde_json::from_slice::<MediaRequest>(&body) {
         Ok(req) => {
@@ -798,6 +807,18 @@ async fn resolve_download_kind(client: &HttpClient, url: &str, ctx: &RequestCont
         Some("mpd") => DownloadKind::Dash,
         _ => guessed,
     }
+}
+
+async fn set_monitoring(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResponse> {
+    #[derive(Deserialize)]
+    struct Req {
+        enabled: bool,
+    }
+    if let Ok(req) = serde_json::from_slice::<Req>(&body) {
+        MONITORING.store(req.enabled, Ordering::Relaxed);
+        tracing::info!(enabled = req.enabled, "browser monitoring toggled from the detection window");
+    }
+    Json(default_sync_response(video_list(&state).await))
 }
 
 async fn clear(State(state): State<Arc<AppState>>, _body: Bytes) -> Json<SyncResponse> {
