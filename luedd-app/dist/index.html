@@ -191,8 +191,9 @@
   .font-preview { margin-top: 8px; padding: 9px 12px; background: var(--bg); border: 1px solid var(--line);
     border-radius: 6px; font-size: 14px; color: var(--text); }
 
-  /* icon-only header button */
-  #settings-btn.icon-only { padding: 6px; display: inline-flex; align-items: center; }
+  /* icon-only header buttons */
+  .strip button.icon-only { padding: 6px; display: inline-flex; align-items: center; }
+  .strip button.icon-only svg { display: block; }
   #settings-btn .gear { width: 17px; height: 17px; display: block; background: currentColor;
     -webkit-mask: url("settings.png") center / contain no-repeat; mask: url("settings.png") center / contain no-repeat; }
   .set-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line);
@@ -219,6 +220,9 @@
     </span>
     <span class="spacer"></span>
     <button id="run-btn" data-i18n="run_queue">Run queue</button>
+    <button id="detected-btn" class="secondary icon-only" data-i18n-title="show_detected" title="Detected downloads" aria-label="Detected downloads">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+    </button>
     <button id="settings-btn" class="secondary icon-only" data-i18n-title="settings" title="Settings" aria-label="Settings">
       <span class="gear"></span>
     </button>
@@ -819,6 +823,8 @@ document.getElementById("run-btn").addEventListener("click", async () => {
   await invoke("run_queue");
   await refresh();
 });
+
+document.getElementById("detected-btn").addEventListener("click", () => invoke("detection_window_show"));
 
 document.getElementById("clear-btn").addEventListener("click", async () => {
   const { confirmed, deleteFiles } = await confirmAction(t("confirm_clear"));

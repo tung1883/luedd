@@ -280,7 +280,8 @@ fn main() {
             open_containing_folder,
             open_external_url,
             detection_window_set_pinned,
-            detection_window_hide
+            detection_window_hide,
+            detection_window_show
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -339,5 +340,11 @@ fn detection_window_hide(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(DETECTION_WINDOW_LABEL) {
         win.hide().map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn detection_window_show(app: tauri::AppHandle) -> Result<(), String> {
+    show_or_refresh_detection_window(&app);
     Ok(())
 }

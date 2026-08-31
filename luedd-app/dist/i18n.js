@@ -7,6 +7,7 @@
     en: {
       run_queue: "Run queue",
       settings: "Settings",
+      show_detected: "Detected downloads",
       refresh: "Refresh",
       remove_selected: "Remove selected",
       retry_selected: "Retry selected",
@@ -65,6 +66,7 @@
     de: {
       run_queue: "Warteschlange starten",
       settings: "Einstellungen",
+      show_detected: "Erkannte Downloads",
       refresh: "Aktualisieren",
       remove_selected: "Auswahl entfernen",
       retry_selected: "Auswahl wiederholen",
