@@ -159,7 +159,7 @@ struct PreviewOut {
 /// and an error otherwise so the UI can fall back to a file-type glyph.
 #[tauri::command]
 async fn read_preview(path: String) -> Result<PreviewOut, String> {
-    const IMG: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp"];
+    const IMG: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif", "ico"];
     const VID: &[&str] = &["mp4", "mkv", "webm", "mov", "m4v", "avi", "ts", "m2ts", "flv"];
 
     let p = std::path::PathBuf::from(&path);
@@ -171,6 +171,9 @@ async fn read_preview(path: String) -> Result<PreviewOut, String> {
             "gif" => "image/gif",
             "webp" => "image/webp",
             "bmp" => "image/bmp",
+            "svg" => "image/svg+xml",
+            "avif" => "image/avif",
+            "ico" => "image/x-icon",
             _ => "image/png",
         };
         let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
