@@ -54,6 +54,7 @@
       // detection window
       detected: "Detected",
       pin: "Pin", unpin: "Unpin", hide: "Hide",
+      pin_title: "Toggle always-on-top", hide_title: "Hide this window",
       filter_ph: "Filter by name or site…",
       clear_items: "Clear items",
       nothing_detected: "Nothing detected yet.",
@@ -113,6 +114,7 @@
 
       detected: "Erkannt",
       pin: "Anheften", unpin: "Lösen", hide: "Ausblenden",
+      pin_title: "Immer im Vordergrund umschalten", hide_title: "Dieses Fenster ausblenden",
       filter_ph: "Nach Name oder Seite filtern…",
       clear_items: "Einträge löschen",
       nothing_detected: "Noch nichts erkannt.",
