@@ -85,6 +85,19 @@ class VideoPopup {
         }
     }
 
+    hostOf(u) { try { return new URL(u).host; } catch { return ""; } }
+
+    // The backend's `text` is sometimes the page URL and `info` the real name.
+    rowTitleMeta(item) {
+        const txt = (item.text || "").trim();
+        const looksUrl = /^https?:\/\//i.test(txt);
+        if (looksUrl && item.info) return { title: item.info, meta: this.hostOf(item.pageUrl || item.url) || txt };
+        return {
+            title: txt || item.info || "—",
+            meta: (item.info && item.info !== txt) ? item.info : (this.hostOf(item.pageUrl || item.url) || ""),
+        };
+    }
+
     makeCopyableLine(label, value) {
         let line = document.createElement('div');
         line.className = 'copyable-line';
@@ -157,23 +170,32 @@ class VideoPopup {
             toggle.innerText = "▸";
             toggle.title = "Details";
 
+            let previewCol = document.createElement('div');
+            previewCol.className = 'row-preview';
+            previewCol._loadPreview = () => this.loadPreview(listItem, previewCol);
+            this.previewObserver.observe(previewCol);
+
+            const tm = this.rowTitleMeta(listItem);
             let button = document.createElement('button');
             button.className = 'title-btn';
-            button.innerText = listItem.text;
             button.id = listItem.id;
+            button.innerText = tm.title;
+            button.title = tm.title;
 
-            let titleRow = document.createElement('div');
-            titleRow.className = 'row-title';
-            titleRow.appendChild(toggle);
-            titleRow.appendChild(button);
-
-            let infoText = document.createElement('span');
+            let infoText = document.createElement('div');
             infoText.className = 'info-text';
-            infoText.innerText = listItem.info;
+            infoText.innerText = tm.meta;
 
-            let infoRow = document.createElement('div');
-            infoRow.className = 'info-row';
-            infoRow.appendChild(infoText);
+            let body = document.createElement('div');
+            body.className = 'row-body';
+            body.append(button, infoText);
+
+            let actions = document.createElement('div');
+            actions.className = 'row-actions';
+            let addBtn = document.createElement('button');
+            addBtn.className = 'add-btn';
+            addBtn.innerText = "Add";
+            actions.appendChild(addBtn);
 
             let detailsPanel = document.createElement('div');
             detailsPanel.className = 'details-panel';
@@ -185,33 +207,24 @@ class VideoPopup {
             detailsPanel.appendChild(qualityBox);
             let qualityProbed = false;
 
-            let body = document.createElement('div');
-            body.className = 'row-body';
-            body.appendChild(titleRow);
-            body.appendChild(infoRow);
-            body.appendChild(detailsPanel);
-
-            // Preview thumbnail column on the right; populated lazily when the row
-            // scrolls into view, empty when there's nothing to show.
-            let previewCol = document.createElement('div');
-            previewCol.className = 'row-preview';
-            previewCol._loadPreview = () => this.loadPreview(listItem, previewCol);
-            this.previewObserver.observe(previewCol);
-
-            row.appendChild(body);
-            row.appendChild(previewCol);
+            row.append(toggle, previewCol, body, actions, detailsPanel);
             list.appendChild(row);
 
-            button.addEventListener('click', e => {
-                const original = button.innerText;
-                chrome.runtime.sendMessage({ type: "vid", itemId: e.target.id }, response => {
+            const queue = (btn, quality) => {
+                const original = btn.innerText;
+                const msg = { type: "vid", itemId: listItem.id };
+                if (quality) msg.quality = quality;
+                chrome.runtime.sendMessage(msg, response => {
                     const success = response && response.success;
-                    button.innerText = success === true ? "Added to Lüdd!"
+                    btn.innerText = success === true ? "Added to Lüdd!"
                         : success === false ? "Failed - link may have expired"
                         : "Lüdd app not running";
-                    setTimeout(() => { button.innerText = original; }, 1500);
+                    setTimeout(() => { btn.innerText = original; }, 1500);
                 });
-            });
+            };
+            button.addEventListener('click', () => queue(button));
+            addBtn.addEventListener('click', () => queue(addBtn));
+
             toggle.addEventListener('click', e => {
                 e.stopPropagation();
                 let nowOpen = !detailsPanel.classList.contains('open');
@@ -232,17 +245,7 @@ class VideoPopup {
                         variants.forEach(variant => {
                             let qBtn = document.createElement('button');
                             qBtn.innerText = variant.label;
-                            qBtn.addEventListener('click', ev => {
-                                ev.stopPropagation();
-                                const original = qBtn.innerText;
-                                chrome.runtime.sendMessage({ type: "vid", itemId: listItem.id, quality: variant.variant_key }, res => {
-                                    const success = res && res.success;
-                                    qBtn.innerText = success === true ? "Added to Lüdd!"
-                                        : success === false ? "Failed - link may have expired"
-                                        : "Lüdd app not running";
-                                    setTimeout(() => { qBtn.innerText = original; }, 1500);
-                                });
-                            });
+                            qBtn.addEventListener('click', ev => { ev.stopPropagation(); queue(qBtn, variant.variant_key); });
                             qualityBox.appendChild(qBtn);
                         });
                     });
