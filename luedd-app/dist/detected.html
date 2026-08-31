@@ -43,11 +43,45 @@
   header button { padding: 4px 9px; font-size: 11px; }
   .search-row { padding: 9px 13px; border-bottom: 1px solid var(--line); }
   .clr-wrap { position: relative; display: block; }
-  .clr-x { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: 0;
+  .clr-x { position: absolute; right: 30px; top: 50%; transform: translateY(-50%); background: none; border: 0;
     color: var(--dim); font-size: 16px; line-height: 1; cursor: pointer; padding: 2px 5px; display: none; }
   .clr-x:hover { color: var(--text); }
   .clr-wrap.has-text .clr-x { display: block; }
-  .clr-wrap input { padding-right: 26px; }
+  .clr-wrap.srch input { padding-right: 52px; }
+  .funnel { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); background: none; border: 0;
+    color: var(--dim); cursor: pointer; padding: 4px 5px; border-radius: 4px; line-height: 0; }
+  .funnel svg { width: 15px; height: 15px; display: block; }
+  .funnel:hover { color: var(--text); background: var(--surface-2); }
+  .funnel.on { color: var(--accent); }
+  .funnel .fdot { position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); display: none; }
+  .funnel.active .fdot { display: block; }
+  .filter-drawer { display: none; margin-top: 8px; }
+  .filter-drawer.open { display: block; }
+  .fd-row { display: flex; gap: 8px; align-items: end; }
+  .fd-fld { flex: 1 1 0; min-width: 0; display: block; }
+  .fd-lbl { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
+  .fd-fld input[type=text] { padding: 7px 9px; }
+  /* custom dropdown (matches settings dropdown in main window) */
+  .dd { position: relative; }
+  .dd-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+    font-family: var(--sans); font-size: 12px; font-weight: 400; padding: 7px 9px; cursor: pointer; }
+  .dd-btn:hover { border-color: var(--dim); }
+  .dd.open .dd-btn { border-color: transparent; outline: 2px solid var(--accent); outline-offset: 1px; }
+  .dd-btn svg { color: var(--dim); flex-shrink: 0; transition: transform .12s; }
+  .dd.open .dd-btn svg { transform: rotate(180deg); }
+  .dd-list { position: absolute; left: 0; right: 0; top: calc(100% + 5px); z-index: 20; margin: 0; padding: 4px;
+    list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 14px 36px rgba(0,0,0,.5); display: none; max-height: 240px; overflow-y: auto; }
+  .dd.open .dd-list { display: block; }
+  .dd-list li { padding: 7px 9px; border-radius: 5px; font-size: 12px; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dd-list li:hover { background: var(--surface-2); }
+  .dd-list li[aria-selected="true"] { color: var(--accent); }
+  .dd-list li[aria-selected="true"]::after { content: "\2713"; font-size: 11px; }
+  .filter-status { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 11px; color: var(--dim); }
+  .fs-reset { background: none; border: 0; color: var(--disc); cursor: pointer; margin-left: auto; font-size: 11px; padding: 0; }
+  .fs-reset:hover { text-decoration: underline; }
   input[type=text] { width: 100%; padding: 6px 9px; background: var(--surface); border: 1px solid var(--line);
     color: var(--text); border-radius: 6px; font-size: 12px; font-family: var(--sans); }
   input[type=text]::placeholder { color: var(--dim); }
@@ -104,10 +138,40 @@
     <button id="hide-btn" class="secondary" data-i18n="hide" data-i18n-title="hide_title" title="Hide this window">Hide</button>
   </header>
   <div class="search-row">
-    <span class="clr-wrap">
+    <span class="clr-wrap srch">
       <input id="search-input" type="text" data-i18n-placeholder="filter_ph" placeholder="Filter by name or site&hellip;" />
       <button type="button" class="clr-x" id="search-clear" data-i18n-title="clear_field" title="Clear" aria-label="Clear">&times;</button>
+      <button type="button" class="funnel" id="filter-toggle" data-i18n-title="more_filters" title="Filters" aria-label="Filters">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path></svg>
+        <span class="fdot"></span>
+      </button>
     </span>
+    <div class="filter-drawer" id="filter-drawer">
+      <div class="fd-row">
+        <div class="fd-fld"><span class="fd-lbl" data-i18n="f_type">Type</span>
+          <div class="dd" id="filter-type" data-value="all">
+            <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="f_all">All types</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+            <ul class="dd-list">
+              <li data-value="all" data-i18n="f_all">All types</li>
+              <li data-value="video" data-i18n="f_video">Video</li>
+              <li data-value="image" data-i18n="f_image">Image</li>
+              <li data-value="audio" data-i18n="f_audio">Audio</li>
+              <li data-value="hls">HLS</li>
+              <li data-value="dash">DASH</li>
+              <li data-value="doc" data-i18n="f_doc">Document</li>
+            </ul>
+          </div>
+        </div>
+        <label class="fd-fld"><span class="fd-lbl" data-i18n="f_hide">Hide</span>
+          <input id="filter-hide" type="text" data-i18n-placeholder="f_hide_ph" placeholder="e.g. ytimg, .vtt" />
+        </label>
+      </div>
+    </div>
+    <div class="filter-status" id="filter-status" style="display:none">
+      <span id="filter-count"></span>
+      <button type="button" class="fs-reset" id="filter-reset" data-i18n="f_reset">Reset filters</button>
+    </div>
   </div>
   <div id="list"></div>
   <div id="image-preview-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 1000; cursor: pointer; overflow: auto;">
@@ -293,17 +357,60 @@
     fetchInFlight = false;
   }
 
+  // Infer a coarse media kind from the item's URL extension + isImage flag.
+  function itemKind(item) {
+    if (item.isImage) return "image";
+    const src = (item.url || item.info || item.text || "").toLowerCase().split("?")[0];
+    const ext = src.slice(src.lastIndexOf(".") + 1);
+    if (/m3u8/.test(src)) return "hls";
+    if (/mpd$/.test(src)) return "dash";
+    if (["jpg","jpeg","png","gif","webp","bmp","svg","avif","ico"].includes(ext)) return "image";
+    if (["mp4","mkv","webm","mov","m4v","avi","ts","m2ts","flv","mpg","mpeg"].includes(ext)) return "video";
+    if (["mp3","m4a","aac","ogg","opus","flac","wav","weba"].includes(ext)) return "audio";
+    if (["pdf","zip","rar","7z","doc","docx","xls","xlsx","ppt","pptx","txt","csv","epub"].includes(ext)) return "doc";
+    return "other";
+  }
+
+  function filterActive() {
+    const type = document.getElementById("filter-type").dataset.value;
+    const hide = document.getElementById("filter-hide").value.trim();
+    return type !== "all" || hide.length > 0;
+  }
+
   function applyFilter(query) {
     const terms = (query || "").trim().toLowerCase().split(/\s+/).filter(t => t);
-    if (terms.length === 0) {
-      renderList(allItems);
-      return;
-    }
+    const type = document.getElementById("filter-type").dataset.value;
+    const hideTerms = document.getElementById("filter-hide").value.trim().toLowerCase().split(/[\s,]+/).filter(t => t);
+
     const items = allItems.filter(item => {
       const haystack = [item.text, item.info, item.url, item.pageUrl].filter(Boolean).join("\n").toLowerCase();
-      return terms.every(term => haystack.includes(term));
+      if (!terms.every(term => haystack.includes(term))) return false;
+      if (hideTerms.some(term => haystack.includes(term))) return false;
+      if (type !== "all") {
+        const k = itemKind(item);
+        if (type === "video") { if (k !== "video" && k !== "hls" && k !== "dash") return false; }
+        else if (k !== type) return false;
+      }
+      return true;
     });
+
+    // funnel indicator + status line
+    const active = filterActive();
+    const funnel = document.getElementById("filter-toggle");
+    funnel.classList.toggle("active", active);
+    const hidden = allItems.length - items.length;
+    const status = document.getElementById("filter-status");
+    if (active && hidden > 0) {
+      status.style.display = "flex";
+      document.getElementById("filter-count").textContent = L("f_shown", { shown: items.length, hidden });
+    } else {
+      status.style.display = "none";
+    }
     renderList(items);
+  }
+
+  function reapplyFilter() {
+    applyFilter(document.getElementById("search-input").value);
   }
 
   // Split a URL so the origin (scheme + host) always stays fully visible; the
@@ -588,6 +695,53 @@
     });
   }
 
+  // minimal themed dropdown: data-value on the .dd, click a <li> to set it.
+  function initDropdown(dd, onChange) {
+    const btn = dd.querySelector(".dd-btn");
+    const cur = dd.querySelector(".dd-cur");
+    const items = [...dd.querySelectorAll(".dd-list li")];
+    dd._sync = () => {
+      const v = dd.dataset.value;
+      items.forEach(li => {
+        const on = li.dataset.value === v;
+        li.setAttribute("aria-selected", on ? "true" : "false");
+        if (on) cur.textContent = li.textContent;
+      });
+    };
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      document.querySelectorAll(".dd.open").forEach(o => { if (o !== dd) o.classList.remove("open"); });
+      dd.classList.toggle("open");
+    });
+    items.forEach(li => li.addEventListener("click", () => {
+      dd.dataset.value = li.dataset.value;
+      dd.classList.remove("open");
+      dd._sync();
+      if (onChange) onChange(li.dataset.value);
+    }));
+    dd._sync();
+  }
+  document.addEventListener("click", () => document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open")));
+
+  const filterTypeDD = document.getElementById("filter-type");
+  initDropdown(filterTypeDD, reapplyFilter);
+
+  {
+    const drawer = document.getElementById("filter-drawer");
+    const toggle = document.getElementById("filter-toggle");
+    toggle.addEventListener("click", () => {
+      const open = drawer.classList.toggle("open");
+      toggle.classList.toggle("on", open);
+    });
+    document.getElementById("filter-hide").addEventListener("input", reapplyFilter);
+    document.getElementById("filter-reset").addEventListener("click", () => {
+      filterTypeDD.dataset.value = "all";
+      filterTypeDD._sync();
+      document.getElementById("filter-hide").value = "";
+      reapplyFilter();
+    });
+  }
+
   document.getElementById("clear-btn").addEventListener("click", async () => {
     await post("/clear", {});
     await fetchAndRender();
@@ -628,6 +782,7 @@
     } catch (e) {
       window.I18N.applyLang("en");
     }
+    filterTypeDD._sync();
     fetchAndRender();
   })();
 
@@ -637,6 +792,7 @@
       const s = await window.__TAURI__.core.invoke("get_settings");
       applyFont(s.font || "system");
       window.I18N.applyLang(s.language || "en");
+      filterTypeDD._sync();
     } catch (e) {}
   });
 </script>

@@ -35,6 +35,25 @@ class VideoPopup {
             this.applyFilter(e.target.value);
         });
 
+        document.addEventListener("click", () => document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open")));
+        this.initDropdown(document.getElementById("filter-type"), this.reapplyFilter.bind(this));
+        {
+            let drawer = document.getElementById("filter-drawer");
+            let toggle = document.getElementById("filter-toggle");
+            toggle.addEventListener("click", () => {
+                let open = drawer.classList.toggle("open");
+                toggle.classList.toggle("on", open);
+            });
+            document.getElementById("filter-hide").addEventListener("input", this.reapplyFilter.bind(this));
+            document.getElementById("filter-reset").addEventListener("click", () => {
+                let dd = document.getElementById("filter-type");
+                dd.dataset.value = "all";
+                dd._sync();
+                document.getElementById("filter-hide").value = "";
+                this.reapplyFilter();
+            });
+        }
+
         chrome.runtime.onMessage.addListener(msg => {
             if (msg && msg.type === "refresh") this.fetchAndRender();
         });
@@ -55,17 +74,77 @@ class VideoPopup {
         this.applyFilter(document.getElementById("search-input").value);
     }
 
+    itemKind(item) {
+        if (item.isImage) return "image";
+        let src = (item.url || item.info || item.text || "").toLowerCase().split("?")[0];
+        let ext = src.slice(src.lastIndexOf(".") + 1);
+        if (/m3u8/.test(src)) return "hls";
+        if (/mpd$/.test(src)) return "dash";
+        if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif", "ico"].includes(ext)) return "image";
+        if (["mp4", "mkv", "webm", "mov", "m4v", "avi", "ts", "m2ts", "flv", "mpg", "mpeg"].includes(ext)) return "video";
+        if (["mp3", "m4a", "aac", "ogg", "opus", "flac", "wav", "weba"].includes(ext)) return "audio";
+        if (["pdf", "zip", "rar", "7z", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "epub"].includes(ext)) return "doc";
+        return "other";
+    }
+
+    reapplyFilter() {
+        this.applyFilter(document.getElementById("search-input").value);
+    }
+
     applyFilter(query) {
         let terms = (query || "").trim().toLowerCase().split(/\s+/).filter(t => t);
-        if (terms.length === 0) {
-            this.renderList(this.allItems || []);
-            return;
-        }
+        let type = document.getElementById("filter-type").dataset.value;
+        let hideTerms = document.getElementById("filter-hide").value.trim().toLowerCase().split(/[\s,]+/).filter(t => t);
+
         let items = (this.allItems || []).filter(item => {
             let haystack = [item.text, item.info, item.url, item.pageUrl].filter(Boolean).join(String.fromCharCode(10)).toLowerCase();
-            return terms.every(term => haystack.includes(term));
+            if (!terms.every(term => haystack.includes(term))) return false;
+            if (hideTerms.some(term => haystack.includes(term))) return false;
+            if (type !== "all") {
+                let k = this.itemKind(item);
+                if (type === "video") { if (k !== "video" && k !== "hls" && k !== "dash") return false; }
+                else if (k !== type) return false;
+            }
+            return true;
         });
+
+        let active = type !== "all" || hideTerms.length > 0;
+        document.getElementById("filter-toggle").classList.toggle("active", active);
+        let hidden = (this.allItems || []).length - items.length;
+        let status = document.getElementById("filter-status");
+        if (active && hidden > 0) {
+            status.style.display = "flex";
+            document.getElementById("filter-count").textContent = items.length + " shown · " + hidden + " hidden";
+        } else {
+            status.style.display = "none";
+        }
         this.renderList(items);
+    }
+
+    initDropdown(dd, onChange) {
+        let btn = dd.querySelector(".dd-btn");
+        let cur = dd.querySelector(".dd-cur");
+        let items = [...dd.querySelectorAll(".dd-list li")];
+        dd._sync = () => {
+            let v = dd.dataset.value;
+            items.forEach(li => {
+                let on = li.dataset.value === v;
+                li.setAttribute("aria-selected", on ? "true" : "false");
+                if (on) cur.textContent = li.textContent;
+            });
+        };
+        btn.addEventListener("click", e => {
+            e.stopPropagation();
+            document.querySelectorAll(".dd.open").forEach(o => { if (o !== dd) o.classList.remove("open"); });
+            dd.classList.toggle("open");
+        });
+        items.forEach(li => li.addEventListener("click", () => {
+            dd.dataset.value = li.dataset.value;
+            dd.classList.remove("open");
+            dd._sync();
+            if (onChange) onChange();
+        }));
+        dd._sync();
     }
 
     // Split a URL so the origin (scheme + host) always stays fully visible; the

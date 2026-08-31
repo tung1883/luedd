@@ -67,6 +67,43 @@
     .quality-box { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
     .quality-box button { background: none; border: none; color: var(--disc); cursor: pointer; text-align: left; font-size: 12px; font-weight: 400; padding: 1px 0; }
     label.checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+
+    .srch { position: relative; display: block; }
+    .srch input { padding-right: 34px; }
+    .funnel { position: absolute; right: 4px; top: 4px; background: none; border: 0; color: var(--dim);
+      cursor: pointer; padding: 4px 5px; border-radius: 4px; line-height: 0; }
+    .funnel svg { width: 15px; height: 15px; display: block; }
+    .funnel:hover { color: var(--text); background: var(--surface-2); }
+    .funnel.on { color: var(--accent); }
+    .funnel .fdot { position: absolute; top: 2px; right: 2px; width: 5px; height: 5px; border-radius: 50%;
+      background: var(--accent); display: none; }
+    .funnel.active .fdot { display: block; }
+    .filter-drawer { display: none; margin-top: 8px; }
+    .filter-drawer.open { display: block; }
+    .fd-row { display: flex; gap: 8px; align-items: end; }
+    .fd-fld { flex: 1 1 0; min-width: 0; display: block; }
+    .fd-lbl { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
+    .fd-fld input[type=text] { padding: 7px 9px; }
+    .dd { position: relative; }
+    .dd-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      background: var(--surface); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+      font-family: var(--sans); font-size: 12px; font-weight: 400; padding: 7px 9px; cursor: pointer; }
+    .dd-btn:hover { border-color: var(--dim); }
+    .dd.open .dd-btn { border-color: transparent; outline: 2px solid var(--accent); outline-offset: 1px; }
+    .dd-btn svg { color: var(--dim); flex-shrink: 0; transition: transform .12s; }
+    .dd.open .dd-btn svg { transform: rotate(180deg); }
+    .dd-list { position: absolute; left: 0; right: 0; top: calc(100% + 5px); z-index: 20; margin: 0; padding: 4px;
+      list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+      box-shadow: 0 14px 36px rgba(0,0,0,.5); display: none; max-height: 240px; overflow-y: auto; }
+    .dd.open .dd-list { display: block; }
+    .dd-list li { padding: 7px 9px; border-radius: 5px; font-size: 12px; cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .dd-list li:hover { background: var(--surface-2); }
+    .dd-list li[aria-selected="true"] { color: var(--accent); }
+    .dd-list li[aria-selected="true"]::after { content: "\2713"; font-size: 11px; }
+    .filter-status { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 11px; color: var(--dim); }
+    .fs-reset { background: none; border: 0; color: var(--disc); cursor: pointer; margin-left: auto; font-size: 11px; padding: 0; font-family: var(--sans); font-weight: 400; }
+    .fs-reset:hover { text-decoration: underline; }
   </style>
 
   <div style="display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--line); padding: 12px 15px; background: linear-gradient(180deg, #212227, var(--surface)); box-shadow: 0 1px 0 rgba(255,255,255,.04);">
@@ -80,7 +117,39 @@
       the output folder and settings in the <b style="color: var(--text);">Lüdd app</b>.
     </div>
     <div style="padding: 10px 15px;">
-      <input id="search-input" type="text" placeholder="Filter by name or site&hellip;">
+      <span class="srch">
+        <input id="search-input" type="text" placeholder="Filter by name or site&hellip;">
+        <button type="button" class="funnel" id="filter-toggle" title="Filters" aria-label="Filters">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path></svg>
+          <span class="fdot"></span>
+        </button>
+      </span>
+      <div class="filter-drawer" id="filter-drawer">
+        <div class="fd-row">
+          <div class="fd-fld"><span class="fd-lbl">Type</span>
+            <div class="dd" id="filter-type" data-value="all">
+              <button type="button" class="dd-btn"><span class="dd-cur">All types</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+              <ul class="dd-list">
+                <li data-value="all">All types</li>
+                <li data-value="video">Video</li>
+                <li data-value="image">Image</li>
+                <li data-value="audio">Audio</li>
+                <li data-value="hls">HLS</li>
+                <li data-value="dash">DASH</li>
+                <li data-value="doc">Document</li>
+              </ul>
+            </div>
+          </div>
+          <label class="fd-fld"><span class="fd-lbl">Hide</span>
+            <input id="filter-hide" type="text" placeholder="e.g. ytimg, .vtt">
+          </label>
+        </div>
+      </div>
+      <div class="filter-status" id="filter-status" style="display:none">
+        <span id="filter-count"></span>
+        <button type="button" class="fs-reset" id="filter-reset">Reset filters</button>
+      </div>
     </div>
     <div id="list"></div>
     <div style="padding: 12px 15px; display: flex; gap: 8px;">
