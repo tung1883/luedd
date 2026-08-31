@@ -262,7 +262,19 @@ fn main() {
     let ipc_listener = match std::net::TcpListener::bind(("127.0.0.1", IPC_PORT)) {
         Ok(l) => l,
         Err(_) => {
-            tracing::info!("luedd-app is already running; exiting this instance");
+            // Another instance holds the port. Ask it to surface its window,
+            // then exit so there is only ever one running copy.
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", IPC_PORT)) {
+                use std::io::{Read, Write};
+                let _ = s.write_all(b"GET /focus-main HTTP/1.0\r\nHost: localhost\r\n\r\n");
+                let _ = s.flush();
+                // Wait for the response so the running instance has actually
+                // handled the request before this process exits and drops the
+                // socket (Windows can discard unsent data on abrupt exit).
+                s.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+                let _ = s.read(&mut [0u8; 64]);
+            }
+            tracing::info!("luedd-app is already running; asked it to focus and exiting");
             return;
         }
     };
@@ -289,8 +301,13 @@ fn main() {
             let server_manager = manager.clone();
             let server_settings = settings.clone();
             let (detection_tx, mut detection_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (focus_tx, mut focus_rx) = tokio::sync::mpsc::unbounded_channel();
             tauri::async_runtime::spawn(async move {
-                let config = luedd_ipc::server::ServerConfig { settings: server_settings, on_new_detection: Some(detection_tx) };
+                let config = luedd_ipc::server::ServerConfig {
+                    settings: server_settings,
+                    on_new_detection: Some(detection_tx),
+                    on_focus_request: Some(focus_tx),
+                };
                 if let Err(e) = luedd_ipc::server::serve(server_store, server_manager, config, ipc_listener).await {
                     tracing::warn!(error = %e, "luedd-ipc server exited");
                 }
@@ -306,6 +323,24 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 while detection_rx.recv().await.is_some() {
                     show_or_refresh_detection_window(&detection_app_handle, false);
+                }
+            });
+
+            // A second launch pings `/focus-main`; bring the existing window up.
+            let focus_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while focus_rx.recv().await.is_some() {
+                    if let Some(win) = focus_app_handle.get_webview_window("main") {
+                        let _ = win.unminimize();
+                        let _ = win.show();
+                        // A background process can't steal the Windows
+                        // foreground outright; a brief always-on-top flip pops
+                        // the window above everything without that privilege.
+                        let _ = win.set_always_on_top(true);
+                        let _ = win.set_always_on_top(false);
+                        let _ = win.set_focus();
+                        let _ = win.request_user_attention(Some(tauri::UserAttentionType::Critical));
+                    }
                 }
             });
 

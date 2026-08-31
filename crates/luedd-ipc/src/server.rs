@@ -20,6 +20,9 @@ use luedd_net::{HttpClient, RequestContext};
 pub struct ServerConfig {
     pub settings: Arc<SettingsStore>,
     pub on_new_detection: Option<tokio::sync::mpsc::UnboundedSender<VideoListItem>>,
+    /// Fired when a second app instance pings `/focus-main` asking the running
+    /// instance to surface its main window.
+    pub on_focus_request: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,6 +220,7 @@ pub async fn serve(
         .route("/preview", post(preview))
         .route("/clear", post(clear))
         .route("/monitoring", post(set_monitoring))
+        .route("/focus-main", get(focus_main))
         .layer(cors)
         .with_state(state);
 
@@ -284,6 +288,13 @@ async fn video_list(state: &AppState) -> Vec<VideoListItem> {
 
 async fn sync(State(state): State<Arc<AppState>>) -> Json<SyncResponse> {
     Json(default_sync_response(video_list(&state).await))
+}
+
+async fn focus_main(State(state): State<Arc<AppState>>) -> &'static str {
+    if let Some(tx) = &state.config.on_focus_request {
+        let _ = tx.send(());
+    }
+    "ok"
 }
 
 async fn ignored(State(state): State<Arc<AppState>>, _body: Bytes) -> Json<SyncResponse> {

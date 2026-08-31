@@ -13,6 +13,7 @@
         "title": "Lüdd",
         "width": 900,
         "height": 600,
+        "maximized": true,
         "backgroundColor": "#16171A"
       }
     ],
