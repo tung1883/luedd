@@ -688,8 +688,20 @@ function updateReadout(entries) {
   document.getElementById("stat-speed").textContent = totalBps > 0 ? formatBytesPerSec(totalBps) : "—";
 }
 
+let firstLoadOk = false;
+
 async function refresh() {
-  const entries = await invoke("list_downloads");
+  let entries;
+  try {
+    entries = await invoke("list_downloads");
+  } catch (e) {
+    // On cold start the webview can call this before the Tauri side has
+    // finished `app.manage(AppState)`, so the command errors. Swallow it —
+    // the fast startup poll retries until it lands.
+    console.warn("list_downloads not ready yet", e);
+    return;
+  }
+  firstLoadOk = true;
   const liveIds = new Set(entries.map(e => e.id));
   for (const id of [...selected]) {
     if (!liveIds.has(id)) selected.delete(id);
@@ -1021,8 +1033,12 @@ document.getElementById("save-settings-btn").addEventListener("click", async () 
   } catch (e) {
     window.I18N.applyLang("en");
   }
-  await refresh();
-  setInterval(refresh, 2000);
+})().catch(e => console.error("settings load failed", e));
+
+// Poll fast until the first successful load (cold start races the Tauri
+// backend), then settle to a calm 2s cadence.
+(function pollLoop() {
+  refresh().finally(() => setTimeout(pollLoop, firstLoadOk ? 2000 : 200));
 })();
 </script>
 </body>
