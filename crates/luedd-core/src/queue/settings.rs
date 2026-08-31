@@ -9,6 +9,21 @@ pub struct Settings {
     pub download_dir: PathBuf,
     pub max_concurrent_downloads: usize,
     pub per_download_concurrency: usize,
+    /// UI font key: "system" | "georgia" | "ibm-plex-mono" | "excalifont" | "cascadia-mono".
+    /// Defaulted so settings files written before this field still load.
+    #[serde(default = "default_font")]
+    pub font: String,
+    /// UI language: "en" | "de". Defaulted for the same reason.
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_font() -> String {
+    "system".to_string()
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }
 
 impl Settings {
@@ -17,6 +32,8 @@ impl Settings {
             download_dir: data_dir.join("downloads"),
             max_concurrent_downloads: 2,
             per_download_concurrency: 8,
+            font: default_font(),
+            language: default_language(),
         }
     }
 }
@@ -82,6 +99,8 @@ mod tests {
                     download_dir: dir.join("custom-downloads"),
                     max_concurrent_downloads: 5,
                     per_download_concurrency: 16,
+                    font: "cascadia-mono".to_string(),
+                    language: "de".to_string(),
                 })
                 .await
                 .unwrap();

@@ -4,6 +4,13 @@
 <meta charset="utf-8" />
 <title>Lüdd</title>
 <style>
+  /* bundled UI fonts (SIL OFL) — latin subsets, cover English + German */
+  @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono-600.woff2") format("woff2"); font-weight: 600 900; font-display: swap; }
+  @font-face { font-family: "Cascadia Mono"; src: url("fonts/cascadia-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Cascadia Mono"; src: url("fonts/cascadia-mono-700.woff2") format("woff2"); font-weight: 600 900; font-display: swap; }
+  @font-face { font-family: "Excalifont"; src: url("fonts/excalifont.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
+
   :root {
     --bg: #16171A; --surface: #1E2024; --surface-2: #26282E; --line: #34373E;
     --text: #E7E8EA; --dim: #9A9DA5; --accent: #4FA3D8; --disc: #7FC0E6;
@@ -134,13 +141,60 @@
   @keyframes shimmer { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
   @media (prefers-reduced-motion: reduce) { .track.conv::after { animation: none; width: 100%; opacity: .5; } }
 
-  /* settings panel */
-  .panel { background: var(--surface-2); border-bottom: 1px solid var(--line); padding: 14px 16px; display: none; }
-  .panel.open { display: block; }
-  .panel label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); margin-bottom: 5px; margin-top: 8px; }
-  .panel-row { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; }
-  .dir-row { display: flex; gap: 6px; }
   label.checkbox { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); margin: 0; }
+
+  /* settings modal */
+  #settings-overlay .overlay-card { width: 560px; max-width: 92vw; padding: 0; overflow: visible; }
+  .set-head { display: flex; align-items: center; padding: 15px 20px; border-bottom: 1px solid var(--line);
+    border-radius: 10px 10px 0 0; background: linear-gradient(180deg,#212227,var(--surface)); }
+  .set-head h2 { margin: 0; font-size: 15px; font-weight: 700; flex: 1; }
+  .set-head .x { background: none; border: 0; color: var(--dim); font-size: 20px; line-height: 1; cursor: pointer; padding: 0; }
+  .set-head .x:hover { color: var(--text); }
+  .set-body { padding: 4px 20px; overflow: visible; }
+  .set-section { padding: 16px 0; }
+  .set-section + .set-section { border-top: 1px solid var(--line); }
+  .set-section h3 { margin: 0 0 14px; font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim); font-weight: 600; }
+  .set-row { margin-bottom: 14px; }
+  .set-row:last-child { margin-bottom: 0; }
+  .set-row > label { display: block; font-size: 12px; color: var(--text); margin-bottom: 6px; }
+  .set-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .set-field { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); font-family: var(--sans); font-size: 13px; padding: 8px 10px; }
+  .set-field:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  .dir-row { display: flex; gap: 8px; }
+  .dir-row .set-field { flex: 1; font-family: var(--mono); font-size: 12px; }
+  /* custom dropdown */
+  .dd { position: relative; }
+  .dd-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+    font-family: var(--sans); font-size: 13px; font-weight: 400; padding: 8px 10px; cursor: pointer; }
+  .dd-btn:hover { border-color: var(--dim); }
+  .dd.open .dd-btn { border-color: transparent; outline: 2px solid var(--accent); outline-offset: 1px; }
+  .dd-btn svg { color: var(--dim); flex-shrink: 0; transition: transform .12s; }
+  .dd.open .dd-btn svg { transform: rotate(180deg); }
+  .dd-list { position: absolute; left: 0; right: 0; top: calc(100% + 5px); z-index: 5; margin: 0; padding: 4px;
+    list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 14px 36px rgba(0,0,0,.5); display: none; max-height: 260px; overflow-y: auto; }
+  .dd.open .dd-list { display: block; }
+  .dd-list li { padding: 8px 10px; border-radius: 5px; font-size: 13px; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dd-list li:hover { background: var(--surface-2); }
+  .dd-list li[aria-selected="true"] { color: var(--accent); }
+  .dd-list li[aria-selected="true"]::after { content: "✓"; font-size: 11px; }
+  .f-system    { font-family: var(--sans); }
+  .f-georgia   { font-family: Georgia, "Times New Roman", serif; }
+  .f-ibm-plex-mono { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; }
+  .f-excalifont { font-family: "Excalifont", "Comic Sans MS", cursive; }
+  .f-cascadia-mono { font-family: "Cascadia Mono", ui-monospace, Consolas, monospace; }
+  .font-preview { margin-top: 8px; padding: 9px 12px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; font-size: 14px; color: var(--text); }
+
+  /* icon-only header button */
+  #settings-btn.icon-only { padding: 6px; display: inline-flex; align-items: center; }
+  #settings-btn .gear { width: 17px; height: 17px; display: block; background: currentColor;
+    -webkit-mask: url("settings.png") center / contain no-repeat; mask: url("settings.png") center / contain no-repeat; }
+  .set-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line);
+    border-radius: 0 0 10px 10px; background: var(--surface-2); }
 
   /* row details */
   .details-cell { background: var(--surface-2); font-size: 12px; color: var(--dim); padding: 12px 16px 14px; }
@@ -157,48 +211,96 @@
   <header class="strip">
     <span class="brand"><img src="icon.png" alt="" /><span class="wordmark">L<span class="acc">ü</span>dd</span></span>
     <span class="readout">
-      <span><b id="stat-running">0</b> running</span><span class="sep">/</span>
-      <span><b id="stat-queued">0</b> queued</span><span class="sep">/</span>
+      <span><b id="stat-running">0</b> <span data-i18n="stat_running">running</span></span><span class="sep">/</span>
+      <span><b id="stat-queued">0</b> <span data-i18n="stat_queued">queued</span></span><span class="sep">/</span>
       <span class="rate" id="stat-speed">&mdash;</span>
     </span>
     <span class="spacer"></span>
-    <button id="run-btn">Run queue</button>
-    <button id="settings-btn" class="secondary">Settings</button>
+    <button id="run-btn" data-i18n="run_queue">Run queue</button>
+    <button id="settings-btn" class="secondary icon-only" data-i18n-title="settings" title="Settings" aria-label="Settings">
+      <span class="gear"></span>
+    </button>
   </header>
 
-  <div id="settings-panel" class="panel">
-    <div class="panel-row">
-      <div style="flex: 2; min-width: 260px;">
-        <label for="download-dir">Output folder</label>
-        <div class="dir-row">
-          <input id="download-dir" type="text" />
-          <button id="browse-btn" type="button" class="secondary">Browse&hellip;</button>
+  <div id="settings-overlay" class="overlay">
+    <div class="overlay-card">
+      <div class="set-head">
+        <h2 data-i18n="settings_title">Settings</h2>
+        <button class="x" id="settings-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <div class="set-body">
+        <div class="set-section">
+          <h3 data-i18n="sec_downloads">Downloads</h3>
+          <div class="set-row">
+            <label for="download-dir" data-i18n="output_folder">Output folder</label>
+            <div class="dir-row">
+              <input id="download-dir" type="text" class="set-field" />
+              <button id="browse-btn" type="button" class="secondary" data-i18n="browse">Browse&hellip;</button>
+            </div>
+          </div>
+          <div class="set-grid2">
+            <div class="set-row">
+              <label for="max-concurrent" data-i18n="max_concurrent">Max concurrent downloads</label>
+              <input id="max-concurrent" type="number" min="1" max="16" class="set-field" />
+            </div>
+            <div class="set-row">
+              <label for="per-download-concurrency" data-i18n="connections">Connections per download</label>
+              <input id="per-download-concurrency" type="number" min="1" max="32" class="set-field" />
+            </div>
+          </div>
+        </div>
+        <div class="set-section">
+          <h3 data-i18n="sec_appearance">Appearance</h3>
+          <div class="set-grid2">
+            <div class="set-row">
+              <label data-i18n="language">Language</label>
+              <div class="dd" id="dd-language" data-value="en">
+                <button type="button" class="dd-btn"><span class="dd-cur">English</span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <ul class="dd-list">
+                  <li data-value="en">English</li>
+                  <li data-value="de">Deutsch</li>
+                </ul>
+              </div>
+            </div>
+            <div class="set-row">
+              <label data-i18n="font">Font</label>
+              <div class="dd" id="dd-font" data-value="system">
+                <button type="button" class="dd-btn"><span class="dd-cur">System</span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <ul class="dd-list">
+                  <li data-value="system" class="f-system">System</li>
+                  <li data-value="georgia" class="f-georgia">Georgia</li>
+                  <li data-value="ibm-plex-mono" class="f-ibm-plex-mono">IBM Plex Mono</li>
+                  <li data-value="excalifont" class="f-excalifont">Excalifont</li>
+                  <li data-value="cascadia-mono" class="f-cascadia-mono">Cascadia Mono</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div class="set-row">
+            <div class="font-preview" id="font-preview" data-i18n="font_preview">The quick brown fox jumps over 1,234 downloads.</div>
+          </div>
         </div>
       </div>
-      <div>
-        <label for="max-concurrent">Max concurrent downloads</label>
-        <input id="max-concurrent" type="number" min="1" max="16" />
+      <div class="set-foot">
+        <button id="settings-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="save-settings-btn" data-i18n="save">Save</button>
       </div>
-      <div>
-        <label for="per-download-concurrency">Connections per download</label>
-        <input id="per-download-concurrency" type="number" min="1" max="32" />
-      </div>
-      <button id="save-settings-btn">Save</button>
     </div>
   </div>
 
   <div class="wrap">
     <form id="add-form">
       <input id="url" placeholder="https://example.com/video.m3u8" required />
-      <input id="filename" placeholder="Output filename (optional)" style="flex: 0 0 220px" />
-      <button type="submit">Add</button>
+      <input id="filename" data-i18n-placeholder="filename_ph" placeholder="Output filename (optional)" style="flex: 0 0 220px" />
+      <button type="submit" data-i18n="add">Add</button>
     </form>
     <div class="toolbar">
-      <button id="refresh-btn" class="secondary">Refresh</button>
       <span style="flex: 1"></span>
-      <button id="remove-selected-btn" class="danger" disabled>Remove selected</button>
-      <button id="retry-selected-btn" class="secondary" disabled>Retry selected</button>
-      <button id="clear-btn" class="danger">Clear finished</button>
+      <button id="remove-selected-btn" class="danger" disabled data-i18n="remove_selected">Remove selected</button>
+      <button id="retry-selected-btn" class="secondary" disabled data-i18n="retry_selected">Retry selected</button>
+      <button id="clear-btn" class="danger" data-i18n="clear_finished">Clear finished</button>
     </div>
 
     <div class="table-wrap">
@@ -206,7 +308,7 @@
         <thead><tr>
           <th class="toggle-col"></th>
           <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
-          <th class="id-col">ID</th><th class="kind-col">Kind</th><th class="status-col">Status</th><th class="progress-col">Progress</th><th class="speed-col">Speed</th><th class="url-col">URL</th><th class="error-col">Error</th><th class="actions-col">Actions</th>
+          <th class="id-col" data-i18n="col_id">ID</th><th class="kind-col" data-i18n="col_kind">Kind</th><th class="status-col" data-i18n="col_status">Status</th><th class="progress-col" data-i18n="col_progress">Progress</th><th class="speed-col" data-i18n="col_speed">Speed</th><th class="url-col" data-i18n="col_url">URL</th><th class="error-col" data-i18n="col_error">Error</th><th class="actions-col" data-i18n="col_actions">Actions</th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -216,20 +318,20 @@
   <div id="confirm-overlay" class="overlay">
     <div class="overlay-card">
       <div id="confirm-message" style="margin-bottom: 14px; font-size: 14px; color: var(--text);"></div>
-      <label class="checkbox" style="margin-bottom: 18px;"><input type="checkbox" id="confirm-delete-files-chk" /> Also delete downloaded files</label>
+      <label class="checkbox" style="margin-bottom: 18px;"><input type="checkbox" id="confirm-delete-files-chk" /> <span data-i18n="also_delete_files">Also delete downloaded files</span></label>
       <div style="display: flex; justify-content: flex-end; gap: 8px;">
-        <button id="confirm-cancel-btn" class="secondary">Cancel</button>
-        <button id="confirm-ok-btn" class="danger">Confirm</button>
+        <button id="confirm-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="confirm-ok-btn" class="danger" data-i18n="confirm">Confirm</button>
       </div>
     </div>
   </div>
 
   <div id="quality-overlay" class="overlay">
     <div class="overlay-card" style="min-width: 280px; max-width: 380px;">
-      <div style="margin-bottom: 12px; font-size: 14px; color: var(--text);">Choose a quality</div>
+      <div style="margin-bottom: 12px; font-size: 14px; color: var(--text);" data-i18n="choose_quality">Choose a quality</div>
       <div id="quality-options" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 300px; overflow-y: auto;"></div>
       <div style="display: flex; justify-content: flex-end;">
-        <button id="quality-cancel-btn" class="secondary">Cancel</button>
+        <button id="quality-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
       </div>
     </div>
   </div>
@@ -238,8 +340,10 @@
     <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,0.6); transition: transform .08s;" />
   </div>
 
+<script src="i18n.js"></script>
 <script>
 const { invoke } = window.__TAURI__.core;
+const t = (k, v) => window.I18N.t(k, v);
 const selected = new Set();
 const detailsOpen = new Set();
 
@@ -408,7 +512,7 @@ function formatProgress(e) {
   }
   if (!e.progress) {
     return e.status === "Converting"
-      ? `<div class="meter"><div class="track conv"></div><div class="mlabel" style="color:var(--violet)">remux</div></div>`
+      ? `<div class="meter"><div class="track conv"></div><div class="mlabel" style="color:var(--violet)">${t("remux")}</div></div>`
       : "";
   }
   const p = e.progress;
@@ -455,20 +559,36 @@ function kindLabel(kind) {
 
 const STATUS_LABELS = { Downloading: "Running" };
 function statusLabel(status) {
-  return STATUS_LABELS[status] ?? status;
+  return t("status_" + (STATUS_LABELS[status] ?? status));
+}
+
+// UI font key -> CSS family; null = use the stylesheet default. Applies to the
+// whole UI (both --sans and --mono).
+const FONTS = {
+  system: null,
+  georgia: 'Georgia, "Times New Roman", serif',
+  "ibm-plex-mono": '"IBM Plex Mono", ui-monospace, Consolas, monospace',
+  excalifont: '"Excalifont", "Comic Sans MS", cursive',
+  "cascadia-mono": '"Cascadia Mono", ui-monospace, Consolas, monospace',
+};
+function applyFont(key) {
+  const fam = FONTS[key];
+  const s = document.documentElement.style;
+  if (fam) { s.setProperty("--sans", fam); s.setProperty("--mono", fam); }
+  else { s.removeProperty("--sans"); s.removeProperty("--mono"); }
 }
 
 // The leading, fixed-width slot in the Actions column: one contextual verb
 // (or an empty spacer for Queued) so the trio stays aligned across every row.
 function primaryActionBtn(e) {
-  const b = (cls, label) => `<button class="small secondary act-primary ${cls}" data-id="${e.id}">${label}</button>`;
+  const b = (cls, key) => `<button class="small secondary act-primary ${cls}" data-id="${e.id}">${t(key)}</button>`;
   switch (e.status) {
-    case "Downloading": return b("pause-btn", "Pause");
-    case "Paused":      return b("resume-btn", "Resume");
+    case "Downloading": return b("pause-btn", "act_pause");
+    case "Paused":      return b("resume-btn", "act_resume");
     case "Failed":
     case "Cancelled":
-    case "Converting":  return b("retry-btn", "Retry");
-    case "Finished":    return b("preview-btn", "Preview");
+    case "Converting":  return b("retry-btn", "act_retry");
+    case "Finished":    return b("preview-btn", "act_preview");
     default:            return `<span class="act-primary"></span>`;
   }
 }
@@ -503,19 +623,19 @@ async function refresh() {
     tr.className = "data-row";
     const isOpen = detailsOpen.has(e.id);
     tr.innerHTML = `
-      <td class="toggle-col"><button class="details-toggle-btn" data-id="${e.id}" title="Details">${isOpen ? "▾" : "▸"}</button></td>
+      <td class="toggle-col"><button class="details-toggle-btn" data-id="${e.id}" title="${t("details")}">${isOpen ? "▾" : "▸"}</button></td>
       <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${e.id}" ${selected.has(e.id) ? "checked" : ""} /></td>
       <td class="id id-col">${e.id.slice(0, 8)}</td>
       <td class="kind-col">${kindLabel(e.kind)}</td>
       <td class="status-${e.status} status-col">${statusLabel(e.status)}</td>
       <td class="progress-col">${formatProgress(e)}</td>
       <td class="speed-text speed-col">${formatSpeed(e)}</td>
-      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span><span class="u-mid">${s.mid}</span><span class="u-tail">${s.tail}</span></span>`; })()}</td>
-      <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n(double-click to copy)" : ""}">${e.error ?? ""}</td>
+      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;${t("dbl_copy")}">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span><span class="u-mid">${s.mid}</span><span class="u-tail">${s.tail}</span></span>`; })()}</td>
+      <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n" + t("dbl_copy") : ""}">${e.error ?? ""}</td>
       <td class="actions-col"><div class="actions">
         ${primaryActionBtn(e)}
-        <button class="small secondary open-folder-btn" data-id="${e.id}">Open folder</button>
-        <button class="small danger remove-btn" data-id="${e.id}">Remove</button>
+        <button class="small secondary open-folder-btn" data-id="${e.id}">${t("open_folder")}</button>
+        <button class="small danger remove-btn" data-id="${e.id}">${t("remove")}</button>
       </div></td>
     `;
     rows.appendChild(tr);
@@ -525,16 +645,16 @@ async function refresh() {
     detailsTr.dataset.id = e.id;
     detailsTr.style.display = isOpen ? "table-row" : "none";
     let site = "";
-    try { site = new URL(e.url).host; } catch { site = "(unknown)"; }
+    try { site = new URL(e.url).host; } catch { site = t("val_unknown"); }
     const headerNames = Object.keys(e.headers ?? {});
     detailsTr.innerHTML = `
       <td colspan="10" class="details-cell">
-        <div><strong>Site</strong> ${site}</div>
-        <div><strong>Full link</strong> <span class="selectable">${e.url}</span></div>
-        <div><strong>Saving to</strong> <span class="selectable">${e.dest}</span></div>
-        <div><strong>Headers captured</strong> ${headerNames.length ? headerNames.join(", ") : "none"}</div>
-        <div><strong>Cookie captured</strong> ${e.cookie ? "yes" : "no"}</div>
-        <div><strong>Added</strong> ${new Date(e.created_at * 1000).toLocaleString()}</div>
+        <div><strong>${t("d_site")}</strong> ${site}</div>
+        <div><strong>${t("d_full_link")}</strong> <span class="selectable">${e.url}</span></div>
+        <div><strong>${t("d_saving_to")}</strong> <span class="selectable">${e.dest}</span></div>
+        <div><strong>${t("d_headers")}</strong> ${headerNames.length ? headerNames.join(", ") : t("val_none")}</div>
+        <div><strong>${t("d_cookie")}</strong> ${e.cookie ? t("val_yes") : t("val_no")}</div>
+        <div><strong>${t("d_added")}</strong> ${new Date(e.created_at * 1000).toLocaleString(window.I18N.lang)}</div>
       </td>
     `;
     rows.appendChild(detailsTr);
@@ -609,7 +729,7 @@ async function refresh() {
   });
   rows.querySelectorAll(".remove-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const { confirmed, deleteFiles } = await confirmAction("Remove this download from the list?");
+      const { confirmed, deleteFiles } = await confirmAction(t("confirm_remove_one"));
       if (!confirmed) return;
       await invoke("remove_entry", { id: btn.dataset.id, deleteFiles });
       await refresh();
@@ -624,7 +744,7 @@ async function refresh() {
       try {
         await navigator.clipboard.writeText(value);
         const original = cell.innerHTML;
-        cell.textContent = "Copied!";
+        cell.textContent = t("copied");
         setTimeout(() => { cell.innerHTML = original; }, 700);
       } catch (err) {
         console.error("clipboard write failed", err);
@@ -649,7 +769,7 @@ document.getElementById("select-all-chk").addEventListener("change", async (ev) 
 });
 
 document.getElementById("remove-selected-btn").addEventListener("click", async () => {
-  const { confirmed, deleteFiles } = await confirmAction(`Remove ${selected.size} selected download(s) from the list?`);
+  const { confirmed, deleteFiles } = await confirmAction(t("confirm_remove_n", { n: selected.size }));
   if (!confirmed) return;
   for (const id of [...selected]) {
     await invoke("remove_entry", { id, deleteFiles });
@@ -697,25 +817,73 @@ document.getElementById("run-btn").addEventListener("click", async () => {
   await refresh();
 });
 
-document.getElementById("refresh-btn").addEventListener("click", refresh);
-
 document.getElementById("clear-btn").addEventListener("click", async () => {
-  const { confirmed, deleteFiles } = await confirmAction("Clear all finished/failed/cancelled downloads from the list?");
+  const { confirmed, deleteFiles } = await confirmAction(t("confirm_clear"));
   if (!confirmed) return;
   await invoke("clear_finished", { deleteFiles });
   await refresh();
 });
 
+const settingsOverlay = document.getElementById("settings-overlay");
+const fontPreview = document.getElementById("font-preview");
+const ddLang = document.getElementById("dd-language");
+const ddFont = document.getElementById("dd-font");
+
+function previewFont(key) {
+  const fam = FONTS[key];
+  fontPreview.style.fontFamily = fam || "var(--sans)";
+}
+
+// minimal themed dropdown: data-value on the .dd, click a <li> to set it.
+function initDropdown(dd, onChange) {
+  const btn = dd.querySelector(".dd-btn");
+  const cur = dd.querySelector(".dd-cur");
+  const items = [...dd.querySelectorAll(".dd-list li")];
+  dd._sync = () => {
+    const v = dd.dataset.value;
+    items.forEach(li => {
+      const on = li.dataset.value === v;
+      li.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) { cur.textContent = li.textContent; cur.className = "dd-cur " + (li.className || "").trim(); }
+    });
+  };
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".dd.open").forEach(o => { if (o !== dd) o.classList.remove("open"); });
+    dd.classList.toggle("open");
+  });
+  items.forEach(li => li.addEventListener("click", () => {
+    dd.dataset.value = li.dataset.value;
+    dd.classList.remove("open");
+    dd._sync();
+    if (onChange) onChange(li.dataset.value);
+  }));
+  dd._sync();
+}
+initDropdown(ddLang);
+initDropdown(ddFont, previewFont);
+document.addEventListener("click", () => document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open")));
+
+function openSettings(settings) {
+  document.getElementById("download-dir").value = settings.download_dir;
+  document.getElementById("max-concurrent").value = settings.max_concurrent_downloads;
+  document.getElementById("per-download-concurrency").value = settings.per_download_concurrency;
+  ddLang.dataset.value = settings.language || "en"; ddLang._sync();
+  ddFont.dataset.value = settings.font || "system"; ddFont._sync();
+  previewFont(settings.font || "system");
+  settingsOverlay.style.display = "flex";
+}
+function closeSettings() {
+  settingsOverlay.style.display = "none";
+  document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open"));
+}
+
 document.getElementById("settings-btn").addEventListener("click", async () => {
-  const panel = document.getElementById("settings-panel");
-  if (!panel.classList.contains("open")) {
-    const settings = await invoke("get_settings");
-    document.getElementById("download-dir").value = settings.download_dir;
-    document.getElementById("max-concurrent").value = settings.max_concurrent_downloads;
-    document.getElementById("per-download-concurrency").value = settings.per_download_concurrency;
-  }
-  panel.classList.toggle("open");
+  openSettings(await invoke("get_settings"));
 });
+document.getElementById("settings-close-btn").addEventListener("click", closeSettings);
+document.getElementById("settings-cancel-btn").addEventListener("click", closeSettings);
+settingsOverlay.addEventListener("click", (ev) => { if (ev.target === settingsOverlay) closeSettings(); });
 
 document.getElementById("browse-btn").addEventListener("click", async () => {
   const picked = await invoke("pick_folder");
@@ -725,17 +893,34 @@ document.getElementById("browse-btn").addEventListener("click", async () => {
 });
 
 document.getElementById("save-settings-btn").addEventListener("click", async () => {
+  const font = ddFont.dataset.value;
+  const language = ddLang.dataset.value;
   const settings = {
     download_dir: document.getElementById("download-dir").value.trim(),
     max_concurrent_downloads: parseInt(document.getElementById("max-concurrent").value, 10) || 2,
     per_download_concurrency: parseInt(document.getElementById("per-download-concurrency").value, 10) || 8,
+    font,
+    language,
   };
   await invoke("set_settings", { settings });
-  document.getElementById("settings-panel").classList.remove("open");
+  applyFont(font);
+  window.I18N.applyLang(language);
+  try { await window.__TAURI__.event.emit("settings-changed"); } catch (e) {}
+  await refresh();
+  closeSettings();
 });
 
-refresh();
-setInterval(refresh, 2000);
+(async () => {
+  try {
+    const s = await invoke("get_settings");
+    applyFont(s.font || "system");
+    window.I18N.applyLang(s.language || "en");
+  } catch (e) {
+    window.I18N.applyLang("en");
+  }
+  await refresh();
+  setInterval(refresh, 2000);
+})();
 </script>
 </body>
 </html>

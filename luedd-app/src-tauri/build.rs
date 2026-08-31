@@ -3,7 +3,13 @@ fn main() {
     // file changes. tauri_build watches the dist directory, but an in-place edit
     // to a file inside it doesn't always change the directory mtime on Windows,
     // so cargo can skip this build script and ship a stale libresource.a.
-    for entry in ["../dist", "../dist/index.html", "../dist/detected.html"] {
+    for entry in [
+        "../dist",
+        "../dist/index.html",
+        "../dist/detected.html",
+        "../dist/i18n.js",
+        "../dist/fonts",
+    ] {
         println!("cargo:rerun-if-changed={entry}");
     }
     // A per-build token appended to window URLs so a rebuilt frontend is never

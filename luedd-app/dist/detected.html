@@ -4,6 +4,11 @@
 <meta charset="utf-8" />
 <title>Detected downloads</title>
 <style>
+  @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono-600.woff2") format("woff2"); font-weight: 600 900; font-display: swap; }
+  @font-face { font-family: "Cascadia Mono"; src: url("fonts/cascadia-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Cascadia Mono"; src: url("fonts/cascadia-mono-700.woff2") format("woff2"); font-weight: 600 900; font-display: swap; }
+  @font-face { font-family: "Excalifont"; src: url("fonts/excalifont.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
   :root {
     --bg: #16171A; --surface: #1E2024; --surface-2: #26282E; --line: #34373E;
     --text: #E7E8EA; --dim: #9A9DA5; --accent: #4FA3D8; --disc: #7FC0E6;
@@ -76,22 +81,38 @@
 <body>
   <header>
     <img src="icon.png" alt="" />
-    <h1>Detected <span id="count" style="color: var(--dim); font-weight: 400;"></span></h1>
-    <button id="pin-btn" class="secondary" title="Toggle always-on-top">Unpin</button>
-    <button id="hide-btn" class="secondary" title="Hide this window">Hide</button>
+    <h1><span data-i18n="detected">Detected</span> <span id="count" style="color: var(--dim); font-weight: 400;"></span></h1>
+    <button id="pin-btn" class="secondary" data-i18n="unpin" title="Toggle always-on-top">Unpin</button>
+    <button id="hide-btn" class="secondary" data-i18n="hide" title="Hide this window">Hide</button>
   </header>
   <div class="search-row">
-    <input id="search-input" type="text" placeholder="Filter by name or site&hellip;" />
+    <input id="search-input" type="text" data-i18n-placeholder="filter_ph" placeholder="Filter by name or site&hellip;" />
   </div>
   <div id="list"></div>
   <div id="image-preview-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 1000; cursor: pointer; overflow: auto;">
     <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); transition: transform .08s;" />
   </div>
   <footer>
-    <button id="clear-btn" class="danger">Clear items</button>
+    <button id="clear-btn" class="danger" data-i18n="clear_items">Clear items</button>
   </footer>
 
+<script src="i18n.js"></script>
 <script>
+  const L = (k, v) => window.I18N.t(k, v);
+  const FONTS = {
+    system: null,
+    georgia: 'Georgia, "Times New Roman", serif',
+    "ibm-plex-mono": '"IBM Plex Mono", ui-monospace, Consolas, monospace',
+    excalifont: '"Excalifont", "Comic Sans MS", cursive',
+    "cascadia-mono": '"Cascadia Mono", ui-monospace, Consolas, monospace',
+  };
+  function applyFont(key) {
+    const fam = FONTS[key];
+    const s = document.documentElement.style;
+    if (fam) { s.setProperty("--sans", fam); s.setProperty("--mono", fam); }
+    else { s.removeProperty("--sans"); s.removeProperty("--mono"); }
+  }
+
   window.addEventListener("error", e => {
     let bar = document.getElementById("js-error-bar");
     if (!bar) {
@@ -282,13 +303,13 @@
     const mid = document.createElement("span"); mid.className = "cl-mid"; mid.textContent = s.mid;
     const tail = document.createElement("span"); tail.className = "cl-tail"; tail.textContent = s.tail;
     line.append(lab, origin, mid, tail);
-    line.title = value + "\n(double-click to copy)";
+    line.title = value + "\n" + L("dbl_copy");
     line.addEventListener("dblclick", async e => {
       e.stopPropagation();
       try {
         await navigator.clipboard.writeText(value);
         const original = line.innerHTML;
-        line.textContent = "Copied!";
+        line.textContent = L("copied");
         setTimeout(() => { line.innerHTML = original; }, 700);
       } catch (err) {
         console.error("clipboard write failed", err);
@@ -359,7 +380,7 @@
     qualityBox.innerHTML = "";
     if (variants.length === 0) return;
     const label = document.createElement("div");
-    label.innerText = "Choose a quality:";
+    label.innerText = L("choose_quality_c");
     label.style.marginBottom = "2px";
     qualityBox.appendChild(label);
     variants.forEach(variant => {
@@ -369,9 +390,9 @@
         ev.stopPropagation();
         const original = qBtn.innerText;
         const r = await post("/vid", { vid: item.id, quality: variant.variant_key });
-        qBtn.innerText = r && r.vidQueued === true ? "Added to Lüdd!"
-          : r && r.vidQueued === false ? "Failed - link may have expired"
-          : "Could not reach Lüdd";
+        qBtn.innerText = r && r.vidQueued === true ? L("added_to_luedd")
+          : r && r.vidQueued === false ? L("link_expired")
+          : L("cant_reach");
         setTimeout(() => { qBtn.innerText = original; }, 1500);
       });
       qualityBox.appendChild(qBtn);
@@ -397,7 +418,7 @@
         emptyEl.className = "empty";
         list.appendChild(emptyEl);
       }
-      emptyEl.innerText = allItems.length === 0 ? "Nothing detected yet." : "No matches.";
+      emptyEl.innerText = allItems.length === 0 ? L("nothing_detected") : L("no_matches");
       return;
     }
 
@@ -433,7 +454,7 @@
     const toggle = document.createElement("button");
     toggle.className = "toggle-btn";
     toggle.innerText = "▸";
-    toggle.title = "Details";
+    toggle.title = L("details");
 
     const titleBtn = document.createElement("button");
     titleBtn.className = "title-btn";
@@ -454,8 +475,8 @@
 
     const detailsPanel = document.createElement("div");
     detailsPanel.className = "details-panel";
-    detailsPanel.appendChild(makeCopyableLine("Site: ", item.pageUrl || "(unknown)"));
-    detailsPanel.appendChild(makeCopyableLine("Full link: ", item.url));
+    detailsPanel.appendChild(makeCopyableLine(L("site_c"), item.pageUrl || L("val_unknown")));
+    detailsPanel.appendChild(makeCopyableLine(L("link_c"), item.url));
 
     const qualityBox = document.createElement("div");
     qualityBox.className = "quality-box";
@@ -488,9 +509,9 @@
     titleBtn.addEventListener("click", async () => {
       const original = titleBtn.innerText;
       const res = await post("/vid", { vid: item.id });
-      titleBtn.innerText = res && res.vidQueued === true ? "Added to Lüdd!"
-        : res && res.vidQueued === false ? "Failed - link may have expired"
-        : "Could not reach Lüdd";
+      titleBtn.innerText = res && res.vidQueued === true ? L("added_to_luedd")
+        : res && res.vidQueued === false ? L("link_expired")
+        : L("cant_reach");
       setTimeout(() => { titleBtn.innerText = original; }, 1500);
     });
 
@@ -522,7 +543,7 @@
 
   document.getElementById("pin-btn").addEventListener("click", async () => {
     pinned = !pinned;
-    document.getElementById("pin-btn").innerText = pinned ? "Unpin" : "Pin";
+    document.getElementById("pin-btn").innerText = pinned ? L("unpin") : L("pin");
     await window.__TAURI__.core.invoke("detection_window_set_pinned", { pinned });
   });
 
@@ -543,7 +564,25 @@
   // couple seconds, independent of whether any given event made it through.
   setInterval(fetchAndRender, 2000);
 
-  fetchAndRender();
+  (async () => {
+    try {
+      const s = await window.__TAURI__.core.invoke("get_settings");
+      applyFont(s.font || "system");
+      window.I18N.applyLang(s.language || "en");
+    } catch (e) {
+      window.I18N.applyLang("en");
+    }
+    fetchAndRender();
+  })();
+
+  // pick up language/font the moment the user saves them in the main window
+  window.__TAURI__.event.listen("settings-changed", async () => {
+    try {
+      const s = await window.__TAURI__.core.invoke("get_settings");
+      applyFont(s.font || "system");
+      window.I18N.applyLang(s.language || "en");
+    } catch (e) {}
+  });
 </script>
 </body>
 </html>
