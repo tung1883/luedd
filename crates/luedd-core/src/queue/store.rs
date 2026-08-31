@@ -83,7 +83,13 @@ impl DownloadStore {
     pub async fn retry_entry(&self, id: &str) -> Result<bool> {
         let mut retried = false;
         self.update_entry(id, |e| {
-            if matches!(e.status, DownloadStatus::Failed | DownloadStatus::Cancelled | DownloadStatus::Paused) {
+            if matches!(
+                e.status,
+                DownloadStatus::Failed
+                    | DownloadStatus::Cancelled
+                    | DownloadStatus::Paused
+                    | DownloadStatus::Converting
+            ) {
                 e.status = DownloadStatus::Queued;
                 e.error = None;
                 e.progress = None;

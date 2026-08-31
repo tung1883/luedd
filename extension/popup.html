@@ -6,53 +6,85 @@
   <script src="popup.js"></script>
 </head>
 
-<body style="font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #1e1e1e; color: #ddd; min-width: 400px; max-width: 400px; overflow-x: hidden;">
+<body style="font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #16171A; color: #E7E8EA; min-width: 400px; max-width: 400px; overflow-x: hidden;">
   <style>
-    button { padding: 6px 12px; background: #3a6; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 13px; }
-    button.secondary { background: #555; }
-    button.danger { background: #a33; }
-    input[type=text] { width: 100%; box-sizing: border-box; padding: 6px 8px; background: #2a2a2a; border: 1px solid #444; color: #eee; border-radius: 4px; font-size: 13px; }
-    #list { min-height: 200px; max-height: 400px; overflow-y: auto; padding: 0 15px; }
-    .empty { padding: 20px; color: #888; font-size: 13px; text-align: center; }
-    .row { padding: 10px 0; border-bottom: 1px solid #333; min-width: 0; display: flex; gap: 10px; align-items: flex-start; }
+    :root {
+      --bg: #16171A; --surface: #1E2024; --surface-2: #26282E; --line: #34373E;
+      --text: #E7E8EA; --dim: #9A9DA5; --accent: #4FA3D8; --disc: #7FC0E6;
+      --good: #4FD08A; --bad: #F26A63;
+      --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid var(--bg); }
+    ::-webkit-scrollbar-thumb:hover { background: #474a52; }
+    a { color: var(--disc); }
+    button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
+      border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
+    button.secondary { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
+    button.secondary:hover { color: var(--text); border-color: var(--dim); }
+    button.danger { background: transparent; border-color: rgba(242,106,99,.4); color: var(--bad); font-weight: 500; }
+    button.danger:hover { background: var(--bad); color: var(--bg); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    input[type=text] { width: 100%; box-sizing: border-box; padding: 7px 9px; background: var(--surface);
+      border: 1px solid var(--line); color: var(--text); border-radius: 6px; font-size: 12px; font-family: var(--sans); }
+    input[type=text]::placeholder { color: var(--dim); }
+    input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+    input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; }
+    #list { min-height: 200px; max-height: 400px; overflow-y: auto; }
+    .empty { padding: 22px; color: var(--dim); font-size: 13px; text-align: center; }
+    .row { padding: 11px 15px; border-bottom: 1px solid var(--line); border-left: 2px solid transparent;
+      min-width: 0; display: flex; gap: 10px; align-items: flex-start; }
+    .row:hover { background: var(--surface); border-left-color: var(--accent);
+      box-shadow: inset 3px 0 8px -4px rgba(79,163,216,.5); }
     .row-body { flex: 1; min-width: 0; }
     .row-preview { flex-shrink: 0; width: 120px; display: flex; justify-content: flex-end; }
     .row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
-    .toggle-btn { background: none; border: none; color: #888; cursor: pointer; font-size: 12px; padding: 0; width: 14px; flex-shrink: 0; }
-    .title-btn { background: none; border: none; color: #ddd; cursor: pointer; text-align: left; font-size: 14px; padding: 4px 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0; width: 14px; flex-shrink: 0; }
+    .title-btn { background: none; border: none; color: var(--text); cursor: pointer; text-align: left; font-size: 13px;
+      padding: 3px 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .title-btn:hover { color: var(--disc); }
     .info-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 20px; min-width: 0; }
-    .info-text { font-size: 12px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
-    .preview-link { background: none; border: none; color: #4af; cursor: pointer; font-size: 11px; padding: 0; flex-shrink: 0; }
-    .thumb { max-height: 90px; max-width: 120px; border-radius: 4px; border: 1px solid #333; cursor: pointer; display: block; background: #232323; object-fit: cover; }
-    .details-panel { display: none; font-size: 11px; color: #aaa; background: #232323; border-radius: 4px; padding: 6px 8px; margin-top: 4px; margin-left: 20px; min-width: 0; overflow: hidden; }
+    .info-text { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; margin-top: 3px; }
+    .preview-link { background: none; border: none; color: var(--disc); cursor: pointer; font-size: 11px; padding: 0; flex-shrink: 0; }
+    .thumb { max-height: 90px; max-width: 120px; border-radius: 5px; border: 1px solid var(--line); cursor: pointer;
+      display: block; background: linear-gradient(135deg, #242730, #2b2f38); object-fit: cover; }
+    .details-panel { display: none; font-size: 12px; color: var(--dim); background: var(--surface-2);
+      border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 5px; margin-left: 20px; min-width: 0; overflow: hidden; }
     .details-panel.open { display: block; }
-    .copyable-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; margin-bottom: 4px; max-width: 100%; }
+    .copyable-line { font-family: var(--mono); font-size: 11px; display: flex; overflow: hidden; cursor: pointer; margin-bottom: 4px; max-width: 100%; }
+    .cl-label { flex: 0 0 auto; margin-right: 4px; }
+    .cl-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cl-tail { flex: 0 0 auto; white-space: nowrap; }
     .quality-box { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
-    .quality-box button { background: none; border: none; color: #4af; cursor: pointer; text-align: left; font-size: 11px; padding: 1px 0; }
-    label.checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #ccc; cursor: pointer; }
+    .quality-box button { background: none; border: none; color: var(--disc); cursor: pointer; text-align: left; font-size: 12px; font-weight: 400; padding: 1px 0; }
+    label.checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
   </style>
 
-  <div style="font-size: 16px; font-weight: 600; border-bottom: 1px solid #333; padding: 12px 15px;">
-    Lüdd
+  <div style="display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--line); padding: 12px 15px; background: linear-gradient(180deg, #212227, var(--surface)); box-shadow: 0 1px 0 rgba(255,255,255,.04);">
+    <img src="icon128.png" alt="" style="width: 20px; height: 20px; border-radius: 5px;" />
+    <span style="font-size: 15px; font-weight: 700;">L<span style="color: var(--accent);">ü</span>dd</span>
   </div>
 
   <div id="content">
-    <div style="padding: 8px 15px 0 15px; font-size: 12px; color: #888;">
-      Detected on this page &mdash; click one to queue it for download.
-      Manage running/finished downloads, the output folder, and other
-      settings in the Lüdd app itself, not here.
+    <div style="padding: 10px 15px 0 15px; font-size: 12px; color: var(--dim); line-height: 1.5;">
+      Detected on this page &mdash; click one to queue it. Manage running downloads,
+      the output folder and settings in the <b style="color: var(--text);">Lüdd app</b>.
     </div>
-    <div style="padding: 8px 15px;">
+    <div style="padding: 10px 15px;">
       <input id="search-input" type="text" placeholder="Filter by name or site&hellip;">
     </div>
     <div id="list"></div>
-    <div style="padding: 10px 15px; display: flex; gap: 8px;">
+    <div style="padding: 12px 15px; display: flex; gap: 8px;">
       <button id="format" class="secondary" style="flex: 1;">More formats</button>
       <button id="clear" class="danger" style="flex: 1;">Clear items</button>
     </div>
   </div>
 
-  <div style="border-top: 1px solid #333; padding: 12px 15px;">
+  <div style="border-top: 1px solid var(--line); padding: 12px 15px; background: var(--surface);">
     <label class="checkbox">
       <input type="checkbox" id="chk">
       Browser monitoring

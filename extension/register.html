@@ -1,15 +1,24 @@
+<!DOCTYPE html>
 <html>
 
 <head>
     <meta charset="utf-8">
+    <link rel="stylesheet" href="styles.css">
     <script src="register.js"></script>
 </head>
 
-<body>
-    <div>Please register the extension with Lüdd</div>
-    <div><a id="link">Register with Lüdd</a></div>
-    <div id="content"></div>
-    <div><a id="link">Once registered, please restart the browser</a></div>
+<body style="min-width: 400px;">
+    <div class="ext-head">
+        <img src="icon128.png" alt="">
+        <span>L<span class="accent">ü</span>dd</span>
+    </div>
+    <div class="ext-body">
+        <h3>Connect this extension to Lüdd</h3>
+        <p>One-time setup so the app trusts links sent from your browser.</p>
+        <p><a id="link" class="primary-button">Register with Lüdd</a></p>
+        <div id="content"></div>
+        <p style="font-size: 12px;">Restart the browser once registration completes.</p>
+    </div>
 </body>
 
 </html>

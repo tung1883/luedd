@@ -4,40 +4,78 @@
 <meta charset="utf-8" />
 <title>Detected downloads</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #1e1e1e; color: #ddd; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
-  header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #333; }
-  header h1 { font-size: 15px; margin: 0; flex: 1; font-weight: 600; }
-  button { padding: 6px 12px; background: #3a6; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 13px; }
-  button.secondary { background: #555; }
-  button.danger { background: #a33; }
-  button.small { padding: 3px 8px; font-size: 12px; }
-  header button { padding: 4px 10px; font-size: 12px; }
-  .search-row { padding: 8px 12px; }
-  input[type=text] { width: 100%; box-sizing: border-box; padding: 6px 8px; background: #2a2a2a; border: 1px solid #444; color: #eee; border-radius: 4px; font-size: 13px; }
-  #list { flex: 1; overflow-y: auto; padding: 0 12px; }
-  .empty { padding: 20px; color: #888; font-size: 13px; text-align: center; }
-  .row { padding: 10px 0; border-bottom: 1px solid #333; min-width: 0; display: flex; gap: 10px; align-items: flex-start; }
+  :root {
+    --bg: #16171A; --surface: #1E2024; --surface-2: #26282E; --line: #34373E;
+    --text: #E7E8EA; --dim: #9A9DA5; --accent: #4FA3D8; --disc: #7FC0E6;
+    --bad: #F26A63;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #474a52; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  body { font-family: var(--sans); margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; height: 100vh; font-size: 13px; }
+  a { color: var(--disc); }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 13px;
+    background: linear-gradient(180deg, #212227, var(--surface));
+    border-bottom: 1px solid var(--line); box-shadow: 0 1px 0 rgba(255,255,255,.04); }
+  header img { width: 18px; height: 18px; border-radius: 4px; }
+  header h1 { font-size: 12px; margin: 0; flex: 1; font-weight: 700;
+    letter-spacing: .06em; text-transform: uppercase; }
+  button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
+    border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
+  button.secondary { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
+  button.secondary:hover { color: var(--text); border-color: var(--dim); }
+  button.danger { background: transparent; border-color: rgba(242,106,99,.4); color: var(--bad); font-weight: 500; }
+  button.danger:hover { background: var(--bad); color: var(--bg); }
+  button.small { padding: 3px 8px; font-size: 11px; border-radius: 5px; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  header button { padding: 4px 9px; font-size: 11px; }
+  .search-row { padding: 9px 13px; border-bottom: 1px solid var(--line); }
+  input[type=text] { width: 100%; padding: 6px 9px; background: var(--surface); border: 1px solid var(--line);
+    color: var(--text); border-radius: 6px; font-size: 12px; font-family: var(--sans); }
+  input[type=text]::placeholder { color: var(--dim); }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  #list { flex: 1; overflow-y: auto; }
+  .empty { padding: 24px; color: var(--dim); font-size: 13px; text-align: center; }
+  .row { padding: 11px 13px 11px 11px; border-bottom: 1px solid var(--line); border-left: 2px solid transparent;
+    min-width: 0; display: flex; gap: 10px; align-items: flex-start; }
+  .row:hover { background: var(--surface); border-left-color: var(--accent);
+    box-shadow: inset 3px 0 8px -4px rgba(79,163,216,.5); }
   .row-body { flex: 1; min-width: 0; }
   .row-preview { flex-shrink: 0; width: 120px; display: flex; justify-content: flex-end; }
   .row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .toggle-btn { background: none; border: none; color: #888; cursor: pointer; font-size: 12px; padding: 0; width: 14px; flex-shrink: 0; }
-  .title-btn { background: none; border: none; color: #ddd; cursor: pointer; text-align: left; font-size: 14px; padding: 4px 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0; width: 14px; flex-shrink: 0; }
+  .title-btn { background: none; border: none; color: var(--text); cursor: pointer; text-align: left; font-size: 13px;
+    padding: 3px 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title-btn:hover { color: var(--disc); }
   .info-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 20px; min-width: 0; }
-  .info-text { font-size: 12px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
-  .preview-link { background: none; border: none; color: #4af; cursor: pointer; font-size: 11px; padding: 0; flex-shrink: 0; }
-  .thumb { max-height: 90px; max-width: 120px; border-radius: 4px; border: 1px solid #333; cursor: zoom-in; display: block; background: #232323; object-fit: cover; }
+  .info-text { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; margin-top: 3px; }
+  .preview-link { background: none; border: none; color: var(--disc); cursor: pointer; font-size: 11px; padding: 0; flex-shrink: 0; }
+  .thumb { max-height: 90px; max-width: 120px; border-radius: 5px; border: 1px solid var(--line); cursor: zoom-in;
+    display: block; background: linear-gradient(135deg, #242730, #2b2f38); object-fit: cover; }
   .thumb-pdf { width: 120px; height: 90px; cursor: default; }
-  .details-panel { display: none; font-size: 11px; color: #aaa; background: #232323; border-radius: 4px; padding: 6px 8px; margin-top: 4px; margin-left: 20px; min-width: 0; overflow: hidden; }
+  .details-panel { display: none; font-size: 12px; color: var(--dim); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 5px; margin-left: 20px; min-width: 0; overflow: hidden; }
   .details-panel.open { display: block; }
-  .copyable-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; margin-bottom: 4px; max-width: 100%; }
+  .copyable-line { font-family: var(--mono); font-size: 11px; display: flex; overflow: hidden; cursor: pointer; margin-bottom: 4px; max-width: 100%; }
+  .cl-label { flex: 0 0 auto; margin-right: 4px; }
+  .cl-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cl-tail { flex: 0 0 auto; white-space: nowrap; }
   .quality-box { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
-  .quality-box button { background: none; border: none; color: #4af; cursor: pointer; text-align: left; font-size: 11px; padding: 1px 0; }
-  footer { padding: 8px 12px; border-top: 1px solid #333; display: flex; }
+  .quality-box button { background: none; border: none; color: var(--disc); cursor: pointer; text-align: left; font-size: 12px; font-weight: 400; padding: 1px 0; }
+  footer { padding: 9px 13px; border-top: 1px solid var(--line); display: flex; }
 </style>
 </head>
 <body>
   <header>
-    <h1>Detected downloads <span id="count" style="color: #999; font-weight: 400;"></span></h1>
+    <img src="icon.png" alt="" />
+    <h1>Detected <span id="count" style="color: var(--dim); font-weight: 400;"></span></h1>
     <button id="pin-btn" class="secondary" title="Toggle always-on-top">Unpin</button>
     <button id="hide-btn" class="secondary" title="Hide this window">Hide</button>
   </header>
@@ -158,23 +196,35 @@
     renderList(items);
   }
 
-  function truncateMiddle(str, headLen = 32, tailLen = 20) {
-    if (str.length <= headLen + tailLen + 3) return str;
-    return str.slice(0, headLen) + "..." + str.slice(-tailLen);
+  // Split a URL into a shrinkable head and an always-visible tail (filename +
+  // short query) so a cramped line still shows the file and its type.
+  function splitUrl(u) {
+    const q = u.indexOf("?");
+    const base = q === -1 ? u : u.slice(0, q);
+    const query = q === -1 ? "" : u.slice(q);
+    const slash = base.lastIndexOf("/");
+    if (slash === -1) return { head: "", tail: u };
+    let tail = base.slice(slash + 1);
+    if (query) tail += query.length > 14 ? query.slice(0, 14) + "…" : query;
+    return { head: base.slice(0, slash + 1), tail };
   }
 
   function makeCopyableLine(label, value) {
     const line = document.createElement("div");
     line.className = "copyable-line";
-    line.innerText = label + truncateMiddle(value);
+    const s = splitUrl(value);
+    const lab = document.createElement("span"); lab.className = "cl-label"; lab.textContent = label;
+    const head = document.createElement("span"); head.className = "cl-head"; head.textContent = s.head;
+    const tail = document.createElement("span"); tail.className = "cl-tail"; tail.textContent = s.tail;
+    line.append(lab, head, tail);
     line.title = value + "\n(double-click to copy)";
     line.addEventListener("dblclick", async e => {
       e.stopPropagation();
       try {
         await navigator.clipboard.writeText(value);
-        const original = line.innerText;
-        line.innerText = "Copied!";
-        setTimeout(() => { line.innerText = original; }, 700);
+        const original = line.innerHTML;
+        line.textContent = "Copied!";
+        setTimeout(() => { line.innerHTML = original; }, 700);
       } catch (err) {
         console.error("clipboard write failed", err);
       }

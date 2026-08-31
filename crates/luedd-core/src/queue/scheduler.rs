@@ -20,9 +20,35 @@ pub fn next_auto_retry_at(retry_count: u32) -> Option<i64> {
 }
 
 pub async fn run_forever(store: Arc<DownloadStore>, manager: Arc<DownloadManager>) -> ! {
+    requeue_interrupted(&store).await;
     loop {
         tick(&store, &manager).await;
         tokio::time::sleep(CHECK_INTERVAL).await;
+    }
+}
+
+/// A `Downloading` entry can only be stale on startup - the task that owned it
+/// died with the previous process. Put it back in the queue; the download
+/// resumes from its checkpoint (HTTP `state.json`) or its already-fetched
+/// segments (HLS/DASH), so no progress is lost.
+///
+/// `Converting` is left alone: all its segments are already downloaded and only
+/// the mux was interrupted, but re-running the job would re-walk the whole
+/// download. Better to leave it for the user to retry explicitly than to silently
+/// restart a nearly-finished video.
+async fn requeue_interrupted(store: &DownloadStore) {
+    for entry in store.list_entries().await {
+        if matches!(entry.status, DownloadStatus::Downloading) {
+            tracing::info!(id = %entry.id, "re-queuing a download interrupted by a previous shutdown");
+            store
+                .update_entry(&entry.id, |e| {
+                    e.status = DownloadStatus::Queued;
+                    e.retry_count = 0;
+                    e.next_retry_at = None;
+                })
+                .await
+                .ok();
+        }
     }
 }
 
@@ -64,6 +90,50 @@ async fn auto_retry_due_entries(store: &DownloadStore, manager: &DownloadManager
 mod tests {
     use super::super::model::DownloadSchedule;
     use super::*;
+
+    #[tokio::test]
+    async fn requeue_interrupted_revives_only_downloading() {
+        use crate::jobs::DownloadKind;
+        use crate::queue::model::DownloadEntry;
+
+        let dir = std::env::temp_dir().join(format!("luedd-sched-requeue-{}", std::process::id()));
+        let store = DownloadStore::open(dir.join("downloads.json")).await.unwrap();
+
+        let mut ids = Vec::new();
+        for status in [
+            DownloadStatus::Downloading,
+            DownloadStatus::Converting,
+            DownloadStatus::Paused,
+            DownloadStatus::Finished,
+            DownloadStatus::Failed,
+        ] {
+            let entry = DownloadEntry::new("http://x/f".into(), "/tmp/f".into(), DownloadKind::Http);
+            let id = entry.id.clone();
+            store.add_entry(entry).await.unwrap();
+            store
+                .update_entry(&id, |e| {
+                    e.status = status;
+                    e.retry_count = 2;
+                })
+                .await
+                .unwrap();
+            ids.push((id, status));
+        }
+
+        requeue_interrupted(&store).await;
+
+        for (id, original) in ids {
+            let now = store.get_entry(&id).await.unwrap();
+            if original == DownloadStatus::Downloading {
+                assert_eq!(now.status, DownloadStatus::Queued, "Downloading should be re-queued");
+                assert_eq!(now.retry_count, 0);
+            } else {
+                assert_eq!(now.status, original, "{original:?} should be untouched (esp. Converting)");
+            }
+        }
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
 
     #[test]
     fn schedule_gates_correctly_at_boundaries() {

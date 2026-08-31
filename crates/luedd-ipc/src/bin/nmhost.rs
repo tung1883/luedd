@@ -76,6 +76,15 @@ async fn probe_server() -> bool {
 
 fn spawn_app() -> std::io::Result<()> {
     let exe = std::env::var("LUEDD_APP_PATH").unwrap_or_else(|_| "luedd-app".to_string());
-    std::process::Command::new(exe).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        // DETACHED_PROCESS: the app must not inherit the browser-spawned host's
+        // console, or it flashes one on launch.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0008);
+    }
+    cmd.spawn()?;
     Ok(())
 }

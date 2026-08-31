@@ -301,6 +301,11 @@ fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
         .resizable(true)
         .always_on_top(true)
         .focused(false)
+        // Start hidden with the app's own background colour, then reveal once the
+        // webview has had a moment to paint - otherwise the window pops as a
+        // white rectangle while detected.html loads.
+        .visible(false)
+        .background_color(tauri::webview::Color(0x16, 0x17, 0x1a, 0xff))
         .build();
     match win {
         Ok(win) => {
@@ -310,6 +315,11 @@ fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
                     api.prevent_close();
                     let _ = win_for_close.hide();
                 }
+            });
+            let win_for_show = win.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let _ = win_for_show.show();
             });
         }
         Err(e) => tracing::warn!(error = %e, "failed to open detection window"),

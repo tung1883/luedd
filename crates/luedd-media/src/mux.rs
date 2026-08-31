@@ -114,11 +114,12 @@ async fn run_ffmpeg(args: &[&str], progress: Option<MuxProgress<'_>>) -> Result<
     }
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(&owned_args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&owned_args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
     #[cfg(windows)]
     {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        // CREATE_NO_WINDOW: no console window flash when spawned from the GUI app.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 

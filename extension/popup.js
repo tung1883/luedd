@@ -68,23 +68,35 @@ class VideoPopup {
         this.renderList(items);
     }
 
-    truncateMiddle(str, headLen = 28, tailLen = 18) {
-        if (str.length <= headLen + tailLen + 3) return str;
-        return str.slice(0, headLen) + "..." + str.slice(-tailLen);
+    // Split a URL into a shrinkable head and an always-visible tail (filename +
+    // short query) so a cramped line still shows the file and its type.
+    splitUrl(u) {
+        const q = u.indexOf("?");
+        const base = q === -1 ? u : u.slice(0, q);
+        const query = q === -1 ? "" : u.slice(q);
+        const slash = base.lastIndexOf("/");
+        if (slash === -1) return { head: "", tail: u };
+        let tail = base.slice(slash + 1);
+        if (query) tail += query.length > 14 ? query.slice(0, 14) + "…" : query;
+        return { head: base.slice(0, slash + 1), tail };
     }
 
     makeCopyableLine(label, value) {
         let line = document.createElement('div');
         line.className = 'copyable-line';
-        line.innerText = label + this.truncateMiddle(value);
+        const s = this.splitUrl(value);
+        const lab = document.createElement('span'); lab.className = 'cl-label'; lab.textContent = label;
+        const head = document.createElement('span'); head.className = 'cl-head'; head.textContent = s.head;
+        const tail = document.createElement('span'); tail.className = 'cl-tail'; tail.textContent = s.tail;
+        line.append(lab, head, tail);
         line.title = value + "\n(double-click to copy)";
         line.addEventListener('dblclick', async e => {
             e.stopPropagation();
             try {
                 await navigator.clipboard.writeText(value);
-                let original = line.innerText;
-                line.innerText = "Copied!";
-                setTimeout(() => { line.innerText = original; }, 700);
+                let original = line.innerHTML;
+                line.textContent = "Copied!";
+                setTimeout(() => { line.innerHTML = original; }, 700);
             } catch (err) {
                 console.error("clipboard write failed", err);
             }

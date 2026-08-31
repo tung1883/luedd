@@ -12,7 +12,8 @@
       {
         "title": "Lüdd",
         "width": 900,
-        "height": 600
+        "height": 600,
+        "backgroundColor": "#16171A"
       }
     ],
     "security": {

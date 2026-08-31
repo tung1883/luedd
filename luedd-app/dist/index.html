@@ -4,59 +4,166 @@
 <meta charset="utf-8" />
 <title>Lüdd</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #1e1e1e; color: #ddd; }
-  h1 { font-size: 18px; margin: 0 0 12px; display: flex; align-items: center; justify-content: space-between; }
-  h1 button { font-size: 12px; padding: 4px 10px; }
-  form { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-  input[type=text], input:not([type]) { flex: 1; min-width: 200px; padding: 6px 8px; background: #2a2a2a; border: 1px solid #444; color: #eee; border-radius: 4px; }
-  input[type=number] { width: 70px; padding: 6px 8px; background: #2a2a2a; border: 1px solid #444; color: #eee; border-radius: 4px; }
-  button { padding: 6px 12px; background: #3a6; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 13px; }
-  button.secondary { background: #555; }
-  button.danger { background: #a33; }
-  button.small { padding: 3px 8px; font-size: 12px; }
+  :root {
+    --bg: #16171A; --surface: #1E2024; --surface-2: #26282E; --line: #34373E;
+    --text: #E7E8EA; --dim: #9A9DA5; --accent: #4FA3D8; --disc: #7FC0E6;
+    --good: #4FD08A; --warn: #F0A24A; --violet: #A78BFA; --bad: #F26A63;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #474a52; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  html, body { height: 100%; }
+  body { font-family: var(--sans); margin: 0; padding: 0; background: var(--bg); color: var(--text); font-size: 13px;
+    display: flex; flex-direction: column; overflow: hidden; }
+  a { color: var(--disc); }
+
+  /* header strip */
+  .strip { display: flex; align-items: center; gap: 16px; padding: 12px 16px; flex-shrink: 0;
+    background: linear-gradient(180deg, #212227, var(--surface));
+    border-bottom: 1px solid var(--line); box-shadow: 0 1px 0 rgba(255,255,255,.04); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand img { width: 24px; height: 24px; border-radius: 6px; }
+  .wordmark { font-size: 18px; font-weight: 700; letter-spacing: .01em; }
+  .wordmark .acc { color: var(--accent); }
+  .readout { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--dim); }
+  .readout b { color: var(--text); font-weight: 600; }
+  .readout .sep { color: var(--line); }
+  .readout .rate { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .strip .spacer { flex: 1; }
+
+  .wrap { padding: 16px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+  /* forms */
+  form { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; flex-shrink: 0; }
+  input[type=text], input:not([type]) { flex: 1; min-width: 200px; padding: 7px 10px;
+    background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 6px; font-family: var(--sans); font-size: 13px; }
+  input[type=number] { width: 70px; padding: 7px 10px; background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 6px; font-family: var(--sans); font-size: 13px; }
+  input::placeholder { color: var(--dim); }
+  input[type=text]:focus, input:not([type]):focus, input[type=number]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; }
+
+  /* buttons */
+  button { padding: 6px 13px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
+    border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
+  button.secondary { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
+  button.secondary:hover { color: var(--text); border-color: var(--dim); }
+  button.danger { background: transparent; border-color: rgba(242,106,99,.4); color: var(--bad); font-weight: 500; }
+  button.danger:hover { background: var(--bad); color: var(--bg); }
+  button.small { padding: 3px 9px; font-size: 11px; border-radius: 5px; }
   button:disabled { opacity: 0.4; cursor: default; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; vertical-align: middle; overflow: hidden; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* table — only this scrolls (both axes); header/form/toolbar stay put */
+  .table-wrap { flex: 1; min-height: 0; overflow: auto; }
+  table { width: 100%; min-width: 1330px; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow: hidden; }
+  thead th { background: var(--bg);
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; padding-top: 8px; padding-bottom: 8px; }
+  tbody tr.data-row { cursor: pointer; }
+  tbody tr:hover > td { background: var(--surface); }
+  tbody tr.data-row:has(.row-chk:checked) > td { background: var(--surface-2); }
   th.checkbox-col, td.checkbox-col { width: 24px; padding-right: 0; }
   th.toggle-col, td.toggle-col { width: 18px; padding-right: 0; padding-left: 8px; }
   th.id-col, td.id-col { width: 70px; white-space: nowrap; }
   th.kind-col, td.kind-col { width: 55px; white-space: nowrap; }
   th.status-col, td.status-col { width: 90px; white-space: nowrap; }
-  th.progress-col, td.progress-col { width: 120px; white-space: nowrap; }
-  th.speed-col, td.speed-col { width: 70px; white-space: nowrap; }
-  th.url-col, td.url-col { width: 260px; }
-  th.error-col, td.error-col { width: 160px; }
-  th.actions-col, td.actions-col { width: 230px; }
-  .details-toggle-btn { background: none; border: none; color: #999; cursor: pointer; font-size: 12px; padding: 0; width: 16px; }
-  .status-Queued { color: #ccc; }
-  .status-Downloading { color: #4af; }
-  .status-Converting { color: #a78bfa; }
-  .status-Finished { color: #6d6; }
-  .status-Failed { color: #e66; }
-  .status-Cancelled { color: #999; }
-  .status-Paused { color: #fb5; }
-  .speed-text { font-size: 11px; color: #7ac; }
-  .toolbar { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
-  .id { font-family: monospace; font-size: 11px; color: #888; }
-  .url { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-  .error { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e88; cursor: pointer; }
-  .actions { display: flex; gap: 4px; }
-  .progress-wrap { width: 90px; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
-  .progress-bar { height: 100%; background: #4af; }
-  .progress-text { font-size: 11px; color: #999; }
-  .panel { background: #262626; border: 1px solid #3a3a3a; border-radius: 6px; padding: 12px; margin-bottom: 16px; display: none; }
+  th.progress-col, td.progress-col { width: 210px; white-space: nowrap; }
+  th.speed-col, td.speed-col { width: 74px; white-space: nowrap; }
+  th.url-col, td.url-col { width: 340px; padding-right: 22px; }
+  th.error-col, td.error-col { width: 180px; padding-left: 14px; }
+  th.actions-col, td.actions-col { width: 268px; text-align: right; }
+
+  .details-toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0; width: 16px; }
+  .details-toggle-btn:hover { color: var(--text); }
+
+  /* status */
+  td.status-col { white-space: nowrap; overflow: visible; }
+  /* dot is always filled with the status's own colour */
+  td.status-col::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; margin-right: 8px; vertical-align: middle; }
+  .status-Queued { color: var(--dim); }
+  .status-Downloading { color: var(--accent); }
+  .status-Converting { color: var(--violet); }
+  .status-Finished { color: var(--good); }
+  .status-Failed { color: var(--bad); }
+  .status-Cancelled { color: var(--dim); }
+  .status-Paused { color: var(--warn); }
+  /* Finished: the green dot pings — a ring expands outward and fades, then repeats */
+  .status-Finished::before { animation: ping 1.5s ease-out infinite; }
+  @keyframes ping {
+    0%   { box-shadow: 0 0 0 0 rgba(79,208,138,.55); }
+    100% { box-shadow: 0 0 0 5px rgba(79,208,138,0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .status-Finished::before { animation: none; } }
+
+  .speed-text { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+
+  .id { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  /* URL adapts to the space: full when it fits, else the head collapses to an
+     ellipsis while the tail (filename + type) always stays visible. */
+  .url { display: flex; overflow: hidden; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .u-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .u-tail { flex: 0 0 auto; white-space: nowrap; }
+  .error { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bad); cursor: pointer; font-size: 11px; }
+  /* the (done/total) segment count drops out only when the window is genuinely cramped */
+  @media (max-width: 900px) { .seg { display: none; } }
+  .actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+  .actions .act-primary { width: 76px; text-align: center; flex-shrink: 0; padding-left: 4px; padding-right: 4px; }
+  .actions span.act-primary { display: inline-block; }
+
+  /* progress meter */
+  .meter { display: flex; align-items: center; gap: 10px; }
+  .track { width: 104px; flex-shrink: 0; height: 5px; border-radius: 2px; background: var(--line); overflow: hidden; position: relative; }
+  .fill { height: 100%; border-radius: 2px; background: var(--accent); }
+  .fill.done { background: var(--good); }
+  .fill.pause { background: var(--warn); opacity: .75; }
+  .mlabel { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .track.conv { background: rgba(167,139,250,.20); }
+  .track.conv::after { content: ""; position: absolute; inset: 0; width: 38%;
+    background: linear-gradient(90deg, transparent, var(--violet), transparent); animation: shimmer 1.2s ease-in-out infinite; }
+  @keyframes shimmer { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
+  @media (prefers-reduced-motion: reduce) { .track.conv::after { animation: none; width: 100%; opacity: .5; } }
+
+  /* settings panel */
+  .panel { background: var(--surface-2); border-bottom: 1px solid var(--line); padding: 14px 16px; display: none; }
   .panel.open { display: block; }
-  .panel label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; margin-top: 8px; }
-  .panel-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .panel label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); margin-bottom: 5px; margin-top: 8px; }
+  .panel-row { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; }
   .dir-row { display: flex; gap: 6px; }
-  label.checkbox { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #ccc; margin: 0; }
-  .details-cell { background: #232323; font-size: 12px; color: #bbb; padding: 8px 10px; }
-  .details-cell div { padding: 2px 0; }
-  .details-cell .selectable { word-break: break-all; user-select: text; color: #ddd; }
+  label.checkbox { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); margin: 0; }
+
+  /* row details */
+  .details-cell { background: var(--surface-2); font-size: 12px; color: var(--dim); padding: 12px 16px 14px; }
+  .details-cell div { padding: 3px 0; }
+  .details-cell strong { color: var(--dim); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; margin-right: 8px; }
+  .details-cell .selectable { font-family: var(--mono); font-size: 11px; word-break: break-all; user-select: text; color: var(--disc); }
+
+  /* overlays */
+  .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1000; }
+  .overlay-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; min-width: 320px; max-width: 420px; }
 </style>
 </head>
 <body>
-  <h1>Lüdd <button id="settings-btn" class="secondary">Settings</button></h1>
+  <header class="strip">
+    <span class="brand"><img src="icon.png" alt="" /><span class="wordmark">L<span class="acc">ü</span>dd</span></span>
+    <span class="readout">
+      <span><b id="stat-running">0</b> running</span><span class="sep">/</span>
+      <span><b id="stat-queued">0</b> queued</span><span class="sep">/</span>
+      <span class="rate" id="stat-speed">&mdash;</span>
+    </span>
+    <span class="spacer"></span>
+    <button id="run-btn">Run queue</button>
+    <button id="settings-btn" class="secondary">Settings</button>
+  </header>
 
   <div id="settings-panel" class="panel">
     <div class="panel-row">
@@ -79,23 +186,35 @@
     </div>
   </div>
 
-  <form id="add-form">
-    <input id="url" placeholder="https://example.com/video.m3u8" required />
-    <input id="filename" placeholder="output filename (optional)" style="flex: 0 0 220px" />
-    <button type="submit">Add</button>
-  </form>
-  <div class="toolbar">
-    <button id="run-btn">Run queue</button>
-    <button id="refresh-btn" class="secondary">Refresh</button>
-    <span style="flex: 1"></span>
-    <button id="remove-selected-btn" class="danger" disabled>Remove selected</button>
-    <button id="retry-selected-btn" class="secondary" disabled>Retry selected</button>
-    <button id="clear-btn" class="danger">Clear finished</button>
+  <div class="wrap">
+    <form id="add-form">
+      <input id="url" placeholder="https://example.com/video.m3u8" required />
+      <input id="filename" placeholder="Output filename (optional)" style="flex: 0 0 220px" />
+      <button type="submit">Add</button>
+    </form>
+    <div class="toolbar">
+      <button id="refresh-btn" class="secondary">Refresh</button>
+      <span style="flex: 1"></span>
+      <button id="remove-selected-btn" class="danger" disabled>Remove selected</button>
+      <button id="retry-selected-btn" class="secondary" disabled>Retry selected</button>
+      <button id="clear-btn" class="danger">Clear finished</button>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th class="toggle-col"></th>
+          <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
+          <th class="id-col">ID</th><th class="kind-col">Kind</th><th class="status-col">Status</th><th class="progress-col">Progress</th><th class="speed-col">Speed</th><th class="url-col">URL</th><th class="error-col">Error</th><th class="actions-col">Actions</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
   </div>
 
-  <div id="confirm-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
-    <div style="background: #262626; border: 1px solid #3a3a3a; border-radius: 8px; padding: 20px; min-width: 320px; max-width: 420px;">
-      <div id="confirm-message" style="margin-bottom: 14px; font-size: 14px; color: #ddd;"></div>
+  <div id="confirm-overlay" class="overlay">
+    <div class="overlay-card">
+      <div id="confirm-message" style="margin-bottom: 14px; font-size: 14px; color: var(--text);"></div>
       <label class="checkbox" style="margin-bottom: 18px;"><input type="checkbox" id="confirm-delete-files-chk" /> Also delete downloaded files</label>
       <div style="display: flex; justify-content: flex-end; gap: 8px;">
         <button id="confirm-cancel-btn" class="secondary">Cancel</button>
@@ -104,9 +223,9 @@
     </div>
   </div>
 
-  <div id="quality-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
-    <div style="background: #262626; border: 1px solid #3a3a3a; border-radius: 8px; padding: 20px; min-width: 280px; max-width: 380px;">
-      <div style="margin-bottom: 12px; font-size: 14px; color: #ddd;">Choose a quality</div>
+  <div id="quality-overlay" class="overlay">
+    <div class="overlay-card" style="min-width: 280px; max-width: 380px;">
+      <div style="margin-bottom: 12px; font-size: 14px; color: var(--text);">Choose a quality</div>
       <div id="quality-options" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 300px; overflow-y: auto;"></div>
       <div style="display: flex; justify-content: flex-end;">
         <button id="quality-cancel-btn" class="secondary">Cancel</button>
@@ -114,18 +233,9 @@
     </div>
   </div>
 
-  <div id="image-preview-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 1000; cursor: zoom-out;">
-    <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);" />
+  <div id="image-preview-overlay" class="overlay" style="background: rgba(0,0,0,0.8); cursor: zoom-out;">
+    <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,0.6);" />
   </div>
-
-  <table>
-    <thead><tr>
-      <th class="toggle-col"></th>
-      <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
-      <th class="id-col">ID</th><th class="kind-col">Kind</th><th class="status-col">Status</th><th class="progress-col">Progress</th><th class="speed-col">Speed</th><th class="url-col">URL</th><th class="error-col">Error</th><th class="actions-col">Actions</th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
 
 <script>
 const { invoke } = window.__TAURI__.core;
@@ -227,21 +337,23 @@ function formatBytes(bytes) {
 }
 
 function progressBar(pct, label) {
-  return `<div class="progress-wrap"><div class="progress-bar" style="width:${pct}%"></div></div><div class="progress-text">${label ?? pct + "%"}</div>`;
+  return `<div class="meter"><div class="track"><div class="fill" style="width:${pct}%"></div></div><div class="mlabel">${label ?? pct + "%"}</div></div>`;
 }
 
 function formatProgress(e) {
   if (e.status === "Finished") {
-    return progressBar(100, "100%");
+    return `<div class="meter"><div class="track"><div class="fill done" style="width:100%"></div></div><div class="mlabel">100%</div></div>`;
   }
   if (!e.progress) {
-    return e.status === "Converting" ? `<div class="progress-text">Converting…</div>` : "";
+    return e.status === "Converting"
+      ? `<div class="meter"><div class="track conv"></div><div class="mlabel" style="color:var(--violet)">remux</div></div>`
+      : "";
   }
   const p = e.progress;
   // HLS/DASH: honest percentage from the known segment count.
   if (p.total_units > 0) {
     const pct = Math.min(100, Math.round((p.done_units / p.total_units) * 100));
-    return progressBar(pct, `${pct}% (${p.done_units}/${p.total_units})`);
+    return progressBar(pct, `${pct}%<span class="seg"> (${p.done_units}/${p.total_units})</span>`);
   }
   // HTTP with a known Content-Length.
   if (p.total_bytes) {
@@ -249,7 +361,20 @@ function formatProgress(e) {
     return progressBar(pct);
   }
   // HTTP, unknown size: show bytes transferred, no bar.
-  return formatBytes(p.downloaded_bytes);
+  return `<div class="mlabel">${formatBytes(p.downloaded_bytes)}</div>`;
+}
+
+// Split a URL into a truncatable head and an always-visible tail (filename +
+// short query), so the cell can show full -> head-shortened -> tail-only.
+function splitUrl(u) {
+  const q = u.indexOf("?");
+  const base = q === -1 ? u : u.slice(0, q);
+  const query = q === -1 ? "" : u.slice(q);
+  const slash = base.lastIndexOf("/");
+  if (slash === -1) return { head: "", tail: u };
+  let tail = base.slice(slash + 1);
+  if (query) tail += query.length > 14 ? query.slice(0, 14) + "…" : query;
+  return { head: base.slice(0, slash + 1), tail };
 }
 
 function formatSpeed(e) {
@@ -267,10 +392,35 @@ function statusLabel(status) {
   return STATUS_LABELS[status] ?? status;
 }
 
+// The leading, fixed-width slot in the Actions column: one contextual verb
+// (or an empty spacer for Queued) so the trio stays aligned across every row.
+function primaryActionBtn(e) {
+  const b = (cls, label) => `<button class="small secondary act-primary ${cls}" data-id="${e.id}">${label}</button>`;
+  switch (e.status) {
+    case "Downloading": return b("pause-btn", "Pause");
+    case "Paused":      return b("resume-btn", "Resume");
+    case "Failed":
+    case "Cancelled":
+    case "Converting":  return b("retry-btn", "Retry");
+    case "Finished":    return b("preview-btn", "Preview");
+    default:            return `<span class="act-primary"></span>`;
+  }
+}
+
 function updateBulkButtons() {
   const n = selected.size;
   document.getElementById("remove-selected-btn").disabled = n === 0;
   document.getElementById("retry-selected-btn").disabled = n === 0;
+}
+
+function updateReadout(entries) {
+  const running = entries.filter(e => e.status === "Downloading").length;
+  const queued = entries.filter(e => e.status === "Queued").length;
+  const totalBps = entries.reduce((s, e) =>
+    s + (e.status === "Downloading" && e.progress && e.progress.speed_bps ? e.progress.speed_bps : 0), 0);
+  document.getElementById("stat-running").textContent = running;
+  document.getElementById("stat-queued").textContent = queued;
+  document.getElementById("stat-speed").textContent = totalBps > 0 ? formatBytesPerSec(totalBps) : "—";
 }
 
 async function refresh() {
@@ -284,7 +434,7 @@ async function refresh() {
   rows.innerHTML = "";
   for (const e of entries) {
     const tr = document.createElement("tr");
-    const canRetry = e.status === "Failed" || e.status === "Cancelled";
+    tr.className = "data-row";
     const isOpen = detailsOpen.has(e.id);
     tr.innerHTML = `
       <td class="toggle-col"><button class="details-toggle-btn" data-id="${e.id}" title="Details">${isOpen ? "▾" : "▸"}</button></td>
@@ -294,16 +444,13 @@ async function refresh() {
       <td class="status-${e.status} status-col">${statusLabel(e.status)}</td>
       <td class="progress-col">${formatProgress(e)}</td>
       <td class="speed-text speed-col">${formatSpeed(e)}</td>
-      <td class="url url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${e.url}</td>
+      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-head">${s.head}</span><span class="u-tail">${s.tail}</span></span>`; })()}</td>
       <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n(double-click to copy)" : ""}">${e.error ?? ""}</td>
-      <td class="actions actions-col">
-        ${e.status === "Finished" || (e.status === "Downloading" && e.kind === "Http") ? `<button class="small secondary preview-btn" data-id="${e.id}">Preview</button>` : ""}
+      <td class="actions-col"><div class="actions">
+        ${primaryActionBtn(e)}
         <button class="small secondary open-folder-btn" data-id="${e.id}">Open folder</button>
-        ${e.status === "Downloading" ? `<button class="small secondary pause-btn" data-id="${e.id}">Pause</button>` : ""}
-        ${e.status === "Paused" ? `<button class="small secondary resume-btn" data-id="${e.id}">Resume</button>` : ""}
-        ${canRetry ? `<button class="small secondary retry-btn" data-id="${e.id}">Retry</button>` : ""}
         <button class="small danger remove-btn" data-id="${e.id}">Remove</button>
-      </td>
+      </div></td>
     `;
     rows.appendChild(tr);
 
@@ -315,17 +462,24 @@ async function refresh() {
     try { site = new URL(e.url).host; } catch { site = "(unknown)"; }
     const headerNames = Object.keys(e.headers ?? {});
     detailsTr.innerHTML = `
-      <td></td><td></td>
-      <td colspan="8" class="details-cell">
-        <div><strong>Site:</strong> ${site}</div>
-        <div><strong>Full link:</strong> <span class="selectable">${e.url}</span></div>
-        <div><strong>Saving to:</strong> <span class="selectable">${e.dest}</span></div>
-        <div><strong>Headers captured:</strong> ${headerNames.length ? headerNames.join(", ") : "none"}</div>
-        <div><strong>Cookie captured:</strong> ${e.cookie ? "yes" : "no"}</div>
-        <div><strong>Added:</strong> ${new Date(e.created_at * 1000).toLocaleString()}</div>
+      <td colspan="10" class="details-cell">
+        <div><strong>Site</strong> ${site}</div>
+        <div><strong>Full link</strong> <span class="selectable">${e.url}</span></div>
+        <div><strong>Saving to</strong> <span class="selectable">${e.dest}</span></div>
+        <div><strong>Headers captured</strong> ${headerNames.length ? headerNames.join(", ") : "none"}</div>
+        <div><strong>Cookie captured</strong> ${e.cookie ? "yes" : "no"}</div>
+        <div><strong>Added</strong> ${new Date(e.created_at * 1000).toLocaleString()}</div>
       </td>
     `;
     rows.appendChild(detailsTr);
+
+    tr.addEventListener("click", (ev) => {
+      if (ev.target.closest("button, input, a")) return;
+      if (window.getSelection && String(window.getSelection())) return;
+      const chk = tr.querySelector(".row-chk");
+      chk.checked = !chk.checked;
+      chk.dispatchEvent(new Event("change"));
+    });
   }
 
   rows.querySelectorAll(".row-chk").forEach(chk => {
@@ -403,9 +557,9 @@ async function refresh() {
       if (!value) return;
       try {
         await navigator.clipboard.writeText(value);
-        const original = cell.textContent;
+        const original = cell.innerHTML;
         cell.textContent = "Copied!";
-        setTimeout(() => { cell.textContent = original; }, 700);
+        setTimeout(() => { cell.innerHTML = original; }, 700);
       } catch (err) {
         console.error("clipboard write failed", err);
       }
@@ -414,6 +568,7 @@ async function refresh() {
 
   document.getElementById("select-all-chk").checked = entries.length > 0 && selected.size === entries.length;
   updateBulkButtons();
+  updateReadout(entries);
 }
 
 document.getElementById("select-all-chk").addEventListener("change", async (ev) => {
