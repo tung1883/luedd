@@ -296,10 +296,16 @@ fn main() {
                 }
             });
 
+            // Create it up front (hidden) so the header icon and the first
+            // detection both hit the reliable "already exists" path.
+            if let Err(e) = build_detection_window(&app.handle()) {
+                tracing::warn!(error = %e, "failed to pre-create detection window");
+            }
+
             let detection_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 while detection_rx.recv().await.is_some() {
-                    show_or_refresh_detection_window(&detection_app_handle);
+                    show_or_refresh_detection_window(&detection_app_handle, false);
                 }
             });
 
@@ -346,12 +352,10 @@ fn main() {
 
 const DETECTION_WINDOW_LABEL: &str = "detection";
 
-fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window(DETECTION_WINDOW_LABEL) {
-        let _ = win.show();
-        let _ = win.emit("detection-updated", ());
-        return;
-    }
+/// Build the detection window (hidden). Called once at startup so it always
+/// exists by the time the user clicks the header icon or a detection arrives -
+/// creating a webview window lazily from a command handler is unreliable.
+fn build_detection_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let detected_url = format!("detected.html?v={}", env!("LUEDD_ASSET_VER"));
     let win = tauri::WebviewWindowBuilder::new(app, DETECTION_WINDOW_LABEL, tauri::WebviewUrl::App(detected_url.into()))
         .title("Detected downloads")
@@ -359,29 +363,36 @@ fn show_or_refresh_detection_window(app: &tauri::AppHandle) {
         .resizable(true)
         .always_on_top(true)
         .focused(false)
-        // Start hidden with the app's own background colour, then reveal once the
-        // webview has had a moment to paint - otherwise the window pops as a
-        // white rectangle while detected.html loads.
         .visible(false)
         .background_color(tauri::webview::Color(0x16, 0x17, 0x1a, 0xff))
-        .build();
-    match win {
-        Ok(win) => {
-            let win_for_close = win.clone();
-            win.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = win_for_close.hide();
-                }
-            });
-            let win_for_show = win.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                let _ = win_for_show.show();
-            });
+        .build()?;
+    let win_for_close = win.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win_for_close.hide();
         }
-        Err(e) => tracing::warn!(error = %e, "failed to open detection window"),
+    });
+    Ok(win)
+}
+
+fn show_or_refresh_detection_window(app: &tauri::AppHandle, focus: bool) {
+    let win = match app.get_webview_window(DETECTION_WINDOW_LABEL) {
+        Some(win) => win,
+        None => match build_detection_window(app) {
+            Ok(win) => win,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open detection window");
+                return;
+            }
+        },
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    if focus {
+        let _ = win.set_focus();
     }
+    let _ = win.emit("detection-updated", ());
 }
 
 #[tauri::command]
@@ -402,6 +413,6 @@ fn detection_window_hide(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn detection_window_show(app: tauri::AppHandle) -> Result<(), String> {
-    show_or_refresh_detection_window(&app);
+    show_or_refresh_detection_window(&app, true);
     Ok(())
 }
