@@ -326,7 +326,7 @@
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th class="toggle-col"></th>
+          <th class="toggle-col"><button id="expand-all-btn" class="details-toggle-btn" data-i18n-title="toggle_all" title="Show / hide all details">▸</button></th>
           <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
           <th class="id-col" data-i18n="col_id">ID</th><th class="kind-col" data-i18n="col_kind">Kind</th><th class="status-col" data-i18n="col_status">Status</th><th class="progress-col" data-i18n="col_progress">Progress</th><th class="speed-col" data-i18n="col_speed">Speed</th><th class="url-col" data-i18n="col_url">URL</th><th class="error-col" data-i18n="col_error">Error</th><th class="actions-col" data-i18n="col_actions">Actions</th>
         </tr></thead>
@@ -825,7 +825,19 @@ async function refresh() {
   document.getElementById("select-all-chk").checked = entries.length > 0 && selected.size === entries.length;
   updateBulkButtons();
   updateReadout(entries);
+  lastEntries = entries;
 }
+
+// The master toggle keeps its own state; toggling a single row doesn't move it.
+let lastEntries = [];
+let masterOpen = false;
+document.getElementById("expand-all-btn").addEventListener("click", async () => {
+  masterOpen = !masterOpen;
+  document.getElementById("expand-all-btn").textContent = masterOpen ? "▾" : "▸";
+  detailsOpen.clear();
+  if (masterOpen) lastEntries.forEach(e => detailsOpen.add(e.id));
+  await refresh();
+});
 
 document.getElementById("select-all-chk").addEventListener("change", async (ev) => {
   const rows = document.querySelectorAll(".row-chk");
