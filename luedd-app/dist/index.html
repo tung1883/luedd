@@ -54,6 +54,12 @@
   input::placeholder { color: var(--dim); }
   input[type=text]:focus, input:not([type]):focus, input[type=number]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
   input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; }
+  .clr-wrap { position: relative; display: flex; flex: 1; min-width: 200px; }
+  .clr-wrap > input { width: 100%; min-width: 0; padding-right: 28px; }
+  .clr-x { position: absolute; right: 7px; top: 50%; transform: translateY(-50%); background: none; border: 0;
+    color: var(--dim); font-size: 16px; line-height: 1; cursor: pointer; padding: 2px 5px; font-weight: 400; display: none; }
+  .clr-x:hover { color: var(--text); }
+  .clr-wrap.has-text .clr-x { display: block; }
 
   /* buttons */
   button { padding: 6px 13px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
@@ -312,7 +318,10 @@
 
   <div class="wrap">
     <form id="add-form">
-      <input id="url" placeholder="https://example.com/video.m3u8" required />
+      <span class="clr-wrap">
+        <input id="url" placeholder="https://example.com/video.m3u8" required />
+        <button type="button" class="clr-x" id="url-clear" data-i18n-title="clear_field" title="Clear" aria-label="Clear">&times;</button>
+      </span>
       <input id="filename" data-i18n-placeholder="filename_ph" placeholder="Output filename (optional)" style="flex: 0 0 220px" />
       <button type="submit" data-i18n="add">Add</button>
     </form>
@@ -867,6 +876,14 @@ document.getElementById("retry-selected-btn").addEventListener("click", async ()
   await refresh();
 });
 
+{
+  const ui = document.getElementById("url");
+  const uw = ui.closest(".clr-wrap");
+  const syncClr = () => uw.classList.toggle("has-text", ui.value.length > 0);
+  ui.addEventListener("input", syncClr);
+  document.getElementById("url-clear").addEventListener("click", () => { ui.value = ""; syncClr(); ui.focus(); });
+}
+
 document.getElementById("add-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const url = document.getElementById("url").value.trim();
@@ -889,7 +906,9 @@ document.getElementById("add-form").addEventListener("submit", async (ev) => {
   }
 
   await invoke("add_download", { url, filename, quality });
-  document.getElementById("url").value = "";
+  const urlIn = document.getElementById("url");
+  urlIn.value = "";
+  urlIn.closest(".clr-wrap")?.classList.remove("has-text");
   document.getElementById("filename").value = "";
   await refresh();
 });

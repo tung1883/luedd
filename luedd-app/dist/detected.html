@@ -42,6 +42,12 @@
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   header button { padding: 4px 9px; font-size: 11px; }
   .search-row { padding: 9px 13px; border-bottom: 1px solid var(--line); }
+  .clr-wrap { position: relative; display: block; }
+  .clr-x { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: 0;
+    color: var(--dim); font-size: 16px; line-height: 1; cursor: pointer; padding: 2px 5px; display: none; }
+  .clr-x:hover { color: var(--text); }
+  .clr-wrap.has-text .clr-x { display: block; }
+  .clr-wrap input { padding-right: 26px; }
   input[type=text] { width: 100%; padding: 6px 9px; background: var(--surface); border: 1px solid var(--line);
     color: var(--text); border-radius: 6px; font-size: 12px; font-family: var(--sans); }
   input[type=text]::placeholder { color: var(--dim); }
@@ -98,7 +104,10 @@
     <button id="hide-btn" class="secondary" data-i18n="hide" data-i18n-title="hide_title" title="Hide this window">Hide</button>
   </header>
   <div class="search-row">
-    <input id="search-input" type="text" data-i18n-placeholder="filter_ph" placeholder="Filter by name or site&hellip;" />
+    <span class="clr-wrap">
+      <input id="search-input" type="text" data-i18n-placeholder="filter_ph" placeholder="Filter by name or site&hellip;" />
+      <button type="button" class="clr-x" id="search-clear" data-i18n-title="clear_field" title="Clear" aria-label="Clear">&times;</button>
+    </span>
   </div>
   <div id="list"></div>
   <div id="image-preview-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 1000; cursor: pointer; overflow: auto;">
@@ -567,7 +576,17 @@
     return row;
   }
 
-  document.getElementById("search-input").addEventListener("input", e => applyFilter(e.target.value));
+  {
+    const si = document.getElementById("search-input");
+    const sw = si.closest(".clr-wrap");
+    const syncClr = () => sw.classList.toggle("has-text", si.value.length > 0);
+    si.addEventListener("input", e => { syncClr(); applyFilter(e.target.value); });
+    document.getElementById("search-clear").addEventListener("click", () => {
+      si.value = "";
+      si.dispatchEvent(new Event("input"));
+      si.focus();
+    });
+  }
 
   document.getElementById("clear-btn").addEventListener("click", async () => {
     await post("/clear", {});
