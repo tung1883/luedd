@@ -172,7 +172,7 @@
 
   function pvApply() {
     previewImg.style.transform = `translate(${pvPanX}px, ${pvPanY}px) scale(${pvScale})`;
-    previewImg.style.cursor = pvScale > 1 ? (pvDrag ? "grabbing" : "grab") : "default";
+    previewImg.style.cursor = pvScale > 1 ? (pvDrag ? "grabbing" : "grab") : "pointer";
   }
 
   function pvReset() { pvScale = 1; pvPanX = 0; pvPanY = 0; pvDrag = false; }
