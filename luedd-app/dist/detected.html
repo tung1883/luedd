@@ -150,7 +150,12 @@
     pvApply();
   }, { passive: false });
 
-  previewImg.addEventListener("dblclick", ev => { ev.stopPropagation(); pvReset(); pvApply(); });
+  previewImg.addEventListener("dblclick", ev => {
+    ev.stopPropagation();
+    if (pvScale > 1) { pvReset(); } else { pvScale = 2; pvPanX = 0; pvPanY = 0; }
+    previewImg.style.transition = "transform .12s";
+    pvApply();
+  });
 
   previewImg.addEventListener("mousedown", ev => {
     if (pvScale <= 1) return;
