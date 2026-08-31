@@ -57,7 +57,7 @@
   .info-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 20px; min-width: 0; }
   .info-text { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; margin-top: 3px; }
   .preview-link { background: none; border: none; color: var(--disc); cursor: pointer; font-size: 11px; padding: 0; flex-shrink: 0; }
-  .thumb { max-height: 90px; max-width: 120px; border-radius: 5px; border: 1px solid var(--line); cursor: zoom-in;
+  .thumb { max-height: 90px; max-width: 120px; border-radius: 5px; border: 1px solid var(--line); cursor: pointer;
     display: block; background: linear-gradient(135deg, #242730, #2b2f38); object-fit: cover; }
   .thumb-pdf { width: 120px; height: 90px; cursor: default; }
   .details-panel { display: none; font-size: 12px; color: var(--dim); background: var(--surface-2);
@@ -65,8 +65,9 @@
   .details-panel.open { display: block; }
   .copyable-line { font-family: var(--mono); font-size: 11px; display: flex; overflow: hidden; cursor: pointer; margin-bottom: 4px; max-width: 100%; }
   .cl-label { flex: 0 0 auto; margin-right: 4px; }
-  .cl-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cl-tail { flex: 0 0 auto; white-space: nowrap; }
+  .cl-origin { flex: 0 0 auto; white-space: nowrap; }
+  .cl-mid { flex: 0 200 auto; min-width: 1.6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cl-tail { flex: 0 1 auto; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .quality-box { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
   .quality-box button { background: none; border: none; color: var(--disc); cursor: pointer; text-align: left; font-size: 12px; font-weight: 400; padding: 1px 0; }
   footer { padding: 9px 13px; border-top: 1px solid var(--line); display: flex; }
@@ -83,8 +84,8 @@
     <input id="search-input" type="text" placeholder="Filter by name or site&hellip;" />
   </div>
   <div id="list"></div>
-  <div id="image-preview-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 1000; cursor: zoom-out;">
-    <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);" />
+  <div id="image-preview-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 1000; cursor: pointer; overflow: auto;">
+    <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); transition: transform .08s;" />
   </div>
   <footer>
     <button id="clear-btn" class="danger">Clear items</button>
@@ -118,9 +119,63 @@
     }
   }
 
-  document.getElementById("image-preview-overlay").addEventListener("click", () => {
+  const previewImg = document.getElementById("image-preview-img");
+  let pvScale = 1, pvPanX = 0, pvPanY = 0, pvDrag = false, pvStartX = 0, pvStartY = 0;
+
+  function pvApply() {
+    previewImg.style.transform = `translate(${pvPanX}px, ${pvPanY}px) scale(${pvScale})`;
+    previewImg.style.cursor = pvScale > 1 ? (pvDrag ? "grabbing" : "grab") : "default";
+  }
+
+  function pvReset() { pvScale = 1; pvPanX = 0; pvPanY = 0; pvDrag = false; }
+
+  function closeImagePreview() {
     document.getElementById("image-preview-overlay").style.display = "none";
-    document.getElementById("image-preview-img").src = "";
+    previewImg.src = "";
+    pvReset();
+    pvApply();
+  }
+
+  document.getElementById("image-preview-overlay").addEventListener("click", ev => {
+    if (ev.target.id === "image-preview-img") return;
+    closeImagePreview();
+  });
+
+  document.getElementById("image-preview-overlay").addEventListener("wheel", ev => {
+    ev.preventDefault();
+    const next = pvScale * (ev.deltaY < 0 ? 1.15 : 1 / 1.15);
+    pvScale = Math.min(6, Math.max(1, next));
+    if (pvScale === 1) { pvPanX = 0; pvPanY = 0; }
+    previewImg.style.transition = "transform .08s";
+    pvApply();
+  }, { passive: false });
+
+  previewImg.addEventListener("dblclick", ev => { ev.stopPropagation(); pvReset(); pvApply(); });
+
+  previewImg.addEventListener("mousedown", ev => {
+    if (pvScale <= 1) return;
+    ev.preventDefault();
+    pvDrag = true;
+    pvStartX = ev.clientX - pvPanX;
+    pvStartY = ev.clientY - pvPanY;
+    previewImg.style.transition = "none";
+    pvApply();
+  });
+  window.addEventListener("mousemove", ev => {
+    if (!pvDrag) return;
+    pvPanX = ev.clientX - pvStartX;
+    pvPanY = ev.clientY - pvStartY;
+    pvApply();
+  });
+  window.addEventListener("mouseup", () => {
+    if (!pvDrag) return;
+    pvDrag = false;
+    previewImg.style.transition = "transform .08s";
+    pvApply();
+  });
+
+  document.addEventListener("keydown", ev => {
+    if (ev.key === "Escape" && document.getElementById("image-preview-overlay").style.display === "flex") closeImagePreview();
   });
 
   async function post(path, body) {
@@ -196,17 +251,21 @@
     renderList(items);
   }
 
-  // Split a URL into a shrinkable head and an always-visible tail (filename +
-  // short query) so a cramped line still shows the file and its type.
+  // Split a URL so the origin (scheme + host) always stays fully visible; the
+  // middle path collapses first, the trailing segment (filename) second. The
+  // query string is dropped here — the full URL is in the tooltip / on copy.
   function splitUrl(u) {
-    const q = u.indexOf("?");
-    const base = q === -1 ? u : u.slice(0, q);
-    const query = q === -1 ? "" : u.slice(q);
-    const slash = base.lastIndexOf("/");
-    if (slash === -1) return { head: "", tail: u };
-    let tail = base.slice(slash + 1);
-    if (query) tail += query.length > 14 ? query.slice(0, 14) + "…" : query;
-    return { head: base.slice(0, slash + 1), tail };
+    try {
+      const url = new URL(u);
+      const path = url.pathname || "/";
+      const slash = path.lastIndexOf("/");
+      return { origin: url.origin, mid: path.slice(0, slash + 1), tail: path.slice(slash + 1) };
+    } catch {
+      const base = (u.split("?")[0]) || u;
+      const slash = base.lastIndexOf("/");
+      if (slash === -1) return { origin: "", mid: "", tail: base };
+      return { origin: "", mid: base.slice(0, slash + 1), tail: base.slice(slash + 1) };
+    }
   }
 
   function makeCopyableLine(label, value) {
@@ -214,9 +273,10 @@
     line.className = "copyable-line";
     const s = splitUrl(value);
     const lab = document.createElement("span"); lab.className = "cl-label"; lab.textContent = label;
-    const head = document.createElement("span"); head.className = "cl-head"; head.textContent = s.head;
+    const origin = document.createElement("span"); origin.className = "cl-origin"; origin.textContent = s.origin;
+    const mid = document.createElement("span"); mid.className = "cl-mid"; mid.textContent = s.mid;
     const tail = document.createElement("span"); tail.className = "cl-tail"; tail.textContent = s.tail;
-    line.append(lab, head, tail);
+    line.append(lab, origin, mid, tail);
     line.title = value + "\n(double-click to copy)";
     line.addEventListener("dblclick", async e => {
       e.stopPropagation();
@@ -242,7 +302,9 @@
   const previewCache = new Map();
 
   function showImageOverlay(src) {
-    document.getElementById("image-preview-img").src = src;
+    pvReset();
+    previewImg.src = src;
+    pvApply();
     document.getElementById("image-preview-overlay").style.display = "flex";
   }
 

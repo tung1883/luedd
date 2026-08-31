@@ -68,17 +68,21 @@ class VideoPopup {
         this.renderList(items);
     }
 
-    // Split a URL into a shrinkable head and an always-visible tail (filename +
-    // short query) so a cramped line still shows the file and its type.
+    // Split a URL so the origin (scheme + host) always stays fully visible; the
+    // middle path collapses first, the trailing segment (filename) second. The
+    // query string is dropped here — the full URL is in the tooltip / on copy.
     splitUrl(u) {
-        const q = u.indexOf("?");
-        const base = q === -1 ? u : u.slice(0, q);
-        const query = q === -1 ? "" : u.slice(q);
-        const slash = base.lastIndexOf("/");
-        if (slash === -1) return { head: "", tail: u };
-        let tail = base.slice(slash + 1);
-        if (query) tail += query.length > 14 ? query.slice(0, 14) + "…" : query;
-        return { head: base.slice(0, slash + 1), tail };
+        try {
+            const url = new URL(u);
+            const path = url.pathname || "/";
+            const slash = path.lastIndexOf("/");
+            return { origin: url.origin, mid: path.slice(0, slash + 1), tail: path.slice(slash + 1) };
+        } catch {
+            const base = (u.split("?")[0]) || u;
+            const slash = base.lastIndexOf("/");
+            if (slash === -1) return { origin: "", mid: "", tail: base };
+            return { origin: "", mid: base.slice(0, slash + 1), tail: base.slice(slash + 1) };
+        }
     }
 
     makeCopyableLine(label, value) {
@@ -86,9 +90,10 @@ class VideoPopup {
         line.className = 'copyable-line';
         const s = this.splitUrl(value);
         const lab = document.createElement('span'); lab.className = 'cl-label'; lab.textContent = label;
-        const head = document.createElement('span'); head.className = 'cl-head'; head.textContent = s.head;
+        const origin = document.createElement('span'); origin.className = 'cl-origin'; origin.textContent = s.origin;
+        const mid = document.createElement('span'); mid.className = 'cl-mid'; mid.textContent = s.mid;
         const tail = document.createElement('span'); tail.className = 'cl-tail'; tail.textContent = s.tail;
-        line.append(lab, head, tail);
+        line.append(lab, origin, mid, tail);
         line.title = value + "\n(double-click to copy)";
         line.addEventListener('dblclick', async e => {
             e.stopPropagation();

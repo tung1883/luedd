@@ -107,12 +107,13 @@
   .toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
 
   .id { font-family: var(--mono); font-size: 11px; color: var(--dim); }
-  /* URL adapts to the space: full when it fits, else the head collapses to an
-     ellipsis while the tail (filename + type) always stays visible. */
+  /* URL adapts to the space: the origin (scheme + host) and the tail (filename +
+     type) always stay visible; only the middle path collapses to an ellipsis. */
   .url { display: flex; overflow: hidden; cursor: pointer;
     font-family: var(--mono); font-size: 11px; color: var(--dim); }
-  .u-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .u-tail { flex: 0 0 auto; white-space: nowrap; }
+  .u-origin { flex: 0 0 auto; white-space: nowrap; }
+  .u-mid { flex: 0 200 auto; min-width: 1.6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .u-tail { flex: 0 1 auto; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .error { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bad); cursor: pointer; font-size: 11px; }
   /* the (done/total) segment count drops out only when the window is genuinely cramped */
   @media (max-width: 900px) { .seg { display: none; } }
@@ -233,8 +234,8 @@
     </div>
   </div>
 
-  <div id="image-preview-overlay" class="overlay" style="background: rgba(0,0,0,0.8); cursor: zoom-out;">
-    <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,0.6);" />
+  <div id="image-preview-overlay" class="overlay" style="background: rgba(0,0,0,0.8); cursor: pointer; overflow: auto;">
+    <img id="image-preview-img" style="max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,0.6); transition: transform .08s;" />
   </div>
 
 <script>
@@ -249,15 +250,71 @@ function isImageFile(path) {
   return IMAGE_EXTENSIONS.has(ext);
 }
 
-function showImagePreview(dataUrl) {
-  const overlay = document.getElementById("image-preview-overlay");
-  document.getElementById("image-preview-img").src = dataUrl;
-  overlay.style.display = "flex";
+const previewImg = document.getElementById("image-preview-img");
+let pvScale = 1, pvPanX = 0, pvPanY = 0, pvDrag = false, pvStartX = 0, pvStartY = 0;
+
+function pvApply() {
+  previewImg.style.transform = `translate(${pvPanX}px, ${pvPanY}px) scale(${pvScale})`;
+  previewImg.style.cursor = pvScale > 1 ? (pvDrag ? "grabbing" : "grab") : "default";
 }
 
-document.getElementById("image-preview-overlay").addEventListener("click", () => {
+function pvReset() { pvScale = 1; pvPanX = 0; pvPanY = 0; pvDrag = false; }
+
+function showImagePreview(dataUrl) {
+  pvReset();
+  previewImg.src = dataUrl;
+  pvApply();
+  document.getElementById("image-preview-overlay").style.display = "flex";
+}
+
+function closeImagePreview() {
   document.getElementById("image-preview-overlay").style.display = "none";
-  document.getElementById("image-preview-img").src = "";
+  previewImg.src = "";
+  pvReset();
+  pvApply();
+}
+
+document.getElementById("image-preview-overlay").addEventListener("click", (ev) => {
+  if (ev.target.id === "image-preview-img") return; // clicks on the image itself don't close
+  closeImagePreview();
+});
+
+// mouse wheel: up = zoom in, down = zoom out
+document.getElementById("image-preview-overlay").addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const next = pvScale * (ev.deltaY < 0 ? 1.15 : 1 / 1.15);
+  pvScale = Math.min(6, Math.max(1, next));
+  if (pvScale === 1) { pvPanX = 0; pvPanY = 0; }
+  previewImg.style.transition = "transform .08s";
+  pvApply();
+}, { passive: false });
+
+previewImg.addEventListener("dblclick", (ev) => { ev.stopPropagation(); pvReset(); pvApply(); });
+
+previewImg.addEventListener("mousedown", (ev) => {
+  if (pvScale <= 1) return;
+  ev.preventDefault();
+  pvDrag = true;
+  pvStartX = ev.clientX - pvPanX;
+  pvStartY = ev.clientY - pvPanY;
+  previewImg.style.transition = "none";
+  pvApply();
+});
+window.addEventListener("mousemove", (ev) => {
+  if (!pvDrag) return;
+  pvPanX = ev.clientX - pvStartX;
+  pvPanY = ev.clientY - pvStartY;
+  pvApply();
+});
+window.addEventListener("mouseup", () => {
+  if (!pvDrag) return;
+  pvDrag = false;
+  previewImg.style.transition = "transform .08s";
+  pvApply();
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && document.getElementById("image-preview-overlay").style.display === "flex") closeImagePreview();
 });
 
 function confirmAction(message) {
@@ -364,17 +421,21 @@ function formatProgress(e) {
   return `<div class="mlabel">${formatBytes(p.downloaded_bytes)}</div>`;
 }
 
-// Split a URL into a truncatable head and an always-visible tail (filename +
-// short query), so the cell can show full -> head-shortened -> tail-only.
+// Split a URL so the origin (scheme + host) always stays fully visible; the
+// middle path collapses first, the trailing segment (filename) second. The
+// query string is dropped here — the full URL is in the tooltip / on copy.
 function splitUrl(u) {
-  const q = u.indexOf("?");
-  const base = q === -1 ? u : u.slice(0, q);
-  const query = q === -1 ? "" : u.slice(q);
-  const slash = base.lastIndexOf("/");
-  if (slash === -1) return { head: "", tail: u };
-  let tail = base.slice(slash + 1);
-  if (query) tail += query.length > 14 ? query.slice(0, 14) + "…" : query;
-  return { head: base.slice(0, slash + 1), tail };
+  try {
+    const url = new URL(u);
+    const path = url.pathname || "/";
+    const slash = path.lastIndexOf("/");
+    return { origin: url.origin, mid: path.slice(0, slash + 1), tail: path.slice(slash + 1) };
+  } catch {
+    const base = (u.split("?")[0]) || u;
+    const slash = base.lastIndexOf("/");
+    if (slash === -1) return { origin: "", mid: "", tail: base };
+    return { origin: "", mid: base.slice(0, slash + 1), tail: base.slice(slash + 1) };
+  }
 }
 
 function formatSpeed(e) {
@@ -444,7 +505,7 @@ async function refresh() {
       <td class="status-${e.status} status-col">${statusLabel(e.status)}</td>
       <td class="progress-col">${formatProgress(e)}</td>
       <td class="speed-text speed-col">${formatSpeed(e)}</td>
-      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-head">${s.head}</span><span class="u-tail">${s.tail}</span></span>`; })()}</td>
+      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;(double-click to copy)">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span><span class="u-mid">${s.mid}</span><span class="u-tail">${s.tail}</span></span>`; })()}</td>
       <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n(double-click to copy)" : ""}">${e.error ?? ""}</td>
       <td class="actions-col"><div class="actions">
         ${primaryActionBtn(e)}
