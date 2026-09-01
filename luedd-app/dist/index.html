@@ -54,6 +54,8 @@
   input::placeholder { color: var(--dim); }
   input[type=text]:focus, input:not([type]):focus, input[type=number]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
   input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; }
+  #url.bad { border-color: var(--bad); }
+  #url.bad:focus { outline: 2px solid var(--bad); }
   .clr-wrap { position: relative; display: flex; flex: 1; min-width: 200px; }
   .clr-wrap > input { width: 100%; min-width: 0; padding-right: 28px; }
   .clr-x { position: absolute; right: 7px; top: 50%; transform: translateY(-50%); background: none; border: 0;
@@ -372,9 +374,9 @@
   </div>
 
   <div class="wrap">
-    <form id="add-form">
+    <form id="add-form" novalidate>
       <span class="clr-wrap">
-        <input id="url" placeholder="https://example.com/video.m3u8" required />
+        <input id="url" placeholder="https://example.com/video.m3u8" />
         <button type="button" class="clr-x" id="url-clear" data-i18n-title="clear_field" title="Clear" aria-label="Clear">&times;</button>
       </span>
       <input id="filename" data-i18n-placeholder="filename_ph" placeholder="Output filename (optional)" style="flex: 0 0 220px" />
@@ -1085,19 +1087,32 @@ document.getElementById("retry-selected-btn").addEventListener("click", async ()
   await refresh();
 });
 
+function validLink(v) {
+  try { const u = new URL(v.trim()); return u.protocol === "http:" || u.protocol === "https:"; }
+  catch { return false; }
+}
+function clearAddHint() {
+  document.getElementById("url").classList.remove("bad");
+}
+
 {
   const ui = document.getElementById("url");
   const uw = ui.closest(".clr-wrap");
   const syncClr = () => uw.classList.toggle("has-text", ui.value.length > 0);
-  ui.addEventListener("input", syncClr);
-  document.getElementById("url-clear").addEventListener("click", () => { ui.value = ""; syncClr(); ui.focus(); });
+  ui.addEventListener("input", () => { syncClr(); clearAddHint(); });
+  document.getElementById("url-clear").addEventListener("click", () => { ui.value = ""; syncClr(); clearAddHint(); ui.focus(); });
 }
 
 document.getElementById("add-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const url = document.getElementById("url").value.trim();
   const filename = document.getElementById("filename").value.trim() || null;
-  if (!url) return;
+  if (!validLink(url)) {
+    document.getElementById("url").classList.add("bad");
+    document.getElementById("url").focus();
+    return;
+  }
+  clearAddHint();
 
   let quality = null;
   const submitBtn = ev.target.querySelector("button[type=submit]");
