@@ -326,9 +326,9 @@ fn main() {
             let detection_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 while detection_rx.recv().await.is_some() {
-                    // Never auto-pop the panel - just refresh it if the user
-                    // already has it open. It opens only via the header icon.
-                    refresh_detection_window(&detection_app_handle);
+                    // Pop the panel on a new detection, but don't steal focus
+                    // from whatever the user is doing.
+                    show_or_refresh_detection_window(&detection_app_handle, false);
                 }
             });
 
@@ -415,14 +415,6 @@ fn build_detection_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
         }
     });
     Ok(win)
-}
-
-/// Tell the detection panel to reload its list without changing its
-/// visibility. A no-op for the user if the panel is hidden.
-fn refresh_detection_window(app: &tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window(DETECTION_WINDOW_LABEL) {
-        let _ = win.emit("detection-updated", ());
-    }
 }
 
 fn show_or_refresh_detection_window(app: &tauri::AppHandle, focus: bool) {
