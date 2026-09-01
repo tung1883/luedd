@@ -77,8 +77,12 @@
 
   /* first-load spinner — removed the moment `list_downloads` first returns */
   @keyframes spin { to { transform: rotate(360deg); } }
-  #boot-spinner { position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; gap: 10px; color: var(--dim); font-size: 12px; }
+  /* full-window cover during boot - nothing behind it shows */
+  #boot-spinner { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; color: var(--dim); font-size: 12px;
+    background: var(--bg); }
+  #boot-spinner .boot-logo { width: 56px; height: 56px; opacity: .9; }
+  #boot-spinner .boot-row { display: flex; align-items: center; gap: 10px; }
   #boot-spinner .ring { width: 18px; height: 18px; border-radius: 50%;
     border: 2px solid var(--line); border-top-color: var(--accent);
     animation: spin .8s linear infinite; }
@@ -352,7 +356,7 @@
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
-      <div id="boot-spinner"><span class="ring"></span><span data-i18n="loading">Loading&hellip;</span></div>
+      <div id="boot-spinner"><img class="boot-logo" src="icon.png" alt="Lüdd" /><span class="boot-row"><span class="ring"></span><span data-i18n="loading">Loading&hellip;</span></span></div>
     </div>
   </div>
 
@@ -702,6 +706,16 @@ function updateReadout(entries) {
 
 let firstLoadOk = false;
 
+// Keep the boot spinner up for at least 1s so it doesn't flash, then
+// remove it as soon as the list has actually loaded.
+const BOOT_MIN_MS = 1000;
+function dismissBootSpinner() {
+  const el = document.getElementById("boot-spinner");
+  if (!el) return;
+  const wait = Math.max(0, BOOT_MIN_MS - performance.now());
+  setTimeout(() => document.getElementById("boot-spinner")?.remove(), wait);
+}
+
 async function refresh() {
   let entries;
   try {
@@ -714,7 +728,7 @@ async function refresh() {
     return;
   }
   firstLoadOk = true;
-  document.getElementById("boot-spinner")?.remove();
+  dismissBootSpinner();
   const liveIds = new Set(entries.map(e => e.id));
   for (const id of [...selected]) {
     if (!liveIds.has(id)) selected.delete(id);
