@@ -13,6 +13,16 @@ const DEFAULT_MEDIA_TYPES = [
     'application/vnd.ms-sstr+xml', 'application/pdf', 'image/',
 ];
 
+// HLS/DASH media segments: never treated as detections (a single stream
+// produces hundreds of unique segment URLs per minute). Manifests
+// (.M3U8 / .MPD) and progressive files still match normally.
+const SEGMENT_EXTS = ['.TS', '.M4S'];
+const SEGMENT_PATH_RE = /(?:^|\/)(?:seg(?:ment)?|chunk|frag(?:ment)?)[-_]?\d+/i;
+
+const REQUEST_MAP_MAX = 1000;
+const REQUEST_MAP_TARGET = 800;
+const REQUEST_MAP_TTL_MS = 60000;
+
 export default class RequestWatcher {
     constructor(callback) {
         this.logger = new Logger();
@@ -28,6 +38,7 @@ export default class RequestWatcher {
         this.onErrorOccurredEventCallback = this.onErrorOccurredEvent.bind(this);
         this.urlPatterns = [];
         this.requestFileExts = [];
+        this.registered = false;
     }
 
     updateConfig(config) {
@@ -68,6 +79,16 @@ export default class RequestWatcher {
 
         let path = u.pathname;
         let upath = path.toUpperCase();
+
+        if (SEGMENT_EXTS.find(e => upath.endsWith(e)) || SEGMENT_PATH_RE.test(path)) {
+            return false;
+        }
+        let ctHeader = res.responseHeaders && res.responseHeaders.find(h => h["name"].toUpperCase() === "CONTENT-TYPE");
+        let ctVal = ctHeader ? ctHeader["value"].toLowerCase() : "";
+        if ((ctVal.indexOf("video/mp2t") >= 0 || ctVal.indexOf("application/octet-stream") >= 0) && /\d/.test(path)) {
+            return false;
+        }
+
         let extMatch = this.mediaExts.find(e => upath.endsWith(e));
         if (extMatch) {
             return !this.isSmallImage(extMatch, res);
@@ -122,7 +143,27 @@ export default class RequestWatcher {
             && this.matchingHosts.find(matchingHost => info.url.indexOf(matchingHost) > 0))) {
             return;
         }
+        info.__ts = Date.now();
         this.requestMap.set(info.requestId, info);
+        this.sweepRequestMap();
+    }
+
+    sweepRequestMap() {
+        const now = Date.now();
+        for (const [id, info] of this.requestMap) {
+            if (now - (info.__ts || 0) > REQUEST_MAP_TTL_MS) {
+                this.requestMap.delete(id);
+            } else {
+                break;
+            }
+        }
+        if (this.requestMap.size > REQUEST_MAP_MAX) {
+            let excess = this.requestMap.size - REQUEST_MAP_TARGET;
+            for (const id of this.requestMap.keys()) {
+                if (excess-- <= 0) break;
+                this.requestMap.delete(id);
+            }
+        }
     }
 
     async getCookieHeaderForUrl(url) {
@@ -171,6 +212,8 @@ export default class RequestWatcher {
     }
 
     register() {
+        if (this.registered) return;
+        this.registered = true;
         try {
             chrome.webRequest.onSendHeaders.addListener(
                 this.onSendHeadersEventCallback,
@@ -206,6 +249,8 @@ export default class RequestWatcher {
     }
 
     unRegister() {
+        if (!this.registered) return;
+        this.registered = false;
         chrome.webRequest.onSendHeaders.removeListener(this.onSendHeadersEventCallback);
         chrome.webRequest.onHeadersReceived.removeListener(this.onHeadersReceivedEventCallback);
         chrome.webRequest.onErrorOccurred.removeListener(this.onErrorOccurredEventCallback);

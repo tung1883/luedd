@@ -25,13 +25,27 @@ export default class App {
         // so a retry has everything it needs. Reconciled on every poll in
         // `onMessage` below.
         this.pendingMedia = new Map();
+        // O(1) dedupe for detections - replaces a linear scan of videoList
+        // that went quadratic under a stream-segment storm.
+        this.seenUrls = new Set();
     }
 
-    start() {
+    async start() {
         this.logger.log("starting...");
+        try {
+            const stored = await chrome.storage.local.get('userDisabled');
+            if (stored && typeof stored.userDisabled === 'boolean') {
+                this.userDisabled = stored.userDisabled;
+            }
+        } catch (e) { }
         this.starAppConnector();
         this.register();
         this.logger.log("started.");
+    }
+
+    syncWatcherRegistration() {
+        if (this.isMonitoringEnabled()) this.requestWatcher.register();
+        else this.requestWatcher.unRegister();
     }
 
     starAppConnector() {
@@ -47,8 +61,11 @@ export default class App {
         this.tabsWatcher = msg.tabsWatcher;
         const serverList = msg.videoList || [];
         const serverUrls = new Set(serverList.map(v => v.url));
-        const localOnly = (this.videoList || []).filter(v => this.isLocalId(v.id) && !serverUrls.has(v.url));
+        const localOnly = (this.videoList || [])
+            .filter(v => this.isLocalId(v.id) && !serverUrls.has(v.url))
+            .slice(-300);
         this.videoList = [...serverList, ...localOnly];
+        this.seenUrls = new Set(this.videoList.map(v => v.url));
         // Self-healing retry: anything still pending that the server has now
         // confirmed is done; anything still pending that the server hasn't
         // seen gets POSTed again, capped to a small batch per tick. Without
@@ -76,6 +93,7 @@ export default class App {
             mediaTypes: msg.mediaTypes
         });
         this.updateActionIcon();
+        this.syncWatcherRegistration();
     }
 
     async queueVideo(itemId, quality) {
@@ -99,6 +117,7 @@ export default class App {
         this.logger.log("Disconnected from native host!");
         this.logger.log("Disconnected...");
         this.updateActionIcon();
+        this.syncWatcherRegistration();
     }
 
     isMonitoringEnabled() {
@@ -125,7 +144,7 @@ export default class App {
     }
 
     recordLocalDetection(data) {
-        if (this.videoList.some(v => v.url === data.url)) return;
+        if (this.seenUrls.has(data.url)) return;
         this.localDetectionCounter = (this.localDetectionCounter || 0) + 1;
         const item = {
             id: "local" + this.localDetectionCounter,
@@ -134,7 +153,19 @@ export default class App {
             url: data.url,
             pageUrl: data.tabUrl || null,
         };
+        this.seenUrls.add(data.url);
         this.videoList = [...this.videoList, item];
+        if (this.videoList.length > 300) {
+            this.videoList = this.videoList.slice(-300);
+            this.seenUrls = new Set(this.videoList.map(v => v.url));
+        }
+        if (this.pendingMedia.size >= 200) {
+            let excess = this.pendingMedia.size - 150;
+            for (const key of this.pendingMedia.keys()) {
+                if (excess-- <= 0) break;
+                this.pendingMedia.delete(key);
+            }
+        }
         this.pendingMedia.set(data.url, data);
         this.updateActionIcon();
     }
@@ -142,7 +173,7 @@ export default class App {
     onRequestDataReceived(data) {
         this.logger.log("onRequestDataReceived");
         this.logger.log(data);
-        if (!this.isDetectionEnabled()) return;
+        if (!this.isMonitoringEnabled()) return;
         this.recordLocalDetection(data);
         this.connector.postMessage("/media", data);
     }
@@ -209,7 +240,7 @@ export default class App {
             this.onTabUpdateCallback
         );
         chrome.runtime.onMessage.addListener(this.onPopupMessage.bind(this));
-        this.requestWatcher.register();
+        this.syncWatcherRegistration();
         this.attachContextMenu();
         chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
     }
@@ -325,11 +356,15 @@ export default class App {
         else if (request.type === "cmd") {
             this.userDisabled = request.enabled === false;
             this.logger.log("request.enabled:" + request.enabled);
+            try {
+                chrome.storage.local.set({ userDisabled: this.userDisabled });
+            } catch (e) { }
             if (request.enabled && !this.connector.isConnected()) {
                 this.connector.launchApp();
                 return;
             }
             this.updateActionIcon();
+            this.syncWatcherRegistration();
         }
         else if (request.type === "vid") {
             this.queueVideo(request.itemId, request.quality).then(success => sendResponse({ success }));

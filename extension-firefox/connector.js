@@ -27,6 +27,10 @@ export default class Connector {
             .catch(err => this.disconnect());
     }
 
+    markConnected() {
+        this.connected = true;
+    }
+
     disconnect() {
         this.connected = false;
         this.onDisconnect();
@@ -49,7 +53,10 @@ export default class Connector {
 
     postMessage(url, data) {
         return fetch(APP_BASE_URL + url, { method: "POST", body: JSON.stringify(data) })
-            .then(this.onResponse.bind(this))
+            .then(res => {
+                this.markConnected();
+                return res.json().catch(() => null);
+            })
             .catch(err => {
                 this.disconnect();
                 return null;

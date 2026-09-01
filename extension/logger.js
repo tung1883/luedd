@@ -1,7 +1,12 @@
 "use strict";
 export default class Logger {
     constructor() {
-        this.loggingEnabled = true;
+        this.loggingEnabled = false;
+        try {
+            chrome.storage.local.get('debug', v => {
+                if (v && v.debug) this.loggingEnabled = true;
+            });
+        } catch (e) { }
     }
 
     log(content) {
