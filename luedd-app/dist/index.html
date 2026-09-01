@@ -92,6 +92,11 @@
   th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow: hidden; }
   thead th { background: var(--bg);
     font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; padding-top: 8px; padding-bottom: 8px; }
+  thead th[data-sort-key] { cursor: pointer; user-select: none; }
+  thead th[data-sort-key]:hover { color: var(--text); }
+  thead th.sort-active { color: var(--text); }
+  thead th.sort-active::after { content: "▾"; margin-left: 4px; font-size: 8px; vertical-align: 1px; }
+  thead th.sort-active.sort-asc::after { content: "▴"; }
   tbody tr.data-row { cursor: pointer; }
   tbody tr:hover > td { background: var(--surface); }
   tbody tr.data-row:has(.row-chk:checked) > td { background: var(--surface-2); }
@@ -155,6 +160,13 @@
   .fd-lbl { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em;
     color: var(--dim); margin-bottom: 5px; }
   .fd-fld > input[type=text] { width: 100%; min-width: 0; flex: none; }
+  .sortline { display: flex; gap: 8px; }
+  .sortline .dd { flex: 1 1 auto; min-width: 0; }
+  .dir-btn { flex: 0 0 auto; width: 36px; padding: 0; display: flex; align-items: center; justify-content: center;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text); cursor: pointer; }
+  .dir-btn svg { width: 14px; height: 14px; transition: transform .12s; }
+  .dir-btn.asc svg { transform: rotate(180deg); }
+  .dir-btn:hover { border-color: var(--dim); }
   .filter-status { display: flex; align-items: center; gap: 6px; margin-top: 9px; font-size: 11px; color: var(--dim); }
   .fs-reset { background: none; border: 0; color: var(--disc); cursor: pointer; margin-left: auto;
     font-size: 11px; padding: 0; font-weight: 500; }
@@ -386,6 +398,29 @@
       </span>
       <div class="filter-drawer" id="list-filter-drawer">
         <div class="fd-row">
+          <div class="fd-fld"><span class="fd-lbl" data-i18n="f_sort">Sort</span>
+            <div class="sortline">
+              <div class="dd" id="lf-sort" data-value="added">
+                <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="sort_added">Date added</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <ul class="dd-list">
+                  <li data-value="added" data-i18n="sort_added">Date added</li>
+                  <li data-value="id" data-i18n="col_id">ID</li>
+                  <li data-value="kind" data-i18n="col_kind">Kind</li>
+                  <li data-value="status" data-i18n="sort_status">Status</li>
+                  <li data-value="progress" data-i18n="sort_progress">Progress</li>
+                  <li data-value="speed" data-i18n="sort_speed">Speed</li>
+                  <li data-value="name" data-i18n="sort_filename">File name</li>
+                  <li data-value="url" data-i18n="col_url">URL</li>
+                </ul>
+              </div>
+              <button type="button" class="dir-btn" id="lf-dir" data-dir="desc" data-i18n-title="sort_dir_title" title="Reverse order" aria-label="Reverse order">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"></path></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="fd-row">
           <div class="fd-fld"><span class="fd-lbl" data-i18n="f_status">Status</span>
             <div class="dd" id="lf-status" data-value="all">
               <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="f_all_status">All statuses</span>
@@ -441,7 +476,7 @@
         <thead><tr>
           <th class="toggle-col"><button id="expand-all-btn" class="details-toggle-btn" data-i18n-title="toggle_all" title="Show / hide all details">▸</button></th>
           <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
-          <th class="id-col" data-i18n="col_id">ID</th><th class="kind-col" data-i18n="col_kind">Kind</th><th class="status-col" data-i18n="col_status">Status</th><th class="progress-col" data-i18n="col_progress">Progress</th><th class="speed-col" data-i18n="col_speed">Speed</th><th class="url-col" data-i18n="col_url">URL</th><th class="error-col" data-i18n="col_error">Error</th><th class="actions-col" data-i18n="col_actions">Actions</th>
+          <th class="id-col" data-sort-key="id" data-i18n="col_id">ID</th><th class="kind-col" data-sort-key="kind" data-i18n="col_kind">Kind</th><th class="status-col" data-sort-key="status" data-i18n="col_status">Status</th><th class="progress-col" data-sort-key="progress" data-i18n="col_progress">Progress</th><th class="speed-col" data-sort-key="speed" data-i18n="col_speed">Speed</th><th class="url-col" data-sort-key="url" data-i18n="col_url">URL</th><th class="error-col" data-i18n="col_error">Error</th><th class="actions-col" data-i18n="col_actions">Actions</th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -857,6 +892,7 @@ async function refresh() {
   rebuildProviderFilterOptions(entries);
   resyncFilterDDs();
   const visible = entries.filter(entryMatchesFilter);
+  sortEntries(visible);
   updateFilterUI(entries.length, visible.length);
 
   const rows = document.getElementById("rows");
@@ -1140,9 +1176,54 @@ initDropdown(ddFont, previewFont);
 document.addEventListener("click", () => document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open")));
 
 // ---- main-list search + filter (mirrors the detection panel) ----
-let lf = { search: "", status: "all", kind: "all", provider: "all", hide: "" };
+let lf = { search: "", status: "all", kind: "all", provider: "all", hide: "", sort: "added", dir: "desc" };
 
 function providerOfEntry(e) { return providerLabel(e.backend_id); }
+
+function entryFraction(e) {
+  const p = e.progress;
+  if (!p) return 0;
+  if (p.total_bytes) return p.downloaded_bytes / p.total_bytes;
+  if (p.total_units) return p.done_units / p.total_units;
+  return e.status === "Finished" ? 1 : 0;
+}
+function entryName(e) {
+  const src = (e.dest || e.url || "").split(/[?#]/)[0].replace(/[\\/]+$/, "");
+  const i = Math.max(src.lastIndexOf("/"), src.lastIndexOf("\\"));
+  return src.slice(i + 1).toLowerCase();
+}
+function entrySite(e) { try { return new URL(e.url).host.toLowerCase(); } catch { return ""; } }
+const STATUS_RANK = { Downloading: 0, Converting: 1, Paused: 2, Queued: 3, Finished: 4, Failed: 5, Cancelled: 6 };
+
+function sortEntries(arr) {
+  const dir = lf.dir === "asc" ? 1 : -1;
+  const val = e => {
+    switch (lf.sort) {
+      case "id":       return e.id.toLowerCase();
+      case "kind":     return (e.kind || "").toLowerCase();
+      case "status":   return STATUS_RANK[e.status] ?? 9;
+      case "progress": return entryFraction(e);
+      case "speed":    return (e.progress && e.progress.speed_bps) || 0;
+      case "name":     return entryName(e);
+      case "url":      return (e.url || "").toLowerCase();
+      case "site":     return entrySite(e);
+      default:         return e.created_at || 0;
+    }
+  };
+  arr.sort((a, b) => {
+    const av = val(a), bv = val(b);
+    if (av < bv) return -dir;
+    if (av > bv) return dir;
+    return 0;
+  });
+}
+const SORT_LABEL_KEY = { added: "sort_added", id: "col_id", kind: "col_kind", status: "sort_status",
+  progress: "sort_progress", speed: "sort_speed", name: "sort_filename", url: "col_url", site: "sort_site" };
+function sortKeyLabel(key) { return t(SORT_LABEL_KEY[key] || "sort_" + key); }
+// keys that read naturally low->high ascending; the rest default to descending
+const SORT_ASC_KEYS = new Set(["id", "kind", "name", "url", "site", "status"]);
+function naturalDir(key) { return SORT_ASC_KEYS.has(key) ? "asc" : "desc"; }
+function sortDefault() { return lf.sort === "added" && lf.dir === "desc"; }
 
 function entryMatchesFilter(e) {
   if (lf.status !== "all" && e.status !== lf.status) return false;
@@ -1157,16 +1238,20 @@ function entryMatchesFilter(e) {
   return true;
 }
 
-function lfActive() {
+function lfFiltering() {
   return !!lf.search.trim() || lf.status !== "all" || lf.kind !== "all" || lf.provider !== "all" || !!lf.hide.trim();
 }
+function lfActive() { return lfFiltering() || !sortDefault(); }
 
 function updateFilterUI(total, shown) {
   document.getElementById("list-filter-toggle").classList.toggle("active", lfActive());
   const bar = document.getElementById("list-filter-status");
   if (lfActive() && total > 0) {
     bar.style.display = "flex";
-    document.getElementById("list-filter-count").textContent = t("f_shown", { shown, hidden: total - shown });
+    const bits = [];
+    if (lfFiltering()) bits.push(t("f_shown", { shown, hidden: total - shown }));
+    if (!sortDefault()) bits.push(t("sorted_by", { k: sortKeyLabel(lf.sort) }) + " " + (lf.dir === "asc" ? "↑" : "↓"));
+    document.getElementById("list-filter-count").textContent = bits.join(" · ");
   } else {
     bar.style.display = "none";
   }
@@ -1201,6 +1286,17 @@ function resyncFilterDDs() {
   syncFilterDD(document.getElementById("lf-status"), lf.status, t("f_all_status"));
   syncFilterDD(document.getElementById("lf-kind"), lf.kind, t("f_all_kinds"));
   syncFilterDD(document.getElementById("lf-provider"), lf.provider, t("f_all_providers"));
+  syncFilterDD(document.getElementById("lf-sort"), lf.sort, t("sort_added"));
+  document.getElementById("lf-dir").classList.toggle("asc", lf.dir === "asc");
+  markSortHeaders();
+}
+
+function markSortHeaders() {
+  document.querySelectorAll("th[data-sort-key]").forEach(th => {
+    const on = lf.sort === th.dataset.sortKey;
+    th.classList.toggle("sort-active", on);
+    th.classList.toggle("sort-asc", on && lf.dir === "asc");
+  });
 }
 
 function wireFilterDD(id, key, allLabel) {
@@ -1224,6 +1320,39 @@ wireFilterDD("lf-kind", "kind", () => t("f_all_kinds"));
 wireFilterDD("lf-provider", "provider", () => t("f_all_providers"));
 
 {
+  const dd = document.getElementById("lf-sort");
+  const dirBtn = document.getElementById("lf-dir");
+  const setDir = d => { lf.dir = d; dirBtn.classList.toggle("asc", d === "asc"); };
+  dd.querySelector(".dd-btn").addEventListener("click", e => {
+    e.stopPropagation();
+    document.querySelectorAll(".dd.open").forEach(o => { if (o !== dd) o.classList.remove("open"); });
+    dd.classList.toggle("open");
+  });
+  dd.querySelector(".dd-list").addEventListener("click", e => {
+    const li = e.target.closest("li");
+    if (!li) return;
+    lf.sort = li.dataset.value;
+    setDir(naturalDir(lf.sort));
+    dd.classList.remove("open");
+    syncFilterDD(dd, lf.sort, t("sort_added"));
+    refresh();
+  });
+  dirBtn.addEventListener("click", () => { setDir(lf.dir === "asc" ? "desc" : "asc"); refresh(); });
+
+  // Clicking a column header sorts by it; clicking the active one flips direction.
+  document.querySelectorAll("th[data-sort-key]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sortKey;
+      if (lf.sort === key) lf.dir = lf.dir === "asc" ? "desc" : "asc";
+      else { lf.sort = key; lf.dir = naturalDir(key); }
+      syncFilterDD(dd, lf.sort, t("sort_added"));
+      dirBtn.classList.toggle("asc", lf.dir === "asc");
+      refresh();
+    });
+  });
+}
+
+{
   const si = document.getElementById("list-search");
   const sw = si.closest(".clr-wrap");
   const hi = document.getElementById("list-filter-hide");
@@ -1244,7 +1373,7 @@ wireFilterDD("lf-provider", "provider", () => t("f_all_providers"));
     document.getElementById("list-filter-toggle").classList.toggle("on", dr.classList.toggle("open"));
   });
   document.getElementById("list-filter-reset").addEventListener("click", () => {
-    lf = { search: "", status: "all", kind: "all", provider: "all", hide: "" };
+    lf = { search: "", status: "all", kind: "all", provider: "all", hide: "", sort: "added", dir: "desc" };
     si.value = ""; hi.value = ""; sw.classList.remove("has-text");
     resyncFilterDDs();
     refresh();

@@ -62,6 +62,13 @@
   .fd-fld { flex: 1 1 0; min-width: 0; display: block; }
   .fd-lbl { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
   .fd-fld input[type=text] { padding: 7px 9px; }
+  .sortline { display: flex; gap: 8px; }
+  .sortline .dd { flex: 1 1 auto; min-width: 0; }
+  .dir-btn { flex: 0 0 auto; width: 34px; padding: 0; display: flex; align-items: center; justify-content: center;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px; color: var(--text); cursor: pointer; }
+  .dir-btn svg { width: 14px; height: 14px; transition: transform .12s; }
+  .dir-btn.asc svg { transform: rotate(180deg); }
+  .dir-btn:hover { border-color: var(--dim); }
   /* custom dropdown (matches settings dropdown in main window) */
   .dd { position: relative; }
   .dd-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -161,6 +168,26 @@
       </button>
     </span>
     <div class="filter-drawer" id="filter-drawer">
+      <div class="fd-row">
+        <div class="fd-fld"><span class="fd-lbl" data-i18n="f_sort">Sort</span>
+          <div class="sortline">
+            <div class="dd" id="filter-sort" data-value="detected">
+              <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="sort_detected">Detected</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+              <ul class="dd-list">
+                <li data-value="detected" data-i18n="sort_detected">Detected</li>
+                <li data-value="name" data-i18n="sort_name">Name</li>
+                <li data-value="site" data-i18n="sort_site">Site</li>
+                <li data-value="type" data-i18n="f_type">Type</li>
+                <li data-value="provider" data-i18n="f_provider">Provider</li>
+              </ul>
+            </div>
+            <button type="button" class="dir-btn" id="filter-dir" data-dir="desc" data-i18n-title="sort_dir_title" title="Reverse order" aria-label="Reverse order">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"></path></svg>
+            </button>
+          </div>
+        </div>
+      </div>
       <div class="fd-row">
         <div class="fd-fld"><span class="fd-lbl" data-i18n="f_type">Type</span>
           <div class="dd" id="filter-type" data-value="all">
@@ -405,7 +432,34 @@
     const type = document.getElementById("filter-type").dataset.value;
     const prov = document.getElementById("filter-provider").dataset.value;
     const hide = document.getElementById("filter-hide").value.trim();
-    return type !== "all" || prov !== "all" || hide.length > 0;
+    return type !== "all" || prov !== "all" || hide.length > 0 || sortActive();
+  }
+  function sortActive() {
+    return document.getElementById("filter-sort").dataset.value !== "detected"
+      || document.getElementById("filter-dir").dataset.dir !== "desc";
+  }
+  function siteOf(item) {
+    try { return new URL(item.url || item.pageUrl).host.toLowerCase(); } catch { return ""; }
+  }
+  // Compare two detections by the chosen sort key + direction. "detected" order
+  // is the server's append order (allItems index); newer = higher index.
+  function cmpItems(a, b) {
+    const key = document.getElementById("filter-sort").dataset.value;
+    const dir = document.getElementById("filter-dir").dataset.dir === "asc" ? 1 : -1;
+    let av, bv;
+    switch (key) {
+      case "name":     av = (a.text || "").toLowerCase(); bv = (b.text || "").toLowerCase(); break;
+      case "site":     av = siteOf(a); bv = siteOf(b); break;
+      case "type":     av = itemKind(a); bv = itemKind(b); break;
+      case "provider": av = providerOf(a); bv = providerOf(b); break;
+      default:         av = allItems.indexOf(a); bv = allItems.indexOf(b); break;
+    }
+    if (av < bv) return -dir;
+    if (av > bv) return dir;
+    return 0;
+  }
+  function sortKeyLabel(key) {
+    return key === "provider" ? L("f_provider") : key === "type" ? L("f_type") : L("sort_" + key);
   }
 
   function applyFilter(query) {
@@ -427,15 +481,25 @@
       return true;
     });
 
+    items.sort(cmpItems);
+
     // funnel indicator + status line
     const active = filterActive();
     const funnel = document.getElementById("filter-toggle");
     funnel.classList.toggle("active", active);
     const hidden = allItems.length - items.length;
     const status = document.getElementById("filter-status");
-    if (active && hidden > 0) {
+    if (active) {
       status.style.display = "flex";
-      document.getElementById("filter-count").textContent = L("f_shown", { shown: items.length, hidden });
+      const bits = [];
+      if (hidden > 0 || terms.length || type !== "all" || prov !== "all" || hideTerms.length) {
+        bits.push(L("f_shown", { shown: items.length, hidden }));
+      }
+      if (sortActive()) {
+        const arrow = document.getElementById("filter-dir").dataset.dir === "asc" ? "↑" : "↓";
+        bits.push(L("sorted_by", { k: sortKeyLabel(document.getElementById("filter-sort").dataset.value) }) + " " + arrow);
+      }
+      document.getElementById("filter-count").textContent = bits.join(" · ");
     } else {
       status.style.display = "none";
     }
@@ -823,6 +887,23 @@
   const filterTypeDD = document.getElementById("filter-type");
   initDropdown(filterTypeDD, reapplyFilter);
 
+  // Sort: key dropdown + a direction toggle. Picking a key resets the
+  // direction to that key's natural default (newest / A-Z).
+  const filterSortDD = document.getElementById("filter-sort");
+  const filterDirBtn = document.getElementById("filter-dir");
+  const setDir = d => {
+    filterDirBtn.dataset.dir = d;
+    filterDirBtn.classList.toggle("asc", d === "asc");
+  };
+  initDropdown(filterSortDD, key => {
+    setDir(key === "detected" ? "desc" : "asc");
+    reapplyFilter();
+  });
+  filterDirBtn.addEventListener("click", () => {
+    setDir(filterDirBtn.dataset.dir === "asc" ? "desc" : "asc");
+    reapplyFilter();
+  });
+
   // Provider dropdown: options are data-driven (whatever backends are actually
   // present), so it can't use the static-<li> initDropdown. Delegated clicks.
   const filterProviderDD = document.getElementById("filter-provider");
@@ -891,6 +972,9 @@
       filterTypeDD._sync();
       filterProviderDD.dataset.value = "all";
       syncProviderDD();
+      filterSortDD.dataset.value = "detected";
+      filterSortDD._sync();
+      setDir("desc");
       document.getElementById("filter-hide").value = "";
       reapplyFilter();
     });
@@ -944,6 +1028,7 @@
       }
     }
     filterTypeDD._sync();
+    filterSortDD._sync();
     fetchAndRender();
   })();
 
@@ -954,6 +1039,7 @@
       applyFont(s.font || "system");
       window.I18N.applyLang(s.language || "en");
       filterTypeDD._sync();
+      filterSortDD._sync();
     } catch (e) {}
   });
 </script>
