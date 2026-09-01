@@ -235,6 +235,7 @@
     color: #46505c; position: relative; }
   .det-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer; }
   .det-thumb .glyph { font-size: 26px; }
+  .det-thumb .glyph svg { width: 34px; height: 34px; color: var(--dim); }
   .det-thumb .full { position: absolute; right: 5px; bottom: 5px; background: rgba(0,0,0,.6); color: #fff; border: 0;
     border-radius: 4px; font-size: 10px; padding: 2px 7px; cursor: pointer; }
   .det-cap { font-size: 10px; color: var(--dim); margin-top: 5px; text-align: center;
@@ -403,14 +404,20 @@ function isImageFile(path) {
 // 2s re-renders so a video frame is grabbed by ffmpeg at most once.
 const detailPreview = new Map();
 
+// Kind-based placeholder icons: shown while a preview is loading, kept if
+// there's nothing to preview, and restored if the loaded image errors.
+const AUDIO_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+const VIDEO_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M10 9.3l5 2.7-5 2.7V9.3z" fill="currentColor" stroke="none"/></svg>';
+// Generic file icon - anything without a more specific glyph.
+const DATA_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><path d="M14 2v5h5"/></svg>';
 function previewGlyph(dest) {
   const ext = (String(dest || "").split(".").pop() || "").toLowerCase();
-  if (["mp4","mkv","webm","mov","m4v","avi","ts","flv"].includes(ext)) return "▶";
+  if (["mp4","mkv","webm","mov","m4v","avi","ts","flv"].includes(ext)) return VIDEO_GLYPH;
   if (IMAGE_EXTENSIONS.has(ext)) return "▦";
   if (["zip","rar","7z","tar","gz"].includes(ext)) return "🗜";
-  if (["mp3","m4a","flac","wav","ogg","opus"].includes(ext)) return "♪";
+  if (["mp3","m4a","aac","flac","wav","ogg","opus"].includes(ext)) return AUDIO_GLYPH;
   if (["pdf","doc","docx","txt"].includes(ext)) return "▤";
-  return "◫";
+  return DATA_GLYPH;
 }
 
 async function loadDetailPreview(detailsTr) {
@@ -433,6 +440,10 @@ async function loadDetailPreview(detailsTr) {
   const img = document.createElement("img");
   img.src = url; img.alt = "";
   img.addEventListener("click", () => showImagePreview(url));
+  img.addEventListener("error", () => {
+    detailPreview.set(id, null);
+    box.innerHTML = `<span class="glyph">${previewGlyph(box.dataset.dest)}</span>`;
+  }, { once: true });
   box.appendChild(img);
   const full = document.createElement("button");
   full.className = "full"; full.textContent = t("full_size");

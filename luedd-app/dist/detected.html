@@ -110,6 +110,7 @@
   .toggle-btn:hover { color: var(--text); }
   .row-preview { width: 74px; height: 44px; border-radius: 4px; border: 1px solid var(--line); overflow: hidden;
     background: linear-gradient(135deg, #242730, #2b2f38); display: flex; align-items: center; justify-content: center; }
+  .row-preview svg { width: 22px; height: 22px; color: #6a6f7a; }
   .thumb { width: 74px; height: 44px; object-fit: cover; display: block; cursor: pointer; }
   .thumb-pdf { width: 74px; height: 44px; cursor: default; }
   .row-body { min-width: 0; }
@@ -524,9 +525,26 @@
     }
   }, { root: document.getElementById("list"), rootMargin: "150px" });
 
+  // Kind-based placeholder icons: shown the instant a row scrolls into view
+  // (before /preview even resolves), kept if no preview exists, and restored
+  // if the fetched image fails to decode/load.
+  const AUDIO_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+  const VIDEO_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M10 9.3l5 2.7-5 2.7V9.3z" fill="currentColor" stroke="none"/></svg>';
+  // Generic file icon - anything we don't have a specific glyph for.
+  const DATA_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><path d="M14 2v5h5"/></svg>';
+
+  function iconFor(item) {
+    switch (itemKind(item)) {
+      case "video": case "hls": case "dash": return VIDEO_ICON;
+      case "audio": return AUDIO_ICON;
+      default: return DATA_ICON;
+    }
+  }
+
   async function loadPreview(item, col) {
     if (col.dataset.loaded) return;
     col.dataset.loaded = "1";
+    col.innerHTML = iconFor(item); // placeholder while /preview is in flight
 
     let data = previewCache.get(item.id);
     if (data === undefined) {
@@ -534,7 +552,7 @@
       data = (res && res.previewDataUrl) ? { url: res.previewDataUrl, kind: res.previewKind || "image" } : null;
       previewCache.set(item.id, data);
     }
-    if (!data) return; // no preview available - column stays empty
+    if (!data) return; // no preview available - keep the placeholder icon
 
     let el;
     if (data.kind === "pdf") {
@@ -548,7 +566,9 @@
       el.alt = "";
       el.src = data.url;
       el.addEventListener("click", ev => { ev.stopPropagation(); showImageOverlay(data.url); });
+      el.addEventListener("error", () => { col.innerHTML = iconFor(item); }, { once: true });
     }
+    col.innerHTML = "";
     col.appendChild(el);
   }
 
