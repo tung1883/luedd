@@ -190,13 +190,17 @@ async fn read_preview(path: String) -> Result<PreviewOut, String> {
         return Err("no preview for this file type".into());
     }
 
-    let out = tokio::process::Command::new("ffmpeg")
-        .args(["-v", "error", "-ss", "1", "-i"])
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.args(["-v", "error", "-ss", "1", "-i"])
         .arg(&target)
-        .args(["-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-"])
-        .output()
-        .await
-        .map_err(|e| format!("ffmpeg: {e}"))?;
+        .args(["-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-"]);
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW: no console window flash when spawned from the GUI app.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().await.map_err(|e| format!("ffmpeg: {e}"))?;
     if !out.status.success() || out.stdout.is_empty() {
         return Err(format!("ffmpeg: {}", String::from_utf8_lossy(&out.stderr)));
     }

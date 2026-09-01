@@ -156,6 +156,7 @@
   .fill { height: 100%; border-radius: 2px; background: var(--accent); }
   .fill.done { background: var(--good); }
   .fill.pause { background: var(--warn); opacity: .75; }
+  .fill.conv { background: var(--violet); }
   .mlabel { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .track.conv { background: rgba(167,139,250,.20); }
   .track.conv::after { content: ""; position: absolute; inset: 0; width: 38%;
@@ -593,10 +594,16 @@ function formatProgress(e) {
   if (e.status === "Finished") {
     return `<div class="meter"><div class="track"><div class="fill done" style="width:100%"></div></div><div class="mlabel">100%</div></div>`;
   }
+  if (e.status === "Converting") {
+    const cp = e.progress;
+    if (cp && cp.total_bytes) {
+      const pct = Math.min(100, Math.round((cp.downloaded_bytes / cp.total_bytes) * 100));
+      return `<div class="meter"><div class="track"><div class="fill conv" style="width:${pct}%"></div></div><div class="mlabel" style="color:var(--violet)">${t("remux")} ${pct}%</div></div>`;
+    }
+    return `<div class="meter"><div class="track conv"></div><div class="mlabel" style="color:var(--violet)">${t("remux")}</div></div>`;
+  }
   if (!e.progress) {
-    return e.status === "Converting"
-      ? `<div class="meter"><div class="track conv"></div><div class="mlabel" style="color:var(--violet)">${t("remux")}</div></div>`
-      : "";
+    return "";
   }
   const p = e.progress;
   // HLS/DASH: honest percentage from the known segment count.
