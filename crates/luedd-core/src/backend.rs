@@ -185,6 +185,20 @@ impl BackendRegistry {
         best.map(|(_, id)| id).unwrap_or("http")
     }
 
+    /// Human-facing provider labels for every registered backend, deduped,
+    /// registration order (so "Lüdd" — the built-ins — comes first). Sent to
+    /// the detection panel so it can list a provider even when it has 0 links.
+    pub fn provider_labels(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for b in &self.backends {
+            let label = provider_label(b.id()).to_string();
+            if !out.contains(&label) {
+                out.push(label);
+            }
+        }
+        out
+    }
+
     /// Union of every backend's [`DownloadBackend::page_hosts`], deduped. Sent
     /// to the extension so it knows which page URLs to offer as detections.
     pub fn page_hosts(&self) -> Vec<String> {

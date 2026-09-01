@@ -363,6 +363,7 @@
         const json = await res.json();
         const monChk = document.getElementById("mon-chk");
         if (json && !monChk.matches(":hover") && !monChk.matches(":active")) monChk.checked = json.enabled !== false;
+        if (Array.isArray(json.providers) && json.providers.length) availableProviders = json.providers;
         const fetched = json.videoList || [];
         const signature = fetched.map(i => i.id).join(",");
         if (signature === lastRenderedSignature) {
@@ -607,6 +608,10 @@
   // Providers whose group the user has collapsed. Order groups appear in.
   const collapsedProviders = new Set();
   const PROVIDER_ORDER = ["Lüdd"];
+  // Provider labels for every *installed* backend (from /sync). The panel lists
+  // these even when a provider has 0 links; a provider is only absent when its
+  // backend isn't installed. Older servers omit it -> just the built-in.
+  let availableProviders = ["Lüdd"];
 
   function renderList(items) {
     const list = document.getElementById("list");
@@ -637,7 +642,9 @@
       if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
       return a.localeCompare(b);
     });
-    const showHeaders = providers.length > 1;
+    // Headers show when more than one provider is *installed* - not when more
+    // than one currently has links. A single-backend install stays header-less.
+    const showHeaders = availableProviders.length > 1 || providers.length > 1;
 
     // rows no longer present anywhere
     const visibleIds = new Set();
@@ -853,7 +860,9 @@
       const p = providerOf(it);
       counts.set(p, (counts.get(p) || 0) + 1);
     }
-    const provs = [...counts.keys()].sort((a, b) => {
+    // every installed provider, plus any seen in items that somehow isn't listed
+    const provSet = new Set([...availableProviders, ...counts.keys()]);
+    const provs = [...provSet].sort((a, b) => {
       const ia = PROVIDER_ORDER.indexOf(a), ib = PROVIDER_ORDER.indexOf(b);
       if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
       return a.localeCompare(b);
@@ -862,8 +871,8 @@
     const row = (val, label, n) =>
       `<li data-value="${val.replace(/"/g, "&quot;")}">${label}<span>${n}</span></li>`;
     listEl.innerHTML = row("all", L("f_all_providers"), allItems.length)
-      + provs.map(p => row(p, p, counts.get(p))).join("");
-    if (filterProviderDD.dataset.value !== "all" && !counts.has(filterProviderDD.dataset.value)) {
+      + provs.map(p => row(p, p, counts.get(p) || 0)).join("");
+    if (filterProviderDD.dataset.value !== "all" && !provSet.has(filterProviderDD.dataset.value)) {
       filterProviderDD.dataset.value = "all";
     }
     syncProviderDD();

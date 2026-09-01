@@ -269,7 +269,32 @@ async fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<
 
 const IPC_PORT: u16 = 8597;
 
+/// A GUI-subsystem release build has no console, so a panicking thread's
+/// message goes nowhere - the process just vanishes (WER logs only an opaque
+/// abort). Mirror every panic to `<data_dir>/crash.log` first, so a crash
+/// leaves something to read afterward, then still run the default hook.
+fn install_crash_log() {
+    let path = default_data_dir().join("crash.log");
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let bt = std::backtrace::Backtrace::force_capture();
+        let line = format!("\n=== panic @ unix {now} ===\n{info}\nbacktrace:\n{bt}\n");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+            let _ = f.flush();
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() {
+    std::env::set_var("RUST_BACKTRACE", "1");
+    install_crash_log();
     tracing_subscriber::fmt::init();
 
     // The frontend is a handful of embedded HTML files served over an unchanging

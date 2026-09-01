@@ -94,6 +94,10 @@ struct SyncResponse {
     page_hosts: Vec<String>,
     #[serde(rename = "serverBuild")]
     server_build: String,
+    /// Human-facing provider labels for every installed backend (so the panel
+    /// lists a provider even when it has 0 links). Populated only on `/sync`.
+    #[serde(rename = "providers")]
+    providers: Vec<String>,
     #[serde(rename = "newDetection", skip_serializing_if = "Option::is_none")]
     new_detection: Option<VideoListItem>,
     #[serde(rename = "vidQueued", skip_serializing_if = "Option::is_none")]
@@ -161,6 +165,7 @@ fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoList
         media_types: DEFAULT_MEDIA_TYPES.iter().map(|s| s.to_string()).collect(),
         page_hosts: Vec::new(),
         server_build: String::new(),
+        providers: Vec::new(),
         new_detection,
         vid_queued: None,
         quality_variants: None,
@@ -331,6 +336,7 @@ async fn sync(State(state): State<Arc<AppState>>) -> Json<SyncResponse> {
     let mut resp = default_sync_response(video_list(&state).await);
     resp.page_hosts = state.registry.page_hosts();
     resp.server_build = state.config.build_id.clone();
+    resp.providers = state.registry.provider_labels();
     Json(resp)
 }
 
