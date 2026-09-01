@@ -775,12 +775,19 @@
   setInterval(fetchAndRender, 2000);
 
   (async () => {
-    try {
-      const s = await window.__TAURI__.core.invoke("get_settings");
-      applyFont(s.font || "system");
-      window.I18N.applyLang(s.language || "en");
-    } catch (e) {
-      window.I18N.applyLang("en");
+    // This window is pre-created hidden at startup, so `get_settings`
+    // races AppState init and throws for the first moment. Retry until it
+    // lands instead of falling back to English/default font for good.
+    for (let i = 0; i < 100; i++) {
+      try {
+        const s = await window.__TAURI__.core.invoke("get_settings");
+        applyFont(s.font || "system");
+        window.I18N.applyLang(s.language || "en");
+        break;
+      } catch (e) {
+        if (i === 99) window.I18N.applyLang("en");
+        await new Promise(r => setTimeout(r, 150));
+      }
     }
     filterTypeDD._sync();
     fetchAndRender();
