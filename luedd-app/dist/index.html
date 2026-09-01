@@ -133,6 +133,33 @@
 
   .toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
 
+  /* search + filter row (mirrors the detection panel) */
+  .search-row { margin-bottom: 12px; flex-shrink: 0; }
+  .search-row .clr-wrap { position: relative; display: block; flex: none; min-width: 0; }
+  .search-row .clr-wrap > input { width: 100%; min-width: 0; padding-right: 56px; }
+  .search-row .clr-x { right: 32px; }
+  .search-row .clr-wrap.has-text .clr-x { display: block; }
+  .funnel { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); background: none;
+    border: 0; color: var(--dim); cursor: pointer; padding: 4px; border-radius: 5px; line-height: 0; }
+  .funnel svg { width: 15px; height: 15px; display: block; }
+  .funnel:hover { color: var(--text); background: var(--surface-2); }
+  .funnel.on { color: var(--accent); }
+  .funnel .fdot { position: absolute; top: 2px; right: 2px; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--accent); display: none; }
+  .funnel.active .fdot { display: block; }
+  .filter-drawer { display: none; margin-top: 9px; }
+  .filter-drawer.open { display: block; }
+  .fd-row { display: flex; gap: 10px; align-items: end; }
+  .fd-row + .fd-row { margin-top: 11px; }
+  .fd-fld { flex: 1 1 0; min-width: 0; display: block; }
+  .fd-lbl { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin-bottom: 5px; }
+  .fd-fld > input[type=text] { width: 100%; min-width: 0; flex: none; }
+  .filter-status { display: flex; align-items: center; gap: 6px; margin-top: 9px; font-size: 11px; color: var(--dim); }
+  .fs-reset { background: none; border: 0; color: var(--disc); cursor: pointer; margin-left: auto;
+    font-size: 11px; padding: 0; font-weight: 500; }
+  .fs-reset:hover { text-decoration: underline; }
+
   .id { font-family: var(--mono); font-size: 11px; color: var(--dim); }
   /* URL adapts to the space: the origin (scheme + host) and the tail (filename +
      type) always stay visible; only the middle path collapses to an ellipsis. */
@@ -346,6 +373,67 @@
       <button id="remove-selected-btn" class="danger" disabled data-i18n="remove_selected">Remove selected</button>
       <button id="retry-selected-btn" class="secondary" disabled data-i18n="retry_selected">Retry selected</button>
       <button id="clear-btn" class="danger" data-i18n="clear_finished">Clear finished</button>
+    </div>
+
+    <div class="search-row">
+      <span class="clr-wrap srch">
+        <input id="list-search" type="text" data-i18n-placeholder="search_ph" placeholder="Search downloads&hellip;" />
+        <button type="button" class="clr-x" id="list-search-clear" data-i18n-title="clear_field" title="Clear" aria-label="Clear">&times;</button>
+        <button type="button" class="funnel" id="list-filter-toggle" data-i18n-title="more_filters" title="Filters" aria-label="Filters">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path></svg>
+          <span class="fdot"></span>
+        </button>
+      </span>
+      <div class="filter-drawer" id="list-filter-drawer">
+        <div class="fd-row">
+          <div class="fd-fld"><span class="fd-lbl" data-i18n="f_status">Status</span>
+            <div class="dd" id="lf-status" data-value="all">
+              <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="f_all_status">All statuses</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+              <ul class="dd-list">
+                <li data-value="all" data-i18n="f_all_status">All statuses</li>
+                <li data-value="Downloading" data-i18n="status_Running">Running</li>
+                <li data-value="Queued" data-i18n="status_Queued">Queued</li>
+                <li data-value="Converting" data-i18n="status_Converting">Converting</li>
+                <li data-value="Finished" data-i18n="status_Finished">Finished</li>
+                <li data-value="Failed" data-i18n="status_Failed">Failed</li>
+                <li data-value="Paused" data-i18n="status_Paused">Paused</li>
+                <li data-value="Cancelled" data-i18n="status_Cancelled">Cancelled</li>
+              </ul>
+            </div>
+          </div>
+          <div class="fd-fld"><span class="fd-lbl" data-i18n="f_kind">Kind</span>
+            <div class="dd" id="lf-kind" data-value="all">
+              <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="f_all_kinds">All kinds</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+              <ul class="dd-list">
+                <li data-value="all" data-i18n="f_all_kinds">All kinds</li>
+                <li data-value="Http">HTTP</li>
+                <li data-value="Hls">HLS</li>
+                <li data-value="Dash">DASH</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="fd-row">
+          <div class="fd-fld"><span class="fd-lbl" data-i18n="f_provider">Provider</span>
+            <div class="dd" id="lf-provider" data-value="all">
+              <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="f_all_providers">All providers</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+              <ul class="dd-list">
+                <li data-value="all" data-i18n="f_all_providers">All providers</li>
+              </ul>
+            </div>
+          </div>
+          <label class="fd-fld"><span class="fd-lbl" data-i18n="f_hide">Hide</span>
+            <input id="list-filter-hide" type="text" data-i18n-placeholder="f_hide_ph" placeholder="e.g. .vtt, preview" />
+          </label>
+        </div>
+        <div class="filter-status" id="list-filter-status" style="display:none">
+          <span id="list-filter-count"></span>
+          <button type="button" class="fs-reset" id="list-filter-reset" data-i18n="f_reset">Reset filters</button>
+        </div>
+      </div>
     </div>
 
     <div class="table-wrap">
@@ -766,9 +854,14 @@ async function refresh() {
     if (!liveIds.has(id)) selected.delete(id);
   }
 
+  rebuildProviderFilterOptions(entries);
+  resyncFilterDDs();
+  const visible = entries.filter(entryMatchesFilter);
+  updateFilterUI(entries.length, visible.length);
+
   const rows = document.getElementById("rows");
   rows.innerHTML = "";
-  for (const e of entries) {
+  for (const e of visible) {
     const tr = document.createElement("tr");
     tr.className = "data-row";
     const isOpen = detailsOpen.has(e.id);
@@ -829,16 +922,17 @@ async function refresh() {
     });
   }
 
-  if (entries.length === 0) {
+  if (visible.length === 0) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="10" class="empty">${t("no_downloads")}</td>`;
+    const msg = entries.length === 0 ? t("no_downloads") : t("no_matches");
+    tr.innerHTML = `<td colspan="10" class="empty">${msg}</td>`;
     rows.appendChild(tr);
   }
 
   rows.querySelectorAll(".row-chk").forEach(chk => {
     chk.addEventListener("change", () => {
       if (chk.checked) selected.add(chk.dataset.id); else selected.delete(chk.dataset.id);
-      document.getElementById("select-all-chk").checked = selected.size > 0 && selected.size === entries.length;
+      document.getElementById("select-all-chk").checked = visible.length > 0 && visible.every(e => selected.has(e.id));
       updateBulkButtons();
     });
   });
@@ -909,7 +1003,7 @@ async function refresh() {
     });
   });
 
-  document.getElementById("select-all-chk").checked = entries.length > 0 && selected.size === entries.length;
+  document.getElementById("select-all-chk").checked = visible.length > 0 && visible.every(e => selected.has(e.id));
   updateBulkButtons();
   updateReadout(entries);
   lastEntries = entries;
@@ -1044,6 +1138,118 @@ function initDropdown(dd, onChange) {
 initDropdown(ddLang);
 initDropdown(ddFont, previewFont);
 document.addEventListener("click", () => document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open")));
+
+// ---- main-list search + filter (mirrors the detection panel) ----
+let lf = { search: "", status: "all", kind: "all", provider: "all", hide: "" };
+
+function providerOfEntry(e) { return providerLabel(e.backend_id); }
+
+function entryMatchesFilter(e) {
+  if (lf.status !== "all" && e.status !== lf.status) return false;
+  if (lf.kind !== "all" && e.kind !== lf.kind) return false;
+  if (lf.provider !== "all" && providerOfEntry(e) !== lf.provider) return false;
+  let site = ""; try { site = new URL(e.url).host; } catch {}
+  const hay = [e.id, e.url, e.dest, e.error, site, providerOfEntry(e)].filter(Boolean).join("\n").toLowerCase();
+  const terms = lf.search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.every(tm => hay.includes(tm))) return false;
+  const hideTerms = lf.hide.trim().toLowerCase().split(/[\s,]+/).filter(Boolean);
+  if (hideTerms.some(tm => hay.includes(tm))) return false;
+  return true;
+}
+
+function lfActive() {
+  return !!lf.search.trim() || lf.status !== "all" || lf.kind !== "all" || lf.provider !== "all" || !!lf.hide.trim();
+}
+
+function updateFilterUI(total, shown) {
+  document.getElementById("list-filter-toggle").classList.toggle("active", lfActive());
+  const bar = document.getElementById("list-filter-status");
+  if (lfActive() && total > 0) {
+    bar.style.display = "flex";
+    document.getElementById("list-filter-count").textContent = t("f_shown", { shown, hidden: total - shown });
+  } else {
+    bar.style.display = "none";
+  }
+}
+
+function syncFilterDD(dd, value, allLabel) {
+  const cur = dd.querySelector(".dd-cur");
+  dd.dataset.value = value;
+  let text = allLabel;
+  dd.querySelectorAll(".dd-list li").forEach(li => {
+    const on = li.dataset.value === value;
+    li.setAttribute("aria-selected", on ? "true" : "false");
+    if (on && li.dataset.value !== "all") text = li.textContent.trim();
+  });
+  cur.textContent = text;
+}
+
+function rebuildProviderFilterOptions(entries) {
+  const dd = document.getElementById("lf-provider");
+  const labels = [...new Set(entries.map(providerOfEntry))].sort();
+  const sig = labels.join("|");
+  if (dd._optSig !== sig) {
+    dd._optSig = sig;
+    dd.querySelector(".dd-list").innerHTML =
+      `<li data-value="all" data-i18n="f_all_providers">${t("f_all_providers")}</li>`
+      + labels.map(l => `<li data-value="${l.replace(/"/g, "&quot;")}">${l}</li>`).join("");
+  }
+  if (lf.provider !== "all" && !labels.includes(lf.provider)) lf.provider = "all";
+}
+
+function resyncFilterDDs() {
+  syncFilterDD(document.getElementById("lf-status"), lf.status, t("f_all_status"));
+  syncFilterDD(document.getElementById("lf-kind"), lf.kind, t("f_all_kinds"));
+  syncFilterDD(document.getElementById("lf-provider"), lf.provider, t("f_all_providers"));
+}
+
+function wireFilterDD(id, key, allLabel) {
+  const dd = document.getElementById(id);
+  dd.querySelector(".dd-btn").addEventListener("click", e => {
+    e.stopPropagation();
+    document.querySelectorAll(".dd.open").forEach(o => { if (o !== dd) o.classList.remove("open"); });
+    dd.classList.toggle("open");
+  });
+  dd.querySelector(".dd-list").addEventListener("click", e => {
+    const li = e.target.closest("li");
+    if (!li) return;
+    lf[key] = li.dataset.value;
+    dd.classList.remove("open");
+    syncFilterDD(dd, lf[key], allLabel());
+    refresh();
+  });
+}
+wireFilterDD("lf-status", "status", () => t("f_all_status"));
+wireFilterDD("lf-kind", "kind", () => t("f_all_kinds"));
+wireFilterDD("lf-provider", "provider", () => t("f_all_providers"));
+
+{
+  const si = document.getElementById("list-search");
+  const sw = si.closest(".clr-wrap");
+  const hi = document.getElementById("list-filter-hide");
+  let deb;
+  const debounced = () => { clearTimeout(deb); deb = setTimeout(refresh, 120); };
+  si.addEventListener("input", () => {
+    lf.search = si.value;
+    sw.classList.toggle("has-text", si.value.length > 0);
+    debounced();
+  });
+  hi.addEventListener("input", () => { lf.hide = hi.value; debounced(); });
+  document.getElementById("list-search-clear").addEventListener("click", () => {
+    si.value = ""; lf.search = ""; sw.classList.remove("has-text"); refresh();
+  });
+  document.getElementById("list-filter-toggle").addEventListener("click", e => {
+    e.stopPropagation();
+    const dr = document.getElementById("list-filter-drawer");
+    document.getElementById("list-filter-toggle").classList.toggle("on", dr.classList.toggle("open"));
+  });
+  document.getElementById("list-filter-reset").addEventListener("click", () => {
+    lf = { search: "", status: "all", kind: "all", provider: "all", hide: "" };
+    si.value = ""; hi.value = ""; sw.classList.remove("has-text");
+    resyncFilterDDs();
+    refresh();
+  });
+}
 
 function openSettings(settings) {
   document.getElementById("download-dir").value = settings.download_dir;
