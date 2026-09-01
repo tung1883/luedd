@@ -54,6 +54,12 @@ pub struct DownloadEntry {
     pub next_retry_at: Option<i64>,
     #[serde(default)]
     pub quality: Option<String>,
+    /// Inline thumbnail (data URL) carried over from the browser detection
+    /// panel, so the list can show a preview before a single byte is on disk.
+    #[serde(default)]
+    pub preview: Option<String>,
+    #[serde(default)]
+    pub preview_kind: Option<String>,
 }
 
 impl DownloadEntry {
@@ -72,7 +78,17 @@ impl DownloadEntry {
             retry_count: 0,
             next_retry_at: None,
             quality: None,
+            preview: None,
+            preview_kind: None,
         }
+    }
+
+    pub fn with_preview(mut self, preview: Option<(String, String)>) -> Self {
+        if let Some((data_url, kind)) = preview {
+            self.preview = Some(data_url);
+            self.preview_kind = Some(kind);
+        }
+        self
     }
 
     pub fn with_quality(mut self, quality: Option<String>) -> Self {

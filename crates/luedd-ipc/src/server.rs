@@ -309,7 +309,7 @@ async fn download(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncR
             return Json(default_sync_response(video_list(&state).await));
         }
     };
-    queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None).await;
+    let _ = queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None, None).await;
     Json(default_sync_response(video_list(&state).await))
 }
 
@@ -364,8 +364,56 @@ async fn vid(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespon
         };
         match found {
             Some(media) => {
-                let headers = flatten_headers(media.request_headers, media.user_agent);
-                queue_url(&state, media.url, None, media.page_title, headers, media.cookie, req.quality).await;
+                let flat_headers = flatten_headers(media.request_headers.clone(), media.user_agent.clone());
+                let cached = state
+                    .preview_cache
+                    .lock()
+                    .await
+                    .get(&media.url)
+                    .cloned()
+                    .flatten()
+                    .map(|(data_url, kind)| (data_url, kind.to_string()));
+                let had_preview = cached.is_some();
+                let entry_id = queue_url(
+                    &state,
+                    media.url.clone(),
+                    None,
+                    media.page_title.clone(),
+                    flat_headers,
+                    media.cookie.clone(),
+                    req.quality,
+                    cached,
+                )
+                .await;
+
+                // Nothing cached yet (the panel row was never scrolled into
+                // view): generate the thumbnail in the background and attach it
+                // to the entry, so the list still gets a preview before the
+                // file lands on disk.
+                if !had_preview {
+                    if let Some(entry_id) = entry_id {
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            let ctx = preview_ctx_for(&media);
+                            let client = state.manager.http_client();
+                            if let Some((data_url, kind)) = build_preview(&state, &client, &media.url, &ctx).await {
+                                state
+                                    .preview_cache
+                                    .lock()
+                                    .await
+                                    .insert(media.url.clone(), Some((data_url.clone(), kind)));
+                                state
+                                    .store
+                                    .update_entry(&entry_id, |e| {
+                                        e.preview = Some(data_url);
+                                        e.preview_kind = Some(kind.to_string());
+                                    })
+                                    .await
+                                    .ok();
+                            }
+                        });
+                    }
+                }
                 Some(true)
             }
             None => {
@@ -480,11 +528,23 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
     }
 
     let client = state.manager.http_client();
-    let mut headers = flatten_headers(media.request_headers, media.user_agent);
-    // Firefox's webRequest can't expose Referer/User-Agent (no `extraHeaders`),
-    // and private windows hide cookies - so the captured headers are often bare.
-    // Media hosts behind Cloudflare then reject the fetch. Backfill a plausible
-    // Referer from the page the media was detected on, and a browser UA.
+    let ctx = preview_ctx_for(&media);
+
+    let result = build_preview(&state, &client, &media.url, &ctx).await;
+    if result.is_none() {
+        tracing::warn!(url = %media.url, "no preview available");
+    }
+    state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
+    Json(preview_response(video_list(&state).await, result))
+}
+
+/// Build a request context for fetching a detection's media/preview. Firefox's
+/// webRequest can't expose Referer/User-Agent (no `extraHeaders`), and private
+/// windows hide cookies - so the captured headers are often bare and hosts
+/// behind Cloudflare reject the fetch. Backfill a plausible Referer from the
+/// page the media was detected on, and a browser UA.
+fn preview_ctx_for(media: &DetectedMedia) -> RequestContext {
+    let mut headers = flatten_headers(media.request_headers.clone(), media.user_agent.clone());
     if !headers.keys().any(|k| k.eq_ignore_ascii_case("referer")) {
         if let Some(page) = media.page_url.as_deref().or(media.tab_url.as_deref()) {
             let referer = page
@@ -497,14 +557,7 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
     if !headers.keys().any(|k| k.eq_ignore_ascii_case("user-agent")) {
         headers.insert("User-Agent".to_string(), FALLBACK_UA.to_string());
     }
-    let ctx = RequestContext { headers, cookie: media.cookie };
-
-    let result = build_preview(&state, &client, &media.url, &ctx).await;
-    if result.is_none() {
-        tracing::warn!(url = %media.url, "no preview available");
-    }
-    state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
-    Json(preview_response(video_list(&state).await, result))
+    RequestContext { headers, cookie: media.cookie.clone() }
 }
 
 fn preview_response(video_list: Vec<VideoListItem>, preview: Option<Preview>) -> SyncResponse {
@@ -847,7 +900,8 @@ async fn queue_url(
     headers: HashMap<String, String>,
     cookie: Option<String>,
     quality: Option<String>,
-) {
+    preview: Option<(String, String)>,
+) -> Option<String> {
     let guessed_kind = DownloadKind::guess_from_url(&url);
 
     let detected_ext = if matches!(guessed_kind, DownloadKind::Http) {
@@ -874,19 +928,24 @@ async fn queue_url(
     let dest = luedd_core::jobs::sanitize_dest_for_kind(&dest, kind);
 
     tracing::info!(%url, dest = %dest.display(), ?kind, "queued download from browser extension");
-    let entry = DownloadEntry::new(url, dest, kind).with_request_context(headers, cookie).with_quality(quality);
+    let entry = DownloadEntry::new(url, dest, kind)
+        .with_request_context(headers, cookie)
+        .with_quality(quality)
+        .with_preview(preview);
     let id = entry.id.clone();
     if let Err(e) = state.store.add_entry(entry).await {
         tracing::warn!(error = %e, "failed to persist download entry from extension");
-        return;
+        return None;
     }
 
     let manager = state.manager.clone();
+    let spawn_id = id.clone();
     tokio::spawn(async move {
-        if let Err(e) = manager.run_entry_now(&id).await {
-            tracing::warn!(error = %e, %id, "immediate run of extension-queued download failed to start");
+        if let Err(e) = manager.run_entry_now(&spawn_id).await {
+            tracing::warn!(error = %e, id = %spawn_id, "immediate run of extension-queued download failed to start");
         }
     });
+    Some(id)
 }
 
 fn flatten_headers(headers: HashMap<String, Vec<String>>, user_agent: Option<String>) -> HashMap<String, String> {

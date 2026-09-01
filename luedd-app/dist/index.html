@@ -418,7 +418,11 @@ async function loadDetailPreview(detailsTr) {
   if (!box || box.dataset.done) return;
   box.dataset.done = "1";
   const id = box.dataset.id;
-  let url = detailPreview.get(id);
+  // Prefer the thumbnail carried over from the browser detection panel - it's
+  // available immediately, before a single byte is on disk. Fall back to a
+  // frame decoded from the (partial) local file.
+  const ent = lastEntries.find(x => x.id === id);
+  let url = (ent && ent.preview) ? ent.preview : detailPreview.get(id);
   if (url === undefined) {
     try { url = (await invoke("read_preview", { path: box.dataset.dest })).data_url; }
     catch { url = null; }
