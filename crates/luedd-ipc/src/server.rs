@@ -44,6 +44,9 @@ struct DetectedMedia {
     /// A page-URL detection (a yt-dlp watch page). Its URL has no media
     /// extension, so the panel's type filter must be told it's a video.
     is_page: bool,
+    /// Human provider name ("Lüdd", "yt-dlp", …) — a cheap guess made when the
+    /// detection is recorded, for the panel's group-by / filter-by-provider.
+    provider: String,
 }
 
 /// A generated thumbnail plus how the client should render it.
@@ -117,6 +120,8 @@ pub struct VideoListItem {
     /// detections); `None` = let the client infer it from the URL.
     #[serde(rename = "kind", skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
+    #[serde(rename = "provider")]
+    provider: String,
 }
 
 const DEFAULT_MEDIA_EXTS: &[&str] = &[
@@ -253,6 +258,7 @@ pub async fn serve(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn to_video_list_item(
     id: &str,
     url: &str,
@@ -261,6 +267,7 @@ fn to_video_list_item(
     page_url: Option<&str>,
     is_image: bool,
     is_page: bool,
+    provider: &str,
 ) -> VideoListItem {
     let text = tab_url.or(page_title).unwrap_or(url).to_string();
     let info = luedd_core::naming::suggest_filename(page_title, url, None);
@@ -272,6 +279,7 @@ fn to_video_list_item(
         page_url: page_url.map(str::to_string),
         is_image,
         kind: is_page.then(|| "video".to_string()),
+        provider: provider.to_string(),
     }
 }
 
@@ -313,6 +321,7 @@ async fn video_list(state: &AppState) -> Vec<VideoListItem> {
                 m.page_url.as_deref(),
                 m.is_image,
                 m.is_page,
+                &m.provider,
             )
         })
         .collect()
@@ -341,12 +350,22 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
     }
     let mut new_item = None;
     if let Ok(req) = serde_json::from_slice::<PageRequest>(&body) {
+        let cfg = state.config.settings.get().await.backends;
+        let provider = luedd_core::backend::provider_label(state.registry.quick_id(&req.url, &cfg)).to_string();
         let mut detected = state.detected.lock().await;
         if !detected.iter().any(|m| m.url == req.url) {
             let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
-            tracing::info!(url = %req.url, %id, "page detection from browser extension");
-            let item =
-                to_video_list_item(&id, &req.url, Some(&req.url), req.title.as_deref(), Some(&req.url), false, true);
+            tracing::info!(url = %req.url, %id, provider = %provider, "page detection from browser extension");
+            let item = to_video_list_item(
+                &id,
+                &req.url,
+                Some(&req.url),
+                req.title.as_deref(),
+                Some(&req.url),
+                false,
+                true,
+                &provider,
+            );
             if let Some(tx) = &state.config.on_new_detection {
                 let _ = tx.send(item.clone());
             }
@@ -362,6 +381,7 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
                 user_agent: None,
                 is_image: false,
                 is_page: true,
+                provider,
             });
         }
     } else {
@@ -400,6 +420,8 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
     let mut new_item = None;
     match serde_json::from_slice::<MediaRequest>(&body) {
         Ok(req) => {
+            let cfg = state.config.settings.get().await.backends;
+            let provider = luedd_core::backend::provider_label(state.registry.quick_id(&req.url, &cfg)).to_string();
             let mut detected = state.detected.lock().await;
             if !detected.iter().any(|m| m.url == req.url) {
                 let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
@@ -413,6 +435,7 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
                     req.tab_url.as_deref(),
                     is_image,
                     false,
+                    &provider,
                 ));
                 if let Some(item) = &new_item {
                     if let Some(tx) = &state.config.on_new_detection {
@@ -430,6 +453,7 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
                     user_agent: req.user_agent,
                     is_image,
                     is_page: false,
+                    provider,
                 });
             }
         }
@@ -1106,6 +1130,7 @@ mod tests {
             Some("https://site.example/watch?v=1"),
             false,
             false,
+            "Lüdd",
         );
         assert_eq!(item.info, "My Cool Video.mp4");
         assert_eq!(item.url, "https://cdn.example/abc123.mp4?token=secret");
@@ -1114,7 +1139,7 @@ mod tests {
 
     #[test]
     fn video_list_item_falls_back_to_url_derived_name_without_a_title() {
-        let item = to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None, false, false);
+        let item = to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None, false, false, "Lüdd");
         assert_eq!(item.info, "movie.mkv");
         assert_eq!(item.page_url, None);
     }

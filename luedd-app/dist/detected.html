@@ -58,6 +58,7 @@
   .filter-drawer { display: none; margin-top: 8px; }
   .filter-drawer.open { display: block; }
   .fd-row { display: flex; gap: 8px; align-items: end; }
+  .fd-row + .fd-row { margin-top: 11px; }
   .fd-fld { flex: 1 1 0; min-width: 0; display: block; }
   .fd-lbl { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin-bottom: 4px; }
   .fd-fld input[type=text] { padding: 7px 9px; }
@@ -79,6 +80,10 @@
   .dd-list li:hover { background: var(--surface-2); }
   .dd-list li[aria-selected="true"] { color: var(--accent); }
   .dd-list li[aria-selected="true"]::after { content: "\2713"; font-size: 11px; }
+  /* provider rows carry a count on the right - drop the tick so it doesn't crowd the number */
+  #filter-provider .dd-list li[aria-selected="true"]::after { content: none; }
+  #filter-provider .dd-list li span { color: var(--dim); font-variant-numeric: tabular-nums; }
+  #filter-provider .dd-list li[aria-selected="true"] span { color: var(--disc); }
   .filter-status { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 11px; color: var(--dim); }
   .fs-reset { background: none; border: 0; color: var(--disc); cursor: pointer; margin-left: auto; font-size: 11px; padding: 0; }
   .fs-reset:hover { text-decoration: underline; }
@@ -88,6 +93,14 @@
   input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
   #list { flex: 1; overflow-y: auto; }
   .empty { padding: 24px; color: var(--dim); font-size: 13px; text-align: center; }
+  /* provider group header — dropped by renderList when only one provider is present */
+  .ghdr { display: flex; align-items: center; gap: 8px; padding: 8px 13px 7px;
+    border-bottom: 1px solid var(--line); cursor: pointer; user-select: none;
+    background: var(--surface-2); }
+  .ghdr:hover { color: var(--text); }
+  .ghdr .gcaret { color: var(--dim); font-size: 9px; width: 8px; }
+  .ghdr .gname { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim); font-weight: 600; }
+  .ghdr .gcount { margin-left: auto; font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; }
   .row { display: grid; grid-template-columns: 14px 74px minmax(0,1fr) auto; gap: 10px;
     padding: 9px 12px 9px 10px; border-bottom: 1px solid var(--line); border-left: 2px solid transparent;
     align-items: center; }
@@ -163,6 +176,15 @@
             </ul>
           </div>
         </div>
+        <div class="fd-fld"><span class="fd-lbl" data-i18n="f_provider">Provider</span>
+          <div class="dd" id="filter-provider" data-value="all">
+            <button type="button" class="dd-btn"><span class="dd-cur" data-i18n="f_all_providers">All providers</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+            <ul class="dd-list"></ul>
+          </div>
+        </div>
+      </div>
+      <div class="fd-row">
         <label class="fd-fld"><span class="fd-lbl" data-i18n="f_hide">Hide</span>
           <input id="filter-hide" type="text" data-i18n-placeholder="f_hide_ph" placeholder="e.g. ytimg, .vtt" />
         </label>
@@ -352,6 +374,7 @@
         lastRenderedSignature = null;
       }
       document.getElementById("count").innerText = allItems.length > 0 ? `(${allItems.length})` : "";
+      rebuildProviderOptions();
       applyFilter(document.getElementById("search-input").value);
     } while (refetchQueued);
     fetchInFlight = false;
@@ -372,21 +395,28 @@
     return "other";
   }
 
+  // The backend puts every detection through a provider ("Lüdd" is the built-in
+  // HTTP/HLS/DASH engine; the rest are plugins). Older servers omit it.
+  function providerOf(item) { return item.provider || "Lüdd"; }
+
   function filterActive() {
     const type = document.getElementById("filter-type").dataset.value;
+    const prov = document.getElementById("filter-provider").dataset.value;
     const hide = document.getElementById("filter-hide").value.trim();
-    return type !== "all" || hide.length > 0;
+    return type !== "all" || prov !== "all" || hide.length > 0;
   }
 
   function applyFilter(query) {
     const terms = (query || "").trim().toLowerCase().split(/\s+/).filter(t => t);
     const type = document.getElementById("filter-type").dataset.value;
+    const prov = document.getElementById("filter-provider").dataset.value;
     const hideTerms = document.getElementById("filter-hide").value.trim().toLowerCase().split(/[\s,]+/).filter(t => t);
 
     const items = allItems.filter(item => {
       const haystack = [item.text, item.info, item.url, item.pageUrl].filter(Boolean).join("\n").toLowerCase();
       if (!terms.every(term => haystack.includes(term))) return false;
       if (hideTerms.some(term => haystack.includes(term))) return false;
+      if (prov !== "all" && providerOf(item) !== prov) return false;
       if (type !== "all") {
         const k = itemKind(item);
         if (type === "video") { if (k !== "video" && k !== "hls" && k !== "dash") return false; }
@@ -554,9 +584,13 @@
   // existing rows get kept in the right order without rebuilding them.
   const rowElements = new Map();
   let emptyEl = null;
+  // Providers whose group the user has collapsed. Order groups appear in.
+  const collapsedProviders = new Set();
+  const PROVIDER_ORDER = ["Lüdd"];
 
   function renderList(items) {
     const list = document.getElementById("list");
+    list.querySelectorAll(".ghdr").forEach(h => h.remove());
 
     if (items.length === 0) {
       rowElements.forEach(el => el.remove());
@@ -569,30 +603,54 @@
       emptyEl.innerText = allItems.length === 0 ? L("nothing_detected") : L("no_matches");
       return;
     }
+    if (emptyEl) { emptyEl.remove(); emptyEl = null; }
 
-    if (emptyEl) {
-      emptyEl.remove();
-      emptyEl = null;
+    // group, preserving first-seen order (Lüdd sorts first)
+    const groups = new Map();
+    for (const item of items) {
+      const p = providerOf(item);
+      if (!groups.has(p)) groups.set(p, []);
+      groups.get(p).push(item);
     }
-
-    const newIds = new Set(items.map(item => item.id));
-    for (const [id, el] of rowElements) {
-      if (!newIds.has(id)) {
-        el.remove();
-        rowElements.delete(id);
-      }
-    }
-
-    items.forEach(item => {
-      const existing = rowElements.get(item.id);
-      if (existing) {
-        list.appendChild(existing); // already correct content - just keep order in sync
-        return;
-      }
-      const row = buildRow(item);
-      rowElements.set(item.id, row);
-      list.appendChild(row);
+    const providers = [...groups.keys()].sort((a, b) => {
+      const ia = PROVIDER_ORDER.indexOf(a), ib = PROVIDER_ORDER.indexOf(b);
+      if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      return a.localeCompare(b);
     });
+    const showHeaders = providers.length > 1;
+
+    // rows no longer present anywhere
+    const visibleIds = new Set();
+    for (const p of providers) {
+      if (showHeaders && collapsedProviders.has(p)) continue;
+      for (const it of groups.get(p)) visibleIds.add(it.id);
+    }
+    for (const [id, el] of rowElements) {
+      if (!visibleIds.has(id)) { el.remove(); rowElements.delete(id); }
+    }
+
+    for (const p of providers) {
+      if (showHeaders) {
+        const collapsed = collapsedProviders.has(p);
+        const h = document.createElement("div");
+        h.className = "ghdr";
+        h.innerHTML = `<span class="gcaret">${collapsed ? "▸" : "▾"}</span>`
+          + `<span class="gname"></span><span class="gcount">${groups.get(p).length}</span>`;
+        h.querySelector(".gname").textContent = p;
+        h.addEventListener("click", () => {
+          if (collapsedProviders.has(p)) collapsedProviders.delete(p);
+          else collapsedProviders.add(p);
+          renderList(items);
+        });
+        list.appendChild(h);
+        if (collapsed) continue;
+      }
+      for (const item of groups.get(p)) {
+        let row = rowElements.get(item.id);
+        if (!row) { row = buildRow(item); rowElements.set(item.id, row); }
+        list.appendChild(row);
+      }
+    }
   }
 
   function hostOf(u) { try { return new URL(u).host; } catch { return ""; } }
@@ -738,6 +796,59 @@
   const filterTypeDD = document.getElementById("filter-type");
   initDropdown(filterTypeDD, reapplyFilter);
 
+  // Provider dropdown: options are data-driven (whatever backends are actually
+  // present), so it can't use the static-<li> initDropdown. Delegated clicks.
+  const filterProviderDD = document.getElementById("filter-provider");
+  {
+    const btn = filterProviderDD.querySelector(".dd-btn");
+    const listEl = filterProviderDD.querySelector(".dd-list");
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      document.querySelectorAll(".dd.open").forEach(o => { if (o !== filterProviderDD) o.classList.remove("open"); });
+      filterProviderDD.classList.toggle("open");
+    });
+    listEl.addEventListener("click", e => {
+      const li = e.target.closest("li");
+      if (!li) return;
+      filterProviderDD.dataset.value = li.dataset.value;
+      filterProviderDD.classList.remove("open");
+      syncProviderDD();
+      reapplyFilter();
+    });
+  }
+  function syncProviderDD() {
+    const v = filterProviderDD.dataset.value;
+    const cur = filterProviderDD.querySelector(".dd-cur");
+    let matched = false;
+    filterProviderDD.querySelectorAll(".dd-list li").forEach(li => {
+      const on = li.dataset.value === v;
+      li.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) { cur.textContent = li.dataset.value === "all" ? L("f_all_providers") : li.dataset.value; matched = true; }
+    });
+    if (!matched) { filterProviderDD.dataset.value = "all"; cur.textContent = L("f_all_providers"); }
+  }
+  function rebuildProviderOptions() {
+    const counts = new Map();
+    for (const it of allItems) {
+      const p = providerOf(it);
+      counts.set(p, (counts.get(p) || 0) + 1);
+    }
+    const provs = [...counts.keys()].sort((a, b) => {
+      const ia = PROVIDER_ORDER.indexOf(a), ib = PROVIDER_ORDER.indexOf(b);
+      if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      return a.localeCompare(b);
+    });
+    const listEl = filterProviderDD.querySelector(".dd-list");
+    const row = (val, label, n) =>
+      `<li data-value="${val.replace(/"/g, "&quot;")}">${label}<span>${n}</span></li>`;
+    listEl.innerHTML = row("all", L("f_all_providers"), allItems.length)
+      + provs.map(p => row(p, p, counts.get(p))).join("");
+    if (filterProviderDD.dataset.value !== "all" && !counts.has(filterProviderDD.dataset.value)) {
+      filterProviderDD.dataset.value = "all";
+    }
+    syncProviderDD();
+  }
+
   {
     const drawer = document.getElementById("filter-drawer");
     const toggle = document.getElementById("filter-toggle");
@@ -749,6 +860,8 @@
     document.getElementById("filter-reset").addEventListener("click", () => {
       filterTypeDD.dataset.value = "all";
       filterTypeDD._sync();
+      filterProviderDD.dataset.value = "all";
+      syncProviderDD();
       document.getElementById("filter-hide").value = "";
       reapplyFilter();
     });

@@ -117,6 +117,19 @@ pub fn kind_for_backend_id(id: &str) -> DownloadKind {
     }
 }
 
+/// Human-facing provider name. The three transport built-ins are all just
+/// "Lüdd" (the engine); plugins show a friendly name.
+pub fn provider_label(backend_id: &str) -> &str {
+    match backend_id {
+        "http" | "hls" | "dash" => "Lüdd",
+        "ytdlp" => "yt-dlp",
+        "instagram" => "Instagram",
+        "instaloader" => "instaloader",
+        "torrent" => "torrent",
+        other => other,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -150,6 +163,26 @@ impl BackendRegistry {
     /// The `http` backend, which is always registered and is the fallback.
     pub fn http(&self) -> Arc<dyn DownloadBackend> {
         self.get("http").expect("http backend is always registered")
+    }
+
+    /// Cheap, synchronous backend guess for display/grouping (no network sniff):
+    /// host-routing override, then the best `can_handle(url, None)`, then `http`.
+    pub fn quick_id(&self, url: &str, cfg: &BackendConfig) -> &'static str {
+        if let Some(host) = host_of(url) {
+            if let Some(route) = cfg.host_routing.iter().find(|r| host_matches(&host, &r.host_suffix)) {
+                if let Some(b) = self.get(&route.backend_id) {
+                    return b.id();
+                }
+            }
+        }
+        let mut best: Option<(Confidence, &'static str)> = None;
+        for b in &self.backends {
+            let c = b.can_handle(url, None);
+            if best.as_ref().map_or(true, |(bc, _)| c > *bc) {
+                best = Some((c, b.id()));
+            }
+        }
+        best.map(|(_, id)| id).unwrap_or("http")
     }
 
     /// Union of every backend's [`DownloadBackend::page_hosts`], deduped. Sent

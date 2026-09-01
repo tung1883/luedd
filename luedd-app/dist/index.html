@@ -656,6 +656,12 @@ function kindLabel(kind) {
   return KIND_LABELS[kind] ?? kind;
 }
 
+// The backend that fetched a download. http/hls/dash are all the built-in engine.
+const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Instagram", instaloader: "instaloader", torrent: "torrent" };
+function providerLabel(id) {
+  return PROVIDER_LABELS[id] ?? id ?? "Lüdd";
+}
+
 const STATUS_LABELS = { Downloading: "Running" };
 function statusLabel(status) {
   return t("status_" + (STATUS_LABELS[status] ?? status));
@@ -785,6 +791,7 @@ async function refresh() {
         <div class="detgrid">
           <div></div>
           <dl class="df">
+            <dt>${t("d_provider")}</dt><dd>${providerLabel(e.backend_id)}</dd>
             <dt>${t("d_site")}</dt><dd>${site}</dd>
             <dt>${t("d_full_link")}</dt><dd class="selectable">${e.url}</dd>
             <dt>${t("d_saving_to")}</dt><dd class="selectable">${e.dest}</dd>

@@ -51,7 +51,7 @@
       open_folder: "Open folder", remove: "Remove", remux: "remux",
 
       full_size: "Full size",
-      d_site: "Site", d_full_link: "Full link", d_saving_to: "Saving to",
+      d_provider: "Provider", d_site: "Site", d_full_link: "Full link", d_saving_to: "Saving to",
       d_headers: "Headers captured", d_cookie: "Cookie captured", d_added: "Added",
       val_none: "none", val_yes: "yes", val_no: "no", val_unknown: "(unknown)",
 
@@ -62,6 +62,7 @@
       filter_ph: "Filter by name or site…",
       more_filters: "More filters",
       f_type: "Type", f_all: "All types", f_video: "Video", f_image: "Image", f_audio: "Audio", f_doc: "Document",
+      f_provider: "Provider", f_all_providers: "All providers",
       f_hide: "Hide", f_hide_ph: "e.g. ytimg, .vtt",
       f_reset: "Reset filters", f_shown: "{shown} shown · {hidden} hidden",
       clear_items: "Clear items",
@@ -121,7 +122,7 @@
       open_folder: "Ordner öffnen", remove: "Entfernen", remux: "Remux",
 
       full_size: "Vollansicht",
-      d_site: "Seite", d_full_link: "Vollständiger Link", d_saving_to: "Speicherort",
+      d_provider: "Anbieter", d_site: "Seite", d_full_link: "Vollständiger Link", d_saving_to: "Speicherort",
       d_headers: "Erfasste Header", d_cookie: "Erfasstes Cookie", d_added: "Hinzugefügt",
       val_none: "keine", val_yes: "ja", val_no: "nein", val_unknown: "(unbekannt)",
 
@@ -131,6 +132,7 @@
       filter_ph: "Nach Name oder Seite filtern…",
       more_filters: "Weitere Filter",
       f_type: "Typ", f_all: "Alle Typen", f_video: "Video", f_image: "Bild", f_audio: "Audio", f_doc: "Dokument",
+      f_provider: "Anbieter", f_all_providers: "Alle Anbieter",
       f_hide: "Ausblenden", f_hide_ph: "z. B. ytimg, .vtt",
       f_reset: "Filter zurücksetzen", f_shown: "{shown} sichtbar · {hidden} ausgeblendet",
       clear_items: "Einträge löschen",
