@@ -228,7 +228,7 @@
   .detgrid .df { display: grid; grid-template-columns: max-content 1fr; gap: 7px 14px; align-items: baseline; min-width: 0; }
   .detgrid .df dt { color: var(--dim); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; }
   .detgrid .df dd { margin: 0; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .detgrid .df dd.selectable { font-family: var(--mono); font-size: 11px; color: var(--disc); word-break: break-all; white-space: normal; user-select: text; }
+  .detgrid .df dd.selectable { font-family: var(--mono); font-size: 11px; color: var(--disc); overflow-wrap: anywhere; word-break: normal; white-space: normal; user-select: text; }
   .det-preview { width: 200px; align-self: start; }
   .det-thumb { width: 200px; height: 112px; border-radius: 6px; border: 1px solid var(--line); overflow: hidden;
     background: linear-gradient(135deg,#2a2d34,#12303b); display: flex; align-items: center; justify-content: center;
@@ -632,12 +632,17 @@ function splitUrl(u) {
     const url = new URL(u);
     const path = url.pathname || "/";
     const slash = path.lastIndexOf("/");
-    return { origin: url.origin, mid: path.slice(0, slash + 1), tail: path.slice(slash + 1) };
+    let mid = path.slice(0, slash + 1);
+    let tail = path.slice(slash + 1) + (url.search || "");
+    if (mid === "/") { tail = "/" + tail; mid = ""; }
+    return { origin: url.origin, mid, tail };
   } catch {
-    const base = (u.split("?")[0]) || u;
-    const slash = base.lastIndexOf("/");
-    if (slash === -1) return { origin: "", mid: "", tail: base };
-    return { origin: "", mid: base.slice(0, slash + 1), tail: base.slice(slash + 1) };
+    const slash = u.lastIndexOf("/");
+    if (slash === -1) return { origin: "", mid: "", tail: u };
+    let mid = u.slice(0, slash + 1);
+    let tail = u.slice(slash + 1);
+    if (mid === "/" || /^[a-z]+:\/\/$/i.test(mid)) { tail = mid + tail; mid = ""; }
+    return { origin: "", mid, tail };
   }
 }
 
@@ -758,7 +763,7 @@ async function refresh() {
       <td class="status-${e.status} status-col">${statusLabel(e.status)}</td>
       <td class="progress-col">${formatProgress(e)}</td>
       <td class="speed-text speed-col">${formatSpeed(e)}</td>
-      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;${t("dbl_copy")}">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span><span class="u-mid">${s.mid}</span><span class="u-tail">${s.tail}</span></span>`; })()}</td>
+      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;${t("dbl_copy")}">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span>${s.mid ? `<span class="u-mid">${s.mid}</span>` : ""}<span class="u-tail">${s.tail}</span></span>`; })()}</td>
       <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n" + t("dbl_copy") : ""}">${e.error ?? ""}</td>
       <td class="actions-col"><div class="actions">
         ${primaryActionBtn(e)}

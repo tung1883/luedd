@@ -19,6 +19,9 @@ use luedd_net::{HttpClient, RequestContext};
 
 pub struct ServerConfig {
     pub settings: Arc<SettingsStore>,
+    /// Opaque build marker surfaced on `/sync` so you can tell which binary a
+    /// running instance is (helps catch "the fix didn't take" = stale process).
+    pub build_id: String,
     pub on_new_detection: Option<tokio::sync::mpsc::UnboundedSender<VideoListItem>>,
     /// Fired when a second app instance pings `/focus-main` asking the running
     /// instance to surface its main window.
@@ -38,6 +41,9 @@ struct DetectedMedia {
     /// Whether this detection is an image (from the response Content-Type the
     /// extension captured, or the URL extension). Drives the inline thumbnail.
     is_image: bool,
+    /// A page-URL detection (a yt-dlp watch page). Its URL has no media
+    /// extension, so the panel's type filter must be told it's a video.
+    is_page: bool,
 }
 
 /// A generated thumbnail plus how the client should render it.
@@ -46,6 +52,7 @@ type Preview = (String, &'static str); // (data URL, kind: "image" | "video" | "
 struct AppState {
     store: Arc<DownloadStore>,
     manager: Arc<DownloadManager>,
+    registry: Arc<luedd_core::backend::BackendRegistry>,
     config: ServerConfig,
     detected: Mutex<Vec<DetectedMedia>>,
     next_id: AtomicU64,
@@ -78,6 +85,12 @@ struct SyncResponse {
     matching_hosts: Vec<String>,
     #[serde(rename = "mediaTypes")]
     media_types: Vec<String>,
+    /// Hosts whose *page* URL the extension should offer as a detection
+    /// (yt-dlp watch pages etc). Populated only on `/sync`.
+    #[serde(rename = "pageHosts")]
+    page_hosts: Vec<String>,
+    #[serde(rename = "serverBuild")]
+    server_build: String,
     #[serde(rename = "newDetection", skip_serializing_if = "Option::is_none")]
     new_detection: Option<VideoListItem>,
     #[serde(rename = "vidQueued", skip_serializing_if = "Option::is_none")]
@@ -100,6 +113,10 @@ pub struct VideoListItem {
     page_url: Option<String>,
     #[serde(rename = "isImage")]
     is_image: bool,
+    /// Coarse media kind for the panel's type filter ("video" for page
+    /// detections); `None` = let the client infer it from the URL.
+    #[serde(rename = "kind", skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
 }
 
 const DEFAULT_MEDIA_EXTS: &[&str] = &[
@@ -137,6 +154,8 @@ fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoList
         request_file_exts: DEFAULT_MEDIA_EXTS.iter().map(|s| s.to_string()).collect(),
         matching_hosts: Vec::new(),
         media_types: DEFAULT_MEDIA_TYPES.iter().map(|s| s.to_string()).collect(),
+        page_hosts: Vec::new(),
+        server_build: String::new(),
         new_detection,
         vid_queued: None,
         quality_variants: None,
@@ -194,12 +213,14 @@ struct ProbeQualityRequest {
 pub async fn serve(
     store: Arc<DownloadStore>,
     manager: Arc<DownloadManager>,
+    registry: Arc<luedd_core::backend::BackendRegistry>,
     config: ServerConfig,
     listener: std::net::TcpListener,
 ) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         store,
         manager,
+        registry,
         config,
         detected: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
@@ -214,6 +235,7 @@ pub async fn serve(
         .route("/sync", get(sync))
         .route("/download", post(download))
         .route("/media", post(media))
+        .route("/page", post(page))
         .route("/tab-update", post(ignored))
         .route("/vid", post(vid))
         .route("/probe-quality", post(probe_quality))
@@ -238,6 +260,7 @@ fn to_video_list_item(
     page_title: Option<&str>,
     page_url: Option<&str>,
     is_image: bool,
+    is_page: bool,
 ) -> VideoListItem {
     let text = tab_url.or(page_title).unwrap_or(url).to_string();
     let info = luedd_core::naming::suggest_filename(page_title, url, None);
@@ -248,6 +271,7 @@ fn to_video_list_item(
         url: url.to_string(),
         page_url: page_url.map(str::to_string),
         is_image,
+        kind: is_page.then(|| "video".to_string()),
     }
 }
 
@@ -281,13 +305,69 @@ async fn video_list(state: &AppState) -> Vec<VideoListItem> {
         .await
         .iter()
         .map(|m| {
-            to_video_list_item(&m.id, &m.url, m.tab_url.as_deref(), m.page_title.as_deref(), m.page_url.as_deref(), m.is_image)
+            to_video_list_item(
+                &m.id,
+                &m.url,
+                m.tab_url.as_deref(),
+                m.page_title.as_deref(),
+                m.page_url.as_deref(),
+                m.is_image,
+                m.is_page,
+            )
         })
         .collect()
 }
 
 async fn sync(State(state): State<Arc<AppState>>) -> Json<SyncResponse> {
-    Json(default_sync_response(video_list(&state).await))
+    let mut resp = default_sync_response(video_list(&state).await);
+    resp.page_hosts = state.registry.page_hosts();
+    resp.server_build = state.config.build_id.clone();
+    Json(resp)
+}
+
+#[derive(Debug, Deserialize)]
+struct PageRequest {
+    url: String,
+    title: Option<String>,
+    cookie: Option<String>,
+}
+
+/// The extension saw the user land on a page whose host a backend claims
+/// (a yt-dlp watch page, an Instagram post…). Record it as a detection so it
+/// shows in the panel; `/vid` then routes it to the right backend.
+async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResponse> {
+    if !MONITORING.load(Ordering::Relaxed) {
+        return Json(default_sync_response(video_list(&state).await));
+    }
+    let mut new_item = None;
+    if let Ok(req) = serde_json::from_slice::<PageRequest>(&body) {
+        let mut detected = state.detected.lock().await;
+        if !detected.iter().any(|m| m.url == req.url) {
+            let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+            tracing::info!(url = %req.url, %id, "page detection from browser extension");
+            let item =
+                to_video_list_item(&id, &req.url, Some(&req.url), req.title.as_deref(), Some(&req.url), false, true);
+            if let Some(tx) = &state.config.on_new_detection {
+                let _ = tx.send(item.clone());
+            }
+            new_item = Some(item);
+            detected.push(DetectedMedia {
+                id,
+                url: req.url.clone(),
+                tab_url: Some(req.url.clone()),
+                page_title: req.title,
+                page_url: Some(req.url),
+                request_headers: HashMap::new(),
+                cookie: req.cookie,
+                user_agent: None,
+                is_image: false,
+                is_page: true,
+            });
+        }
+    } else {
+        tracing::warn!("malformed /page payload from extension");
+    }
+    Json(sync_response(video_list(&state).await, new_item))
 }
 
 async fn focus_main(State(state): State<Arc<AppState>>) -> &'static str {
@@ -332,6 +412,7 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
                     req.file.as_deref(),
                     req.tab_url.as_deref(),
                     is_image,
+                    false,
                 ));
                 if let Some(item) = &new_item {
                     if let Some(tx) = &state.config.on_new_detection {
@@ -348,6 +429,7 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
                     cookie: req.cookie,
                     user_agent: req.user_agent,
                     is_image,
+                    is_page: false,
                 });
             }
         }
@@ -448,7 +530,6 @@ async fn probe_quality(State(state): State<Arc<AppState>>, body: Bytes) -> Json<
         return Json(resp);
     }
 
-    let client = state.manager.http_client();
     let ctx = RequestContext {
         headers: flatten_headers(media.request_headers, media.user_agent),
         cookie: media.cookie,
@@ -459,18 +540,11 @@ async fn probe_quality(State(state): State<Arc<AppState>>, body: Bytes) -> Json<
     let variants = if PROGRESSIVE_EXTS.iter().any(|e| url_ends_with(&media.url, e)) {
         Vec::new()
     } else {
-        // A streaming URL carrying auth tokens or no ".m3u8"/".mpd" suffix guesses
-        // as Http; sniff the real content type before probing, or the panel
-        // silently offers no quality choice for HLS/DASH.
-        match resolve_download_kind(&client, &media.url, &ctx).await {
-            DownloadKind::Hls => {
-                luedd_media::quality::probe_hls_qualities(&client, &media.url, &ctx).await.unwrap_or_default()
-            }
-            DownloadKind::Dash => {
-                luedd_media::quality::probe_dash_qualities(&client, &media.url, &ctx).await.unwrap_or_default()
-            }
-            DownloadKind::Http => Vec::new(),
-        }
+        // Whichever backend claims the URL probes it. A streaming URL carrying
+        // auth tokens or no ".m3u8"/".mpd" suffix is sniffed inside `resolve`.
+        let cfg = state.config.settings.get().await.backends;
+        let backend = state.registry.resolve(&media.url, &ctx, &cfg).await;
+        backend.probe_qualities(&probe_req(media.url.clone(), ctx.clone(), cfg)).await.unwrap_or_default()
     };
 
     state.quality_cache.lock().await.insert(media.url.clone(), variants.clone());
@@ -530,12 +604,37 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
     let client = state.manager.http_client();
     let ctx = preview_ctx_for(&media);
 
+    // Page detections (a yt-dlp watch page etc) point at an HTML page, not a
+    // media file - fetching that would just 413. Ask the backend for a
+    // thumbnail image URL instead (yt-dlp `-J` provides one).
+    if is_page_host(&media.url, &state.registry.page_hosts()) {
+        let cfg = state.config.settings.get().await.backends;
+        let backend = state.registry.resolve(&media.url, &ctx, &cfg).await;
+        let result = match backend.thumbnail(&probe_req(media.url.clone(), ctx.clone(), cfg)).await {
+            Ok(Some(thumb_url)) => fetch_image_data_url(&client, &thumb_url).await,
+            _ => None,
+        };
+        state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
+        return Json(preview_response(video_list(&state).await, result));
+    }
+
     let result = build_preview(&state, &client, &media.url, &ctx).await;
     if result.is_none() {
         tracing::warn!(url = %media.url, "no preview available");
     }
     state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
     Json(preview_response(video_list(&state).await, result))
+}
+
+fn is_page_host(url: &str, page_hosts: &[String]) -> bool {
+    let Some(host) = url
+        .split_once("://")
+        .and_then(|(_, r)| r.split(['/', '?', '#']).next())
+        .map(|h| h.split(':').next().unwrap_or(h).to_ascii_lowercase())
+    else {
+        return false;
+    };
+    page_hosts.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
 
 /// Build a request context for fetching a detection's media/preview. Firefox's
@@ -567,6 +666,28 @@ fn preview_response(video_list: Vec<VideoListItem>, preview: Option<Preview>) ->
         resp.preview_kind = Some(kind.to_string());
     }
     resp
+}
+
+/// Fetch a plain image URL (a yt-dlp thumbnail, a public CDN image) and return
+/// it as a data URL. No cookies/headers - these are public.
+async fn fetch_image_data_url(client: &HttpClient, url: &str) -> Option<Preview> {
+    let ctx = RequestContext::default();
+    let mut resp = client.get_response(url, &ctx.to_options(Some((0, MAX_IMAGE_BYTES)))).await.ok()?;
+    if !(resp.status().is_success() || resp.status().as_u16() == 206) {
+        return None;
+    }
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase())
+        .filter(|s| s.starts_with("image/"))
+        .unwrap_or_else(|| "image/jpeg".to_string());
+    let bytes = read_capped(&mut resp, MAX_IMAGE_BYTES as usize).await?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some((data_url(&ct, &bytes), "image"))
 }
 
 async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &RequestContext) -> Option<Preview> {
@@ -858,18 +979,20 @@ async fn ffmpeg_frame_from_url(url: &str, ctx: &RequestContext) -> Option<Vec<u8
     None
 }
 
-/// URL-suffix guess, upgraded by a real content-type sniff when the guess is
-/// Http (mirrors the reclassification in `queue_url` and the desktop app's
-/// `detect_kind`).
-async fn resolve_download_kind(client: &HttpClient, url: &str, ctx: &RequestContext) -> DownloadKind {
-    let guessed = DownloadKind::guess_from_url(url);
-    if !matches!(guessed, DownloadKind::Http) {
-        return guessed;
-    }
-    match luedd_core::naming::resolve_real_extension(client, url, ctx).await.as_deref() {
-        Some("m3u8") => DownloadKind::Hls,
-        Some("mpd") => DownloadKind::Dash,
-        _ => guessed,
+/// Minimal [`DownloadReq`] for a probe-only call (no dest, no progress).
+fn probe_req(
+    url: String,
+    ctx: RequestContext,
+    config: luedd_core::backend::BackendConfig,
+) -> luedd_core::backend::DownloadReq {
+    luedd_core::backend::DownloadReq {
+        url,
+        dest_dir: std::path::PathBuf::from("."),
+        filename_hint: None,
+        ctx,
+        quality: None,
+        concurrency: 1,
+        config,
     }
 }
 
@@ -902,33 +1025,31 @@ async fn queue_url(
     quality: Option<String>,
     preview: Option<(String, String)>,
 ) -> Option<String> {
-    let guessed_kind = DownloadKind::guess_from_url(&url);
+    let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
 
-    let detected_ext = if matches!(guessed_kind, DownloadKind::Http) {
-        let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
+    let detected_ext = if matches!(DownloadKind::guess_from_url(&url), DownloadKind::Http) {
         luedd_core::naming::resolve_real_extension(&state.manager.http_client(), &url, &ctx).await
     } else {
         None
     };
 
-    let kind = match detected_ext.as_deref() {
-        Some("m3u8") => DownloadKind::Hls,
-        Some("mpd") => DownloadKind::Dash,
-        _ => guessed_kind,
-    };
+    let settings = state.config.settings.get().await;
+    let backend = state.registry.resolve(&url, &ctx, &settings.backends).await;
+    let backend_id = backend.id().to_string();
+    let kind = luedd_core::backend::kind_for_backend_id(&backend_id);
 
     let filename = filename_hint.filter(|f| !f.is_empty()).unwrap_or_else(|| {
         luedd_core::naming::suggest_filename(title_hint.as_deref(), &url, detected_ext.as_deref())
     });
-    let download_dir = state.config.settings.get().await.download_dir;
-    let dest = luedd_core::naming::dest_path(&download_dir, &url, &filename);
+    let dest = luedd_core::naming::dest_path(&settings.download_dir, &url, &filename);
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
     let dest = luedd_core::jobs::sanitize_dest_for_kind(&dest, kind);
 
-    tracing::info!(%url, dest = %dest.display(), ?kind, "queued download from browser extension");
+    tracing::info!(%url, dest = %dest.display(), backend = %backend_id, "queued download from browser extension");
     let entry = DownloadEntry::new(url, dest, kind)
+        .with_backend_id(backend_id)
         .with_request_context(headers, cookie)
         .with_quality(quality)
         .with_preview(preview);
@@ -984,6 +1105,7 @@ mod tests {
             Some("My Cool Video"),
             Some("https://site.example/watch?v=1"),
             false,
+            false,
         );
         assert_eq!(item.info, "My Cool Video.mp4");
         assert_eq!(item.url, "https://cdn.example/abc123.mp4?token=secret");
@@ -992,7 +1114,7 @@ mod tests {
 
     #[test]
     fn video_list_item_falls_back_to_url_derived_name_without_a_title() {
-        let item = to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None, false);
+        let item = to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None, false, false);
         assert_eq!(item.info, "movie.mkv");
         assert_eq!(item.page_url, None);
     }

@@ -28,6 +28,10 @@ export default class App {
         // O(1) dedupe for detections - replaces a linear scan of videoList
         // that went quadratic under a stream-segment storm.
         this.seenUrls = new Set();
+        // Hosts (from the app) whose page URL we offer as a detection directly
+        // - yt-dlp watch pages etc, where there is no catchable media request.
+        this.pageHosts = [];
+        this.postedPages = new Set();
     }
 
     async start() {
@@ -59,6 +63,7 @@ export default class App {
         this.fileExts = msg.fileExts;
         this.blockedHosts = msg.blockedHosts;
         this.tabsWatcher = msg.tabsWatcher;
+        this.pageHosts = msg.pageHosts || [];
         const serverList = msg.videoList || [];
         const serverUrls = new Set(serverList.map(v => v.url));
         const localOnly = (this.videoList || [])
@@ -94,6 +99,18 @@ export default class App {
         });
         this.updateActionIcon();
         this.syncWatcherRegistration();
+
+        // Let a page be re-detected once its item has left the panel.
+        for (const k of this.postedPages) {
+            if (!this.seenUrls.has(k)) this.postedPages.delete(k);
+        }
+        // Scan already-open tabs too - onTabUpdate only fires on navigation, so
+        // a tab open before the extension (re)loaded would never be seen.
+        if (this.isMonitoringEnabled() && this.pageHosts.length) {
+            try {
+                chrome.tabs.query({}, tabs => (tabs || []).forEach(t => { if (t && t.url) this.maybeDetectPage(t); }));
+            } catch (e) { }
+        }
     }
 
     async queueVideo(itemId, quality) {
@@ -223,6 +240,36 @@ export default class App {
                 }
             }
         }
+        if ((changeInfo.status === "complete" || changeInfo.title) && tab && tab.url) {
+            this.maybeDetectPage(tab);
+        }
+    }
+
+    async maybeDetectPage(tab) {
+        let url;
+        try { url = new URL(tab.url); } catch { return; }
+        if (url.protocol !== "https:" && url.protocol !== "http:") return;
+        const host = url.host.toLowerCase();
+        const match = (this.pageHosts || []).some(h => host === h || host.endsWith("." + h));
+        if (!match) return;
+        // Skip bare home/search pages - only offer a real content URL.
+        if (url.pathname.replace(/\/+$/, "").length <= 1 && !url.search) return;
+        if (url.pathname === "/results" || url.pathname === "/search") return;
+        const key = tab.url;
+        if (this.postedPages.has(key) || this.seenUrls.has(key)) return;
+        this.postedPages.add(key);
+        if (this.postedPages.size > 300) {
+            this.postedPages = new Set([...this.postedPages].slice(-150));
+        }
+        let cookie;
+        try {
+            const cookies = await chrome.cookies.getAll({ url: tab.url });
+            if (cookies && cookies.length) {
+                cookie = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+            }
+        } catch (e) { }
+        this.logger.log("page detection: " + tab.url);
+        this.connector.postMessage("/page", { url: tab.url, title: tab.title || null, cookie });
     }
 
     register() {

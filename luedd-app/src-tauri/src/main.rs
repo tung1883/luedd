@@ -4,51 +4,69 @@ use std::sync::Arc;
 
 use base64::Engine;
 use tauri::{Emitter, Manager, State};
+use luedd_core::backend::{BackendConfig, BackendRegistry, DownloadReq};
 use luedd_core::jobs::DownloadKind;
 use luedd_core::queue::{
     default_data_dir, default_settings_path, default_store_path, DownloadEntry, DownloadManager, DownloadStore,
     Settings, SettingsStore,
 };
-use luedd_net::HttpClient;
+use luedd_net::{HttpClient, RequestContext};
 use tokio::sync::RwLock;
 
 struct AppState {
     store: Arc<DownloadStore>,
     settings: Arc<SettingsStore>,
     manager: RwLock<Arc<DownloadManager>>,
+    registry: Arc<BackendRegistry>,
 }
 
-fn build_manager(store: Arc<DownloadStore>, settings: &Settings) -> Result<Arc<DownloadManager>, String> {
+/// The backend registry: the three transport built-ins plus (later phases)
+/// yt-dlp / Instagram / instaloader / torrent. Backends read their per-run
+/// config from `DownloadReq.config`, so this is built once and never rebuilt.
+fn build_registry(client: HttpClient) -> Arc<BackendRegistry> {
+    let mut registry = BackendRegistry::with_builtins(client.clone());
+    registry.register(Arc::new(luedd_core::backend::YtdlpBackend::new(client)));
+    Arc::new(registry)
+}
+
+fn build_manager(
+    store: Arc<DownloadStore>,
+    settings: &Settings,
+    registry: Arc<BackendRegistry>,
+) -> Result<Arc<DownloadManager>, String> {
     let client = HttpClient::new().map_err(|e| e.to_string())?;
-    Ok(Arc::new(DownloadManager::new(
-        store,
-        client,
-        settings.max_concurrent_downloads,
-        settings.per_download_concurrency,
-    )))
+    Ok(Arc::new(
+        DownloadManager::new(store, client, settings.max_concurrent_downloads, settings.per_download_concurrency)
+            .with_backends(registry, settings.backends.clone()),
+    ))
 }
 
-async fn detect_kind(client: &HttpClient, url: &str) -> (DownloadKind, Option<String>) {
-    let guessed_kind = DownloadKind::guess_from_url(url);
-    let detected_ext = if matches!(guessed_kind, DownloadKind::Http) {
-        luedd_core::naming::resolve_real_extension(client, url, &luedd_net::RequestContext::default()).await
-    } else {
-        None
-    };
-    let kind = match detected_ext.as_deref() {
-        Some("m3u8") => DownloadKind::Hls,
-        Some("mpd") => DownloadKind::Dash,
-        _ => guessed_kind,
-    };
-    (kind, detected_ext)
+fn probe_req(url: String, ctx: RequestContext, config: BackendConfig) -> DownloadReq {
+    DownloadReq {
+        url,
+        dest_dir: std::path::PathBuf::from("."),
+        filename_hint: None,
+        ctx,
+        quality: None,
+        concurrency: 1,
+        config,
+    }
 }
 
 #[tauri::command]
 async fn add_download(state: State<'_, AppState>, url: String, filename: Option<String>, quality: Option<String>) -> Result<(), String> {
     let settings = state.settings.get().await;
     let client = state.manager.read().await.http_client();
+    let ctx = RequestContext::default();
 
-    let (kind, detected_ext) = detect_kind(&client, &url).await;
+    let detected_ext = if matches!(DownloadKind::guess_from_url(&url), DownloadKind::Http) {
+        luedd_core::naming::resolve_real_extension(&client, &url, &ctx).await
+    } else {
+        None
+    };
+    let backend = state.registry.resolve(&url, &ctx, &settings.backends).await;
+    let backend_id = backend.id().to_string();
+    let kind = luedd_core::backend::kind_for_backend_id(&backend_id);
 
     let filename = filename.filter(|f| !f.is_empty()).unwrap_or_else(|| {
         luedd_core::naming::suggest_filename(None, &url, detected_ext.as_deref())
@@ -59,20 +77,19 @@ async fn add_download(state: State<'_, AppState>, url: String, filename: Option<
     }
     let dest = luedd_core::jobs::sanitize_dest_for_kind(&dest, kind);
 
-    let entry = DownloadEntry::new(url, dest, kind).with_quality(quality);
+    let entry = DownloadEntry::new(url, dest, kind).with_backend_id(backend_id).with_quality(quality);
     state.store.add_entry(entry).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn probe_qualities(state: State<'_, AppState>, url: String) -> Result<Vec<luedd_media::quality::QualityOption>, String> {
-    let client = state.manager.read().await.http_client();
-    let (kind, _detected_ext) = detect_kind(&client, &url).await;
-    let ctx = luedd_net::RequestContext::default();
-    match kind {
-        DownloadKind::Http => Ok(Vec::new()),
-        DownloadKind::Hls => luedd_media::quality::probe_hls_qualities(&client, &url, &ctx).await.map_err(|e| e.to_string()),
-        DownloadKind::Dash => luedd_media::quality::probe_dash_qualities(&client, &url, &ctx).await.map_err(|e| e.to_string()),
-    }
+    let settings = state.settings.get().await;
+    let ctx = RequestContext::default();
+    let backend = state.registry.resolve(&url, &ctx, &settings.backends).await;
+    backend
+        .probe_qualities(&probe_req(url, ctx, settings.backends))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -245,7 +262,7 @@ async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 async fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
     tokio::fs::create_dir_all(&settings.download_dir).await.map_err(|e| e.to_string())?;
     state.settings.set(settings.clone()).await.map_err(|e| e.to_string())?;
-    let new_manager = build_manager(state.store.clone(), &settings)?;
+    let new_manager = build_manager(state.store.clone(), &settings, state.registry.clone())?;
     *state.manager.write().await = new_manager;
     Ok(())
 }
@@ -299,20 +316,26 @@ fn main() {
             });
 
             let initial_settings = tauri::async_runtime::block_on(settings.get());
-            let manager = build_manager(store.clone(), &initial_settings).expect("failed to build download manager");
+            let registry = build_registry(HttpClient::new().expect("failed to build http client"));
+            let manager = build_manager(store.clone(), &initial_settings, registry.clone())
+                .expect("failed to build download manager");
 
             let server_store = store.clone();
             let server_manager = manager.clone();
+            let server_registry = registry.clone();
             let server_settings = settings.clone();
             let (detection_tx, mut detection_rx) = tokio::sync::mpsc::unbounded_channel();
             let (focus_tx, mut focus_rx) = tokio::sync::mpsc::unbounded_channel();
             tauri::async_runtime::spawn(async move {
                 let config = luedd_ipc::server::ServerConfig {
                     settings: server_settings,
+                    build_id: format!("{} ({})", env!("CARGO_PKG_VERSION"), env!("LUEDD_ASSET_VER")),
                     on_new_detection: Some(detection_tx),
                     on_focus_request: Some(focus_tx),
                 };
-                if let Err(e) = luedd_ipc::server::serve(server_store, server_manager, config, ipc_listener).await {
+                if let Err(e) =
+                    luedd_ipc::server::serve(server_store, server_manager, server_registry, config, ipc_listener).await
+                {
                     tracing::warn!(error = %e, "luedd-ipc server exited");
                 }
             });
@@ -363,7 +386,7 @@ fn main() {
                 });
             }
 
-            app.manage(AppState { store, settings, manager: RwLock::new(manager) });
+            app.manage(AppState { store, settings, manager: RwLock::new(manager), registry });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

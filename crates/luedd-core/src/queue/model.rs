@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::backend::{backend_id_for_kind, kind_for_backend_id};
 use crate::jobs::DownloadKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,11 +35,17 @@ pub struct DownloadProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "DownloadEntryRepr")]
 pub struct DownloadEntry {
     pub id: String,
     pub url: String,
     pub dest: PathBuf,
+    /// Kept in sync with `backend_id` for the three built-ins; still written so
+    /// an older build can still load the file. Nothing reads it after the
+    /// backend registry landed — `backend_id` is authoritative.
     pub kind: DownloadKind,
+    /// Which [`crate::backend::DownloadBackend`] runs this entry.
+    pub backend_id: String,
     pub status: DownloadStatus,
     pub error: Option<String>,
     pub created_at: i64,
@@ -60,6 +67,74 @@ pub struct DownloadEntry {
     pub preview: Option<String>,
     #[serde(default)]
     pub preview_kind: Option<String>,
+    /// Extra output files beyond `dest` (carousels, torrents).
+    #[serde(default)]
+    pub extra_files: Vec<PathBuf>,
+}
+
+/// Deserialization shim. Files written before the backend registry have
+/// `kind` but no `backend_id`; newer files have both. Either loads.
+#[derive(Deserialize)]
+struct DownloadEntryRepr {
+    id: String,
+    url: String,
+    dest: PathBuf,
+    #[serde(default)]
+    kind: Option<DownloadKind>,
+    #[serde(default)]
+    backend_id: Option<String>,
+    status: DownloadStatus,
+    #[serde(default)]
+    error: Option<String>,
+    created_at: i64,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default)]
+    cookie: Option<String>,
+    #[serde(default)]
+    progress: Option<DownloadProgress>,
+    #[serde(default)]
+    retry_count: u32,
+    #[serde(default)]
+    next_retry_at: Option<i64>,
+    #[serde(default)]
+    quality: Option<String>,
+    #[serde(default)]
+    preview: Option<String>,
+    #[serde(default)]
+    preview_kind: Option<String>,
+    #[serde(default)]
+    extra_files: Vec<PathBuf>,
+}
+
+impl From<DownloadEntryRepr> for DownloadEntry {
+    fn from(r: DownloadEntryRepr) -> Self {
+        let backend_id = r
+            .backend_id
+            .filter(|s| !s.is_empty())
+            .or_else(|| r.kind.map(|k| backend_id_for_kind(k).to_string()))
+            .unwrap_or_else(|| "http".to_string());
+        let kind = r.kind.unwrap_or_else(|| kind_for_backend_id(&backend_id));
+        DownloadEntry {
+            id: r.id,
+            url: r.url,
+            dest: r.dest,
+            kind,
+            backend_id,
+            status: r.status,
+            error: r.error,
+            created_at: r.created_at,
+            headers: r.headers,
+            cookie: r.cookie,
+            progress: r.progress,
+            retry_count: r.retry_count,
+            next_retry_at: r.next_retry_at,
+            quality: r.quality,
+            preview: r.preview,
+            preview_kind: r.preview_kind,
+            extra_files: r.extra_files,
+        }
+    }
 }
 
 impl DownloadEntry {
@@ -69,6 +144,7 @@ impl DownloadEntry {
             url,
             dest,
             kind,
+            backend_id: backend_id_for_kind(kind).to_string(),
             status: DownloadStatus::Queued,
             error: None,
             created_at: now_unix(),
@@ -80,7 +156,16 @@ impl DownloadEntry {
             quality: None,
             preview: None,
             preview_kind: None,
+            extra_files: Vec::new(),
         }
+    }
+
+    /// Route this entry to a non-transport backend (yt-dlp, instagram, torrent…).
+    /// Keeps `kind` best-effort in sync for downgrade compatibility.
+    pub fn with_backend_id(mut self, id: impl Into<String>) -> Self {
+        self.backend_id = id.into();
+        self.kind = kind_for_backend_id(&self.backend_id);
+        self
     }
 
     pub fn with_preview(mut self, preview: Option<(String, String)>) -> Self {
@@ -165,5 +250,39 @@ mod tests {
         let b = DownloadEntry::new("u".into(), "d".into(), DownloadKind::Http);
         assert_ne!(a.id, b.id);
         assert_eq!(a.id.len(), 36);
+    }
+
+    #[test]
+    fn new_entry_derives_backend_id_from_kind() {
+        assert_eq!(DownloadEntry::new("u".into(), "d".into(), DownloadKind::Hls).backend_id, "hls");
+        assert_eq!(DownloadEntry::new("u".into(), "d".into(), DownloadKind::Dash).backend_id, "dash");
+        assert_eq!(DownloadEntry::new("u".into(), "d".into(), DownloadKind::Http).backend_id, "http");
+    }
+
+    #[test]
+    fn loads_pre_registry_json_without_backend_id() {
+        let old = r#"{
+            "id": "abc", "url": "https://x/y.m3u8", "dest": "out.mp4",
+            "kind": "Hls", "status": "Queued", "error": null, "created_at": 1
+        }"#;
+        let e: DownloadEntry = serde_json::from_str(old).unwrap();
+        assert_eq!(e.backend_id, "hls");
+        assert_eq!(e.kind, DownloadKind::Hls);
+        assert!(e.extra_files.is_empty());
+
+        // and the value it writes back round-trips
+        let round: DownloadEntry = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(round.backend_id, "hls");
+    }
+
+    #[test]
+    fn loads_new_json_with_backend_id_only() {
+        let new = r#"{
+            "id": "abc", "url": "magnet:?xt=x", "dest": "out",
+            "backend_id": "torrent", "status": "Queued", "error": null, "created_at": 1
+        }"#;
+        let e: DownloadEntry = serde_json::from_str(new).unwrap();
+        assert_eq!(e.backend_id, "torrent");
+        assert_eq!(e.kind, DownloadKind::Http);
     }
 }

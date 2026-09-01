@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use luedd_net::{HttpClient, RequestContext};
@@ -7,7 +8,7 @@ use tokio::task::AbortHandle;
 
 use super::model::{DownloadEntry, DownloadProgress, DownloadStatus};
 use super::store::DownloadStore;
-use crate::jobs;
+use crate::backend::{BackendConfig, BackendRegistry, DownloadReq};
 
 type RunningTasks = Arc<StdMutex<HashMap<String, AbortHandle>>>;
 
@@ -17,17 +18,29 @@ pub struct DownloadManager {
     semaphore: Arc<Semaphore>,
     per_download_concurrency: usize,
     running: RunningTasks,
+    registry: Arc<BackendRegistry>,
+    backend_config: BackendConfig,
 }
 
 impl DownloadManager {
     pub fn new(store: Arc<DownloadStore>, client: HttpClient, max_concurrent: usize, per_download_concurrency: usize) -> Self {
         Self {
+            registry: Arc::new(BackendRegistry::with_builtins(client.clone())),
+            backend_config: BackendConfig::default(),
             store,
             client,
             semaphore: Arc::new(Semaphore::new(max_concurrent.max(1))),
             per_download_concurrency,
             running: Arc::new(StdMutex::new(HashMap::new())),
         }
+    }
+
+    /// Swap in a registry with extra backends (yt-dlp, instagram, …) plus the
+    /// config snapshot they run against. Called by the app after loading Settings.
+    pub fn with_backends(mut self, registry: Arc<BackendRegistry>, config: BackendConfig) -> Self {
+        self.registry = registry;
+        self.backend_config = config;
+        self
     }
 
     pub fn http_client(&self) -> HttpClient {
@@ -50,10 +63,12 @@ impl DownloadManager {
             let semaphore = self.semaphore.clone();
             let concurrency = self.per_download_concurrency;
             let running = self.running.clone();
+            let registry = self.registry.clone();
+            let config = self.backend_config.clone();
 
             tasks.push(tokio::spawn(async move {
                 let _permit = semaphore.acquire_owned().await.expect("semaphore closed");
-                run_tracked(store, client, entry, concurrency, running).await;
+                run_tracked(store, client, entry, concurrency, running, registry, config).await;
             }));
         }
 
@@ -70,7 +85,16 @@ impl DownloadManager {
         if !matches!(entry.status, DownloadStatus::Queued) {
             return Ok(());
         }
-        run_tracked(self.store.clone(), self.client.clone(), entry, self.per_download_concurrency, self.running.clone()).await;
+        run_tracked(
+            self.store.clone(),
+            self.client.clone(),
+            entry,
+            self.per_download_concurrency,
+            self.running.clone(),
+            self.registry.clone(),
+            self.backend_config.clone(),
+        )
+        .await;
         Ok(())
     }
 
@@ -110,17 +134,33 @@ impl DownloadManager {
     }
 }
 
-async fn run_tracked(store: Arc<DownloadStore>, client: HttpClient, entry: DownloadEntry, concurrency: usize, running: RunningTasks) {
+#[allow(clippy::too_many_arguments)]
+async fn run_tracked(
+    store: Arc<DownloadStore>,
+    client: HttpClient,
+    entry: DownloadEntry,
+    concurrency: usize,
+    running: RunningTasks,
+    registry: Arc<BackendRegistry>,
+    config: BackendConfig,
+) {
     let id = entry.id.clone();
     let handle = tokio::spawn(async move {
-        run_single(&store, &client, entry, concurrency).await;
+        run_single(&store, &client, entry, concurrency, &registry, &config).await;
     });
     running.lock().unwrap().insert(id.clone(), handle.abort_handle());
     let _ = handle.await;
     running.lock().unwrap().remove(&id);
 }
 
-async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: DownloadEntry, concurrency: usize) {
+async fn run_single(
+    store: &Arc<DownloadStore>,
+    _client: &HttpClient,
+    entry: DownloadEntry,
+    concurrency: usize,
+    registry: &BackendRegistry,
+    config: &BackendConfig,
+) {
     store.update_entry(&entry.id, |e| e.status = DownloadStatus::Downloading).await.ok();
 
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -157,17 +197,29 @@ async fn run_single(store: &Arc<DownloadStore>, client: &HttpClient, entry: Down
     });
 
     let ctx = RequestContext { headers: entry.headers.clone(), cookie: entry.cookie.clone() };
-    let result =
-        jobs::run(client, entry.kind, &entry.url, &entry.dest, concurrency, &ctx, Some(&progress_tx), entry.quality.as_deref()).await;
+    let backend = registry.get(&entry.backend_id).unwrap_or_else(|| registry.http());
+    let req = DownloadReq {
+        url: entry.url.clone(),
+        dest_dir: entry.dest.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")),
+        filename_hint: entry.dest.file_name().map(|s| s.to_string_lossy().into_owned()),
+        ctx,
+        quality: entry.quality.clone(),
+        concurrency,
+        config: config.clone(),
+    };
+    let result = backend.run(&req, Some(&progress_tx)).await;
     drop(progress_tx);
     progress_task.await.ok();
 
     match result {
-        Ok(final_dest) => {
+        Ok(outcome) => {
+            let mut files = outcome.files;
+            let final_dest = if files.is_empty() { entry.dest.clone() } else { files.remove(0) };
             store
                 .update_entry(&entry.id, |e| {
                     e.status = DownloadStatus::Finished;
-                    e.dest = final_dest;
+                    e.dest = final_dest.clone();
+                    e.extra_files = files.clone();
                 })
                 .await
                 .ok();

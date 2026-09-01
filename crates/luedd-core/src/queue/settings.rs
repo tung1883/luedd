@@ -16,6 +16,9 @@ pub struct Settings {
     /// UI language: "en" | "de". Defaulted for the same reason.
     #[serde(default = "default_language")]
     pub language: String,
+    /// Per-backend configuration (binary paths, host routing, Instagram doc ids…).
+    #[serde(default)]
+    pub backends: crate::backend::BackendConfig,
 }
 
 fn default_font() -> String {
@@ -34,6 +37,7 @@ impl Settings {
             per_download_concurrency: 8,
             font: default_font(),
             language: default_language(),
+            backends: crate::backend::BackendConfig::default(),
         }
     }
 }
@@ -101,6 +105,7 @@ mod tests {
                     per_download_concurrency: 16,
                     font: "cascadia-mono".to_string(),
                     language: "de".to_string(),
+                    backends: Default::default(),
                 })
                 .await
                 .unwrap();

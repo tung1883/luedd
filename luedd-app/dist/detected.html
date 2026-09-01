@@ -359,6 +359,7 @@
 
   // Infer a coarse media kind from the item's URL extension + isImage flag.
   function itemKind(item) {
+    if (item.kind) return item.kind;            // server-declared (page detections)
     if (item.isImage) return "image";
     const src = (item.url || item.info || item.text || "").toLowerCase().split("?")[0];
     const ext = src.slice(src.lastIndexOf(".") + 1);
@@ -421,12 +422,19 @@
       const url = new URL(u);
       const path = url.pathname || "/";
       const slash = path.lastIndexOf("/");
-      return { origin: url.origin, mid: path.slice(0, slash + 1), tail: path.slice(slash + 1) };
+      let mid = path.slice(0, slash + 1);
+      let tail = path.slice(slash + 1) + (url.search || "");
+      // A single-segment path (e.g. /watch?v=...) has no useful "mid" - folding
+      // the "/" into the tail avoids a min-width gap that reads as a space.
+      if (mid === "/") { tail = "/" + tail; mid = ""; }
+      return { origin: url.origin, mid, tail };
     } catch {
-      const base = (u.split("?")[0]) || u;
-      const slash = base.lastIndexOf("/");
-      if (slash === -1) return { origin: "", mid: "", tail: base };
-      return { origin: "", mid: base.slice(0, slash + 1), tail: base.slice(slash + 1) };
+      const slash = u.lastIndexOf("/");
+      if (slash === -1) return { origin: "", mid: "", tail: u };
+      let mid = u.slice(0, slash + 1);
+      let tail = u.slice(slash + 1);
+      if (mid === "/" || /^[a-z]+:\/\/$/i.test(mid)) { tail = mid + tail; mid = ""; }
+      return { origin: "", mid, tail };
     }
   }
 
@@ -436,9 +444,13 @@
     const s = splitUrl(value);
     const lab = document.createElement("span"); lab.className = "cl-label"; lab.textContent = label;
     const origin = document.createElement("span"); origin.className = "cl-origin"; origin.textContent = s.origin;
-    const mid = document.createElement("span"); mid.className = "cl-mid"; mid.textContent = s.mid;
     const tail = document.createElement("span"); tail.className = "cl-tail"; tail.textContent = s.tail;
-    line.append(lab, origin, mid, tail);
+    line.append(lab, origin);
+    if (s.mid) {
+      const mid = document.createElement("span"); mid.className = "cl-mid"; mid.textContent = s.mid;
+      line.append(mid);
+    }
+    line.append(tail);
     line.title = value + "\n" + L("dbl_copy");
     line.addEventListener("dblclick", async e => {
       e.stopPropagation();
