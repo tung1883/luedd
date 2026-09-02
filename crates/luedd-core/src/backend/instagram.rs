@@ -412,8 +412,21 @@ impl DownloadBackend for InstagramBackend {
         let tracker = ProgressTracker::new(progress, None, items.len() as u64);
         let mut files = Vec::new();
         let mut last_err: Option<anyhow::Error> = None;
+        // instaloader numbers only the members of one carousel (they share a
+        // taken-at); a profile crawl's separate posts each keep a bare date name.
+        let mut ts_total: std::collections::HashMap<Option<i64>, usize> = std::collections::HashMap::new();
+        for it in &items {
+            *ts_total.entry(it.timestamp).or_default() += 1;
+        }
+        let mut ts_seq: std::collections::HashMap<Option<i64>, usize> = std::collections::HashMap::new();
         for (i, it) in items.iter().enumerate() {
-            let dest = req.dest_dir.join(item_filename(it, i));
+            let seq = {
+                let e = ts_seq.entry(it.timestamp).or_default();
+                *e += 1;
+                *e
+            };
+            let n = if ts_total.get(&it.timestamp).copied().unwrap_or(1) > 1 { Some(seq) } else { None };
+            let dest = req.dest_dir.join(item_filename(it, i, n));
             match jobs::run_http(&self.client, &it.url, &dest, 1, &dl_ctx, None).await {
                 Ok(path) => {
                     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -441,24 +454,26 @@ impl DownloadBackend for InstagramBackend {
 
     async fn describe(&self, req: &DownloadReq) -> EntryMeta {
         let mut meta = EntryMeta::default();
+        // Folder layout mirrors instaloader's `{target}/` — the owner's username
+        // when known, else the shortcode / highlight id.
         let group = match classify(&req.url) {
             Some(Target::Shortcode(code, is_reel)) => {
                 meta.media_class = Some(if is_reel { "reel" } else { "post" }.to_string());
-                Some(format!("instagram_{}_{code}", if is_reel { "reel" } else { "post" }))
+                Some(code)
             }
             Some(Target::Stories(user)) => {
                 meta.author = Some(format!("@{user}"));
                 meta.media_class = Some("story".to_string());
-                Some(format!("instagram_{user}_story"))
+                Some(user)
             }
             Some(Target::Highlight(id)) => {
                 meta.media_class = Some("highlight".to_string());
-                Some(format!("instagram_highlight_{id}"))
+                Some(format!("highlight_{id}"))
             }
             Some(Target::Profile(user)) => {
                 meta.author = Some(format!("@{user}"));
                 meta.media_class = Some("profile".to_string());
-                Some(format!("instagram_{user}"))
+                Some(user)
             }
             None => None,
         };
@@ -1369,17 +1384,19 @@ fn ext_from_url(url: &str, is_video: bool) -> String {
     if is_video { "mp4".to_string() } else { "jpg".to_string() }
 }
 
-fn item_filename(it: &MediaItem, idx: usize) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(ts) = it.timestamp {
-        parts.push(ts.to_string());
-    }
-    if !it.id.is_empty() {
-        parts.push(it.id.clone());
-    } else if let Some(sc) = &it.shortcode {
-        parts.push(sc.clone());
-    }
-    let stem = if parts.is_empty() { format!("ig_media_{}", idx + 1) } else { parts.join("_") };
+/// instaloader-style name: `YYYY-MM-DD_HH-MM-SS_UTC[_N].ext`. `n` = the 1-based
+/// index within a carousel (None for a lone item / a story frame).
+fn item_filename(it: &MediaItem, idx: usize, n: Option<usize>) -> String {
+    let base = it
+        .timestamp
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        .map(|dt| dt.format("%Y-%m-%d_%H-%M-%S_UTC").to_string())
+        .or_else(|| it.shortcode.clone())
+        .unwrap_or_else(|| format!("ig_media_{}", idx + 1));
+    let stem = match n {
+        Some(k) => format!("{base}_{k}"),
+        None => base,
+    };
     format!("{}.{}", crate::naming::sanitize_filename_component(&stem), ext_from_url(&it.url, it.is_video))
 }
 
