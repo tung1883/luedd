@@ -1,0 +1,634 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Instagram</title>
+<style>
+  @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Cascadia Mono"; src: url("fonts/cascadia-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Excalifont"; src: url("fonts/excalifont.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
+  :root {
+    --bg: #16171A; --surface: #1E2024; --surface-2: #26282E; --line: #34373E;
+    --text: #E7E8EA; --dim: #9A9DA5; --accent: #4FA3D8; --disc: #7FC0E6; --good: #4FD08A; --bad: #F26A63; --warn: #F0A24A;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  body { font-family: var(--sans); margin: 0; background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; height: 100vh; font-size: 13px; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 11px 16px;
+    background: linear-gradient(180deg, #212227, var(--surface)); border-bottom: 1px solid var(--line); }
+  header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; flex: 1; }
+  button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
+    border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
+  button.ghost { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
+  button.ghost:hover { color: var(--text); border-color: var(--dim); }
+  button:disabled { opacity: .5; cursor: default; }
+  .iconbtn { padding: 0; width: 28px; height: 26px; display: flex; align-items: center; justify-content: center; }
+  .iconbtn svg { width: 15px; height: 15px; }
+
+  #scroll { flex: 1; overflow-y: auto; }
+  .empty { padding: 40px 24px; color: var(--dim); font-size: 13px; text-align: center; line-height: 1.6; }
+  .note { color: var(--warn); }
+
+  .acct-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; padding: 16px; }
+  .acard { border: 1px solid var(--line); border-radius: 10px; padding: 14px 12px; text-align: center; cursor: pointer; background: var(--surface); }
+  .acard:hover { border-color: var(--dim); }
+  .acard .av { width: 64px; height: 64px; border-radius: 50%; margin: 0 auto 8px; background: var(--surface-2);
+    overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 22px; font-weight: 700; }
+  .acard .av img { width: 100%; height: 100%; object-fit: cover; }
+  .acard .nm { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acard .sub { color: var(--dim); font-size: 11px; margin-top: 3px; }
+  .resolving { padding: 10px 16px; font-size: 11px; color: var(--dim); }
+
+  .phead { display: flex; gap: 18px; padding: 20px 18px 12px; align-items: flex-start; }
+  .phead .pav { width: 90px; height: 90px; border-radius: 50%; flex-shrink: 0; background: var(--surface-2);
+    overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 30px; font-weight: 700; }
+  .phead .pav img { width: 100%; height: 100%; object-fit: cover; }
+  .phead .pav.clickable { cursor: zoom-in; }
+  .phead .pav.clickable:hover { box-shadow: 0 0 0 2px var(--accent); }
+  .phead .pmeta { flex: 1; min-width: 0; }
+  .phead .prow1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .phead .puser { font-size: 17px; font-weight: 700; }
+  .phead .pverif { color: var(--accent); }
+  .phead .pbadge { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  .phead .pname { color: var(--dim); font-size: 12px; margin-top: 2px; }
+  .phead .pbio { font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
+  .phead .plink { font-size: 12px; margin-top: 4px; }
+  .phead .pstats { display: flex; gap: 16px; margin-top: 10px; font-size: 12px; color: var(--dim); }
+  .phead .pstats b { color: var(--text); }
+  .phead .pdl { margin-top: 12px; }
+
+  .sec { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); padding: 12px 18px 5px;
+    display: flex; align-items: center; gap: 10px; }
+  .sec .sdl { color: var(--disc); font-size: 11px; text-transform: none; letter-spacing: 0; cursor: pointer; }
+  .sec .sdl:hover { text-decoration: underline; }
+  .sec-block[hidden] { display: none; }
+
+  .rings { display: flex; gap: 12px; padding: 4px 18px 10px; flex-wrap: wrap; }
+  .ring { width: 62px; text-align: center; cursor: pointer; }
+  .ring .rd { width: 62px; height: 62px; border-radius: 50%; background: var(--surface-2); box-sizing: border-box;
+    border: 2px solid var(--accent); overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--dim); }
+  .ring.seen .rd { border-color: var(--line); }
+  .ring .rd img { width: 100%; height: 100%; object-fit: cover; }
+  .ring .rl { font-size: 9px; color: var(--dim); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 3px; padding: 3px 18px 14px; }
+  .cell { position: relative; aspect-ratio: 1; background: var(--surface-2); border-radius: 3px; overflow: hidden; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; color: var(--dim); }
+  .cell img { width: 100%; height: 100%; object-fit: cover; }
+  .cell.ph { aspect-ratio: auto; height: 0; padding-bottom: 100%; }
+  .morewrap { display: flex; justify-content: center; padding: 8px 18px 18px; }
+  #posts-more { padding: 8px 18px; }
+  #posts-more[hidden] { display: none; }
+  .cell .badge { position: absolute; right: 5px; top: 5px; color: #fff; filter: drop-shadow(0 1px 3px rgba(0,0,0,.8)); display: flex; }
+  .cell .badge svg { width: 15px; height: 15px; }
+  #sentinel { height: 1px; }
+
+  /* shimmer skeleton */
+  @keyframes sk-sh { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  .sk { display: block; background: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.11) 37%, rgba(255,255,255,.04) 63%);
+    background-size: 200% 100%; animation: sk-sh 1.3s ease-in-out infinite; border-radius: 4px; }
+
+  /* full-window media overlay */
+  #ov { display: none; position: fixed; inset: 0; z-index: 200; background: rgba(8,8,10,.58); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); flex-direction: column; }
+  #ov.open { display: flex; }
+  .ovbar { display: flex; align-items: center; padding: 12px 16px; color: #d4d4d4; font-size: 12px; }
+  .ovbar .ct { flex: 1; }
+  .ovbar .tools { display: flex; gap: 4px; }
+  .ovbar .tb { width: 38px; height: 34px; border-radius: 9px; background: rgba(255,255,255,.06); border: 0; color: #d8d8d8;
+    display: flex; align-items: center; justify-content: center; }
+  .ovbar .tb:hover { background: rgba(255,255,255,.18); color: #fff; }
+  .ovbar .tb svg { width: 19px; height: 19px; }
+  .ovbar .tb.dl { color: var(--accent); }
+  /* caption bar under the toolbar (never over the media) */
+  .ovcap { min-height: 30px; padding: 4px 18px 8px; font-size: 12px; color: #d8d8d8; line-height: 1.4; display: flex; align-items: flex-start; gap: 8px; }
+  .ovcap .ct2 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; flex: 1; white-space: pre-wrap; }
+  .ovcap.exp .ct2 { -webkit-line-clamp: unset; max-height: 30vh; overflow: auto; }
+  .ovcap .more { color: var(--disc); cursor: pointer; font-size: 11px; flex-shrink: 0; }
+  .ovcap .more[hidden] { display: none; }
+  .ovcap .sk { width: 40%; height: 12px; margin-top: 3px; }
+  .ovstage { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; padding: 4px 54px 0; overflow: hidden; touch-action: none; }
+  .ovpicwrap { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  .ovpicwrap > img, .ovpicwrap > video { max-width: 100%; max-height: 100%; border-radius: 2px; object-fit: contain;
+    transform-origin: center; }
+  .ovpicwrap.zoomed > img { cursor: grab; will-change: transform; }
+  .ovpicwrap.dragging > img { cursor: grabbing; }
+  .ovpicwrap .sk { position: absolute; width: min(78%, 460px); aspect-ratio: 4 / 5; max-height: 88%; border-radius: 4px; }
+  .ovchev { position: absolute; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(0,0,0,.4); color: #eaeaea; border: 0; display: flex; align-items: center; justify-content: center; }
+  .ovchev:hover { background: rgba(0,0,0,.65); color: #fff; }
+  .ovchev.l { left: 12px; } .ovchev.r { right: 12px; }
+  .ovchev svg { width: 20px; height: 20px; }
+  .ovchev[disabled] { opacity: .25; pointer-events: none; }
+  .ovpill { position: absolute; right: 60px; bottom: 14px; display: flex; gap: 8px; }
+  .btn2 { font-size: 11px; padding: 7px 13px; border-radius: 999px; background: var(--accent); color: #000; font-weight: 600;
+    border: 0; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  .btn2.g { background: rgba(18,18,20,.9); border: 1px solid #4a4a4a; color: #e6e6e6; font-weight: 500; }
+  .ovgrid-btn { position: absolute; right: 14px; bottom: 62px; width: 32px; height: 30px; border-radius: 8px; border: 0;
+    background: rgba(255,255,255,.12); color: #ddd; display: flex; align-items: center; justify-content: center; }
+  .ovgrid-btn svg { width: 15px; height: 15px; }
+
+  .ovstripwrap { padding: 8px 0 16px; display: flex; justify-content: center; background: linear-gradient(transparent, rgba(0,0,0,.35)); }
+  .ovstrip { display: flex; gap: 6px; padding: 8px 14px; overflow-x: auto; align-items: center; justify-content: safe center;
+    max-width: 92%; border-radius: 14px; background: rgba(24,25,28,.62); backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.07); box-shadow: 0 8px 28px rgba(0,0,0,.5);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 30px, #000 calc(100% - 30px), transparent);
+    scrollbar-width: none; scroll-behavior: smooth; }
+  .ovstrip::-webkit-scrollbar { display: none; }
+  .ovstrip .s { width: 46px; height: 46px; border-radius: 9px; background: #2f3136; flex-shrink: 0; position: relative;
+    overflow: hidden; opacity: .4; transform: scale(.86); transition: opacity .18s ease, transform .18s ease, box-shadow .18s ease; cursor: pointer; }
+  .ovstrip .s img { width: 100%; height: 100%; object-fit: cover; }
+  .ovstrip .s:hover { opacity: .8; transform: scale(.94); }
+  .ovstrip .s.on { opacity: 1; transform: scale(1.12); box-shadow: 0 0 0 2px var(--accent), 0 6px 16px rgba(79,163,216,.35); }
+  .ovstrip .s .v { position: absolute; right: 3px; bottom: 3px; width: 14px; height: 14px; border-radius: 5px;
+    background: rgba(0,0,0,.6); color: #fff; display: flex; align-items: center; justify-content: center; }
+  .ovstrip .s .v svg { width: 9px; height: 9px; }
+  /* all-frames grid mode */
+  #ov.allmode .ovstripwrap { display: none; }
+  #ov.allmode .ovstage { display: none; }
+  #ov.allmode .ovpill, #ov.allmode .ovgrid-btn, #ov.allmode .ovchev { display: none; }
+  .ovallgrid { display: none; flex: 1; overflow-y: auto; padding: 10px; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 4px; }
+  #ov.allmode .ovallgrid { display: grid; }
+  .ovallgrid .g { aspect-ratio: 1; background: #2a2c30; border-radius: 4px; overflow: hidden; position: relative; cursor: pointer; }
+  .ovallgrid .g img { width: 100%; height: 100%; object-fit: cover; }
+  .ovallgrid .g.on { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 300; }
+  #toast.show { opacity: 1; }
+  #js-error-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; background: #a33; color: #fff; font: 11px/1.4 monospace; padding: 6px 10px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <header>
+    <button id="back-btn" class="ghost iconbtn" style="display:none" title="Back" aria-label="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <span class="htitle" id="head-title" data-i18n="viewer_title">Instagram</span>
+    <button id="refresh-btn" class="ghost iconbtn" title="Refresh" aria-label="Refresh">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+  </header>
+
+  <div id="scroll">
+    <div id="accounts"></div>
+    <div id="profile" style="display:none"></div>
+  </div>
+
+  <div id="ov">
+    <div class="ovbar">
+      <span class="ct" id="ov-ct">1 / 1</span>
+      <span class="tools">
+        <button class="tb" id="ov-copy" title="Copy media URL"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        <button class="tb" id="ov-zo" title="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/></svg></button>
+        <button class="tb" id="ov-zi" title="Zoom in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M21 21l-4.3-4.3"/></svg></button>
+        <button class="tb" id="ov-slide" title="Slideshow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M10 8l6 4-6 4V8z" fill="currentColor"/></svg></button>
+        <button class="tb" id="ov-fs" title="Fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+        <button class="tb dl" id="ov-dl" title="Download this frame"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button>
+        <button class="tb" id="ov-close" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </span>
+    </div>
+    <div class="ovcap" id="ov-cap"><div class="ct2" id="ov-cap-txt"></div><span class="more" id="ov-cap-more" hidden></span></div>
+    <div class="ovstage">
+      <button class="ovchev l" id="ov-prev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <div class="ovpicwrap" id="ov-pic"></div>
+      <button class="ovchev r" id="ov-next"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></button>
+      <div class="ovpill" id="ov-pill"></div>
+      <button class="ovgrid-btn" id="ov-gridbtn" title="All frames"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
+    </div>
+    <div class="ovallgrid" id="ov-allgrid"></div>
+    <div class="ovstripwrap"><div class="ovstrip" id="ov-strip"></div></div>
+  </div>
+
+  <div id="toast"></div>
+
+<script src="i18n.js"></script>
+<script>
+  window.addEventListener("error", e => {
+    let bar = document.getElementById("js-error-bar");
+    if (!bar) { bar = document.createElement("div"); bar.id = "js-error-bar"; document.body.appendChild(bar); }
+    bar.textContent = "JS error: " + (e.message || e.error) + " @ " + (e.filename || "") + ":" + (e.lineno || "");
+  });
+
+  const APP = "http://127.0.0.1:8597";
+  const L = (k, v) => window.I18N.t(k, v);
+  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // route IG-CDN images through the server (webview gets 403 without a Referer)
+  const img = u => (!u ? "" : /cdninstagram\.com|fbcdn\.net/.test(u) ? `${APP}/ig/img?u=${encodeURIComponent(u)}` : u);
+  // Instagram's own glyphs
+  const IC_CAROUSEL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3.5h8.5A3.5 3.5 0 0 1 20 7v8.5"/><rect x="3.5" y="8" width="12.5" height="12.5" rx="3"/></svg>`;
+  const IC_REEL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4.5"/><path d="M3 8h18M8.5 3l3 5M15 3l3 5"/><path d="M10.5 10.8v4.4l4-2.2z" fill="currentColor" stroke="none"/></svg>`;
+
+  async function get(p) { try { return await (await fetch(APP + p)).json(); } catch { return null; } }
+  async function post(p, b) { try { return await (await fetch(APP + p, { method: "POST", body: JSON.stringify(b) })).json(); } catch { return null; } }
+
+  const FONTS = { system: null, georgia: 'Georgia, serif', "ibm-plex-mono": '"IBM Plex Mono", monospace',
+    excalifont: '"Excalifont", cursive', "cascadia-mono": '"Cascadia Mono", monospace' };
+  function applyFont(k) { const f = FONTS[k], s = document.documentElement.style; if (f) { s.setProperty("--sans", f); s.setProperty("--mono", f); } else { s.removeProperty("--sans"); s.removeProperty("--mono"); } }
+
+  let toastTimer = null;
+  function toast(m) { const el = document.getElementById("toast"); el.textContent = m; el.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), 2200); }
+  async function queue(url) { const r = await post("/ig/queue", { url }); toast(r && r.queued ? L("viewer_queued") : L("cant_reach")); }
+  function fmtNum(n) { n = Number(n) || 0; if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M"; if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K"; return String(n); }
+
+  const accountsEl = document.getElementById("accounts");
+  const profileEl = document.getElementById("profile");
+  const backBtn = document.getElementById("back-btn");
+  const headTitle = document.getElementById("head-title");
+  let currentUser = null;
+  const avatarCache = new Map();
+
+  // ---- accounts home ----
+  async function renderAccounts() {
+    const data = await get("/ig/profiles");
+    accountsEl.innerHTML = "";
+    if (!data) { accountsEl.innerHTML = `<div class="empty">${esc(L("cant_reach"))}</div>`; return; }
+    const accts = data.accounts || [];
+    if (data.unresolved) {
+      const r = document.createElement("div"); r.className = "resolving";
+      r.textContent = L("viewer_resolving", { n: data.unresolved }); accountsEl.appendChild(r);
+    }
+    if (igIncomplete) accountsEl.insertAdjacentHTML("beforeend", `<div class="empty note" style="padding:10px 16px;text-align:left">${esc(L("viewer_need_login"))}</div>`);
+    if (!accts.length) { accountsEl.insertAdjacentHTML("beforeend", `<div class="empty">${esc(L("viewer_empty"))}</div>`); return; }
+    const grid = document.createElement("div"); grid.className = "acct-grid";
+    for (const a of accts) {
+      const card = document.createElement("div"); card.className = "acard";
+      const known = avatarCache.get(a.username);
+      const avInner = known ? `<img src="${esc(img(known))}" alt="">`
+        : known === undefined ? `<span class="sk" style="width:100%;height:100%;border-radius:50%"></span>`
+        : `<span>${esc((a.username[0] || "?").toUpperCase())}</span>`;
+      card.innerHTML = `<div class="av">${avInner}</div>`
+        + `<div class="nm">@${esc(a.username)}</div>`
+        + `<div class="sub">${esc(a.caught_count)} ${esc(L("viewer_caught"))} · ${esc((a.kinds || []).join(" · "))}</div>`;
+      card.addEventListener("click", () => openProfile(a.username));
+      grid.appendChild(card);
+      loadAvatar(a.username, card.querySelector(".av"));
+    }
+    accountsEl.appendChild(grid);
+  }
+  const avatarMiss = new Map(); // username -> last failed fetch (ms), retried after 90s
+  async function loadAvatar(username, into) {
+    let url = avatarCache.get(username);
+    const staleMiss = url == null && Date.now() - (avatarMiss.get(username) || 0) > 90000;
+    if (url === undefined || staleMiss) {
+      const p = await post("/ig/profile", { username });
+      url = (p && p.header && p.header.profile_pic_url) || null;
+      if (url) { avatarCache.set(username, url); avatarMiss.delete(username); }
+      else { avatarCache.set(username, null); avatarMiss.set(username, Date.now()); }
+      if (p && p.cookie === false && !igIncomplete) { igIncomplete = true; renderAccounts(); }
+    }
+    if (!into) return;
+    into.innerHTML = url
+      ? `<img src="${esc(img(url))}" alt="" loading="lazy" onerror="this.remove()">`
+      : `<span>${esc((username[0] || "?").toUpperCase())}</span>`;
+  }
+  let igIncomplete = false;
+
+  // ---- profile detail ----
+  let postsCursor = null, postsLoading = false, postsDone = false, postsObserver = null;
+
+  async function openProfile(username) {
+    currentUser = username;
+    accountsEl.style.display = "none"; profileEl.style.display = "block";
+    backBtn.style.display = "flex"; headTitle.textContent = "@" + username;
+    document.getElementById("scroll").scrollTop = 0;
+    postsCursor = null; postsLoading = false; postsDone = false;
+    if (postsObserver) { postsObserver.disconnect(); postsObserver = null; }
+
+    // fixed section order via placeholders + first-load skeletons
+    profileEl.innerHTML = `<div id="p-head" class="phead">`
+      +   `<div class="pav"><span class="sk" style="width:100%;height:100%;border-radius:50%"></span></div>`
+      +   `<div class="pmeta">`
+      +     `<span class="sk" style="width:140px;height:16px"></span>`
+      +     `<span class="sk" style="width:90px;height:11px;margin-top:8px"></span>`
+      +     `<span class="sk" style="width:220px;height:11px;margin-top:8px"></span>`
+      +     `<span class="sk" style="width:180px;height:11px;margin-top:12px"></span>`
+      +   `</div></div>`
+      + `<div id="p-story" class="sec-block" hidden></div>`
+      + `<div id="p-hl" class="sec-block" hidden></div>`
+      + `<div id="p-posts"><div class="sec"><span>${esc(L("viewer_posts"))}</span></div><div class="grid" id="posts-grid">`
+      +   Array.from({ length: 9 }, () => `<div class="cell ph sk"></div>`).join("")
+      +   `</div><div class="morewrap"><button id="posts-more" class="ghost" hidden></button></div></div>`;
+
+    const p = await post("/ig/profile", { username });
+    if (username !== currentUser) return;
+    if (!p) { profileEl.innerHTML = `<div class="empty">${esc(L("cant_reach"))}</div>`; return; }
+    const h = p.header || { username };
+
+    // header
+    const stat = (n, lbl) => `<span><b>${fmtNum(n)}</b> ${esc(lbl)}</span>`;
+    const hd = document.getElementById("p-head");
+    hd.className = "phead";
+    hd.innerHTML = `<div class="pav"><span>${esc((username[0] || "?").toUpperCase())}</span></div>`
+      + `<div class="pmeta"><div class="prow1"><span class="puser">@${esc(h.username || username)}</span>`
+      +   (h.is_verified ? `<span class="pverif" title="verified">✔</span>` : "")
+      +   (h.is_private ? `<span class="pbadge">${esc(L("viewer_private"))}</span>` : "") + `</div>`
+      +   (h.full_name ? `<div class="pname">${esc(h.full_name)}</div>` : "")
+      +   (h.biography ? `<div class="pbio">${esc(h.biography)}</div>` : "")
+      +   (h.external_url ? `<div class="plink"><a href="#" id="p-ext">${esc(h.external_url)}</a></div>` : "")
+      +   (h.complete ? `<div class="pstats">${stat(h.post_count, L("viewer_posts_n"))}${stat(h.follower_count, L("viewer_followers"))}${stat(h.following_count, L("viewer_following"))}</div>` : "")
+      +   `<div class="pdl"><button id="dl-profile">${esc(L("viewer_dl_profile"))}</button></div></div>`;
+    if (h.profile_pic_url) {
+      avatarCache.set(username, h.profile_pic_url); avatarMiss.delete(username);
+      const pav = hd.querySelector(".pav");
+      pav.innerHTML = `<img src="${esc(img(h.profile_pic_url))}" alt="">`;
+      pav.classList.add("clickable");
+      pav.addEventListener("click", () => {
+        openOverlay([{ media_url: h.profile_pic_url, thumb_url: h.profile_pic_url, is_video: false }],
+          `https://www.instagram.com/${username}/`, h.full_name || "@" + username, "@" + username);
+      });
+    }
+    hd.querySelector("#dl-profile").addEventListener("click", () => queue(`https://www.instagram.com/${username}/`));
+    const ext = hd.querySelector("#p-ext");
+    if (ext) ext.addEventListener("click", e => { e.preventDefault(); try { window.__TAURI__.core.invoke("open_external_url", { url: h.external_url }); } catch (_) {} });
+    if (p.cookie === false) hd.insertAdjacentHTML("afterend", `<div class="empty note" style="padding:8px 18px">${esc(L("viewer_need_login"))}</div>`);
+    else if (!h.complete) hd.insertAdjacentHTML("afterend", `<div class="empty note" style="padding:8px 18px">${esc(L("viewer_rate_limited"))}</div>`);
+
+    // story (only if active)
+    if (p.has_story) {
+      const box = document.getElementById("p-story");
+      box.hidden = false;
+      box.innerHTML = `<div class="sec"><span>${esc(L("viewer_story"))}</span><span class="sdl" id="dl-story">${esc(L("viewer_dl_story"))}</span></div><div class="rings" id="story-rings"></div>`;
+      box.querySelector("#dl-story").addEventListener("click", () => queue(`https://www.instagram.com/stories/${username}/`));
+      post("/ig/story", { username }).then(r => {
+        const items = (r && r.items) || [];
+        if (!items.length) { box.hidden = true; return; }
+        fillRings(box.querySelector("#story-rings"), items, () =>
+          openOverlay(items, `https://www.instagram.com/stories/${username}/`, "", L("viewer_story")));
+      });
+    }
+
+    // highlights
+    post("/ig/highlights", { username }).then(r => {
+      const hls = (r && r.highlights) || [];
+      if (!hls.length || username !== currentUser) return;
+      const box = document.getElementById("p-hl");
+      box.hidden = false;
+      box.innerHTML = `<div class="sec"><span>${esc(L("viewer_highlights"))}</span></div><div class="rings" id="hl-rings"></div>`;
+      const wrap = box.querySelector("#hl-rings");
+      for (const hl of hls) {
+        const ring = document.createElement("div"); ring.className = "ring seen";
+        ring.innerHTML = `<div class="rd">${hl.cover_url ? `<img src="${esc(img(hl.cover_url))}" alt="">` : ""}</div><div class="rl">${esc(hl.title || "•")}</div>`;
+        ring.addEventListener("click", async () => {
+          const hr = await post("/ig/highlight", { id: hl.id });
+          const items = (hr && hr.items) || [];
+          if (!items.length) { toast(L("cant_reach")); return; }
+          openOverlay(items, `https://www.instagram.com/stories/highlights/${hl.id}/`, hl.title || "", L("viewer_highlights"));
+        });
+        wrap.appendChild(ring);
+      }
+    });
+
+    // posts — first page auto, then an explicit "load more" button
+    const moreBtn = document.getElementById("posts-more");
+    moreBtn.addEventListener("click", () => loadMorePosts(username));
+    loadMorePosts(username);
+  }
+
+  function updateMoreBtn() {
+    const b = document.getElementById("posts-more");
+    if (!b) return;
+    b.disabled = postsLoading;
+    b.textContent = postsLoading ? "…" : L("viewer_load_more");
+    b.hidden = postsDone || (!postsCursor && !postsLoading);
+  }
+
+  function fillRings(wrap, items, onClick) {
+    wrap.innerHTML = "";
+    items.forEach((it, i) => {
+      const ring = document.createElement("div"); ring.className = "ring";
+      ring.innerHTML = `<div class="rd">${it.thumb_url ? `<img src="${esc(img(it.thumb_url))}" alt="">` : ""}</div><div class="rl">${it.is_video ? "▶" : ""} ${i + 1}</div>`;
+      ring.addEventListener("click", () => onClick(i));
+      wrap.appendChild(ring);
+    });
+  }
+
+  async function loadMorePosts(username) {
+    if (postsLoading || postsDone || username !== currentUser) return;
+    postsLoading = true; updateMoreBtn();
+    const r = await post("/ig/posts", { username, after: postsCursor || undefined });
+    postsLoading = false;
+    if (username !== currentUser) return;
+    const grid = document.getElementById("posts-grid");
+    if (!grid) { return; }
+    if (!r || r.error) {
+      if (!grid.dataset.filled) { grid.innerHTML = ""; grid.dataset.filled = "1"; }
+      if (r && r.error && !grid.children.length) grid.insertAdjacentHTML("afterend", `<div class="empty note">${esc(r.error)}</div>`);
+      postsDone = true; updateMoreBtn(); return;
+    }
+    if (!grid.dataset.filled) { grid.innerHTML = ""; grid.dataset.filled = "1"; }
+    for (const pm of r.posts || []) {
+      const cell = document.createElement("div"); cell.className = "cell";
+      cell.innerHTML = (pm.thumb_url ? `<img src="${esc(img(pm.thumb_url))}" alt="" loading="lazy">` : "")
+        + (pm.is_video ? `<span class="badge">${IC_REEL}</span>` : pm.is_carousel ? `<span class="badge">${IC_CAROUSEL}</span>` : "");
+      cell.addEventListener("click", () => openPost(pm));
+      grid.appendChild(cell);
+    }
+    postsCursor = r.next || null;
+    if (!postsCursor) postsDone = true;
+    updateMoreBtn();
+  }
+
+  async function openPost(pm) {
+    const r = await post("/ig/post", { id: pm.shortcode });
+    if (!r || r.error || !(r.items || []).length) { toast((r && r.error) || L("cant_reach")); return; }
+    openOverlay(r.items, `https://www.instagram.com/p/${pm.shortcode}/`, r.caption || "", L("viewer_posts"));
+  }
+
+  // ---- full-window media overlay ----
+  const ov = document.getElementById("ov");
+  let ovFrames = [], ovIdx = 0, ovSource = "", ovCaption = "", ovZoom = 1, ovSlideTimer = null;
+  let ovPan = { x: 0, y: 0 }, ovDrag = null;
+
+  function openOverlay(frames, sourceUrl, caption, title) {
+    ovFrames = (frames || [])
+      .filter(f => f && (f.media_url || f.thumb_url))
+      .map(f => ({ media_url: f.media_url || f.thumb_url, thumb_url: f.thumb_url || f.media_url, is_video: !!f.is_video }));
+    if (!ovFrames.length) { toast(L("cant_reach")); return; }
+    ovSource = sourceUrl; ovCaption = caption || ""; ovIdx = 0; ovZoom = 1;
+    ov.classList.remove("allmode");
+    ov.classList.add("open");
+    renderCaption();
+    buildStrip(); buildAllGrid(); showFrame(0);
+  }
+  function renderCaption() {
+    const bar = document.getElementById("ov-cap"), txt = document.getElementById("ov-cap-txt"), more = document.getElementById("ov-cap-more");
+    bar.classList.remove("exp");
+    txt.textContent = ovCaption;
+    more.hidden = true;
+    if (!ovCaption) return;
+    requestAnimationFrame(() => { more.hidden = txt.scrollHeight <= txt.clientHeight + 1; });
+  }
+  function closeOverlay() {
+    ov.classList.remove("open"); stopSlide();
+    document.querySelectorAll("video").forEach(v => v.pause());
+  }
+  function buildStrip() {
+    const strip = document.getElementById("ov-strip");
+    strip.innerHTML = "";
+    ovFrames.forEach((f, i) => {
+      const s = document.createElement("div"); s.className = "s";
+      s.innerHTML = `${f.thumb_url ? `<img src="${esc(img(f.thumb_url))}" alt="">` : ""}${f.is_video ? `<span class="v">${IC_REEL}</span>` : ""}`;
+      s.addEventListener("click", () => showFrame(i));
+      strip.appendChild(s);
+    });
+  }
+  function buildAllGrid() {
+    const g = document.getElementById("ov-allgrid");
+    g.innerHTML = "";
+    ovFrames.forEach((f, i) => {
+      const c = document.createElement("div"); c.className = "g";
+      c.innerHTML = f.thumb_url ? `<img src="${esc(img(f.thumb_url))}" alt="">` : "";
+      c.addEventListener("click", () => { ov.classList.remove("allmode"); showFrame(i); });
+      g.appendChild(c);
+    });
+  }
+  function showFrame(i) {
+    ovIdx = Math.max(0, Math.min(ovFrames.length - 1, i));
+    const f = ovFrames[ovIdx];
+    ovZoom = 1; ovPan = { x: 0, y: 0 };
+    document.getElementById("ov-ct").textContent = `${ovIdx + 1} / ${ovFrames.length}`;
+    const pic = document.getElementById("ov-pic");
+    pic.classList.remove("zoomed");
+    if (f.is_video) {
+      pic.innerHTML = `<video src="${esc(f.media_url)}" controls autoplay playsinline></video>`;
+    } else {
+      pic.innerHTML = `<span class="sk"></span><img src="${esc(img(f.media_url))}" alt="" style="opacity:0">`;
+      const im = pic.querySelector("img");
+      im.addEventListener("load", () => { const s = pic.querySelector(".sk"); if (s) s.remove(); im.style.opacity = ""; });
+      im.addEventListener("error", () => { const s = pic.querySelector(".sk"); if (s) s.remove(); im.style.opacity = ""; });
+    }
+    document.getElementById("ov-prev").disabled = ovIdx === 0;
+    document.getElementById("ov-next").disabled = ovIdx === ovFrames.length - 1;
+    document.querySelectorAll("#ov-strip .s").forEach((s, k) => s.classList.toggle("on", k === ovIdx));
+    document.querySelectorAll("#ov-allgrid .g").forEach((s, k) => s.classList.toggle("on", k === ovIdx));
+    centerStrip();
+    const pill = document.getElementById("ov-pill");
+    const multi = ovFrames.length > 1;
+    pill.innerHTML = `<button class="btn2" id="ov-dlall">${esc(multi ? L("viewer_dl_all", { n: ovFrames.length }) : L("viewer_dl_one"))}</button>`
+      + (multi ? `<button class="btn2 g" id="ov-dlone">${esc(L("viewer_this_frame"))}</button>` : "");
+    pill.querySelector("#ov-dlall").addEventListener("click", () => queue(ovSource));
+    const one = pill.querySelector("#ov-dlone");
+    if (one) one.addEventListener("click", () => queue(f.media_url));
+  }
+  function centerStrip() {
+    const strip = document.getElementById("ov-strip");
+    const active = strip.children[ovIdx];
+    if (!active) return;
+    // active thumb centred in the visible width (naturally left-of-centre on even counts)
+    const target = active.offsetLeft - strip.clientWidth / 2 + active.offsetWidth / 2;
+    strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
+  }
+  function step(d) { const n = ovIdx + d; if (n < 0 || n >= ovFrames.length) return; showFrame(n); }
+  function stopSlide() { if (ovSlideTimer) { clearInterval(ovSlideTimer); ovSlideTimer = null; document.getElementById("ov-slide").style.color = ""; } }
+  function applyZoom() {
+    if (ovZoom <= 1) { ovZoom = 1; ovPan = { x: 0, y: 0 }; }
+    const el = document.querySelector("#ov-pic img");
+    if (el) el.style.transform = `translate(${ovPan.x}px, ${ovPan.y}px) scale(${ovZoom})`;
+    document.getElementById("ov-pic").classList.toggle("zoomed", ovZoom > 1);
+  }
+  function setZoom(z) { ovZoom = Math.max(1, Math.min(5, z)); applyZoom(); }
+
+  document.getElementById("ov-close").addEventListener("click", closeOverlay);
+  document.getElementById("ov-prev").addEventListener("click", () => step(-1));
+  document.getElementById("ov-next").addEventListener("click", () => step(1));
+  document.getElementById("ov-zi").addEventListener("click", () => setZoom(ovZoom + 0.5));
+  document.getElementById("ov-zo").addEventListener("click", () => setZoom(ovZoom - 0.5));
+  document.getElementById("ov-cap-more").addEventListener("click", () => document.getElementById("ov-cap").classList.toggle("exp"));
+  const ovStage = document.querySelector(".ovstage");
+  ovStage.addEventListener("wheel", e => {
+    if (!ov.classList.contains("open")) return;
+    const t = e.target;
+    if (t && t.tagName === "VIDEO") return;
+    e.preventDefault();
+    setZoom(ovZoom + (e.deltaY < 0 ? 0.25 : -0.25));
+  }, { passive: false });
+  ovStage.addEventListener("dblclick", e => {
+    if (e.target && e.target.tagName === "VIDEO") return;
+    setZoom(ovZoom > 1 ? 1 : 2.5);
+  });
+  ovStage.addEventListener("pointerdown", e => {
+    if (ovZoom <= 1 || (e.target && e.target.tagName === "VIDEO")) return;
+    ovDrag = { x: e.clientX, y: e.clientY, px: ovPan.x, py: ovPan.y, moved: false };
+    document.getElementById("ov-pic").classList.add("dragging");
+    ovStage.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  ovStage.addEventListener("pointermove", e => {
+    if (!ovDrag) return;
+    const im = document.querySelector("#ov-pic img");
+    const lim = im ? { x: (im.clientWidth * (ovZoom - 1)) / 2 + 60, y: (im.clientHeight * (ovZoom - 1)) / 2 + 60 } : { x: 600, y: 600 };
+    let nx = ovDrag.px + (e.clientX - ovDrag.x), ny = ovDrag.py + (e.clientY - ovDrag.y);
+    ovPan = { x: Math.max(-lim.x, Math.min(lim.x, nx)), y: Math.max(-lim.y, Math.min(lim.y, ny)) };
+    ovDrag.moved = true;
+    applyZoom();
+  });
+  let suppressClick = false;
+  function endDrag(e) {
+    if (!ovDrag) return;
+    if (ovDrag.moved) { suppressClick = true; setTimeout(() => { suppressClick = false; }, 350); }
+    ovDrag = null;
+    document.getElementById("ov-pic").classList.remove("dragging");
+    try { ovStage.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  ovStage.addEventListener("pointerup", endDrag);
+  ovStage.addEventListener("pointercancel", endDrag);
+  // click anywhere that isn't the media / a control closes the viewer.
+  // capture phase so a pan-release's synthesised click is swallowed before it bubbles.
+  ov.addEventListener("click", e => {
+    if (suppressClick || (ovDrag && ovDrag.moved)) { suppressClick = false; e.stopPropagation(); return; }
+    if (e.target.closest("button, .ovbar, .ovstrip, .ovallgrid, #ov-cap-more")) return;
+    if (e.target.closest("#ov-pic img, #ov-pic video")) return;   // on the photo/video itself — never closes
+    closeOverlay();                                      // backdrop / margins / caption bar — closes (even when zoomed)
+  }, true);
+  document.getElementById("ov-copy").addEventListener("click", async () => { try { await navigator.clipboard.writeText(ovFrames[ovIdx].media_url); toast(L("viewer_copied")); } catch (_) {} });
+  document.getElementById("ov-dl").addEventListener("click", () => queue(ovFrames[ovIdx].media_url));
+  document.getElementById("ov-slide").addEventListener("click", () => {
+    if (ovSlideTimer) return stopSlide();
+    document.getElementById("ov-slide").style.color = "var(--accent)";
+    ovSlideTimer = setInterval(() => { ovIdx + 1 < ovFrames.length ? step(1) : stopSlide(); }, 3000);
+  });
+  document.getElementById("ov-fs").addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
+  });
+  document.getElementById("ov-gridbtn").addEventListener("click", () => ov.classList.toggle("allmode"));
+  document.addEventListener("keydown", e => {
+    if (!ov.classList.contains("open")) return;
+    if (e.key === "Escape") closeOverlay();
+    else if (e.key === "ArrowLeft") step(-1);
+    else if (e.key === "ArrowRight") step(1);
+  });
+
+  // ---- nav ----
+  function goBack() {
+    currentUser = null;
+    if (postsObserver) { postsObserver.disconnect(); postsObserver = null; }
+    profileEl.style.display = "none"; accountsEl.style.display = "block";
+    backBtn.style.display = "none"; headTitle.textContent = L("viewer_title");
+    renderAccounts();
+  }
+  backBtn.addEventListener("click", goBack);
+  document.getElementById("refresh-btn").addEventListener("click", () => currentUser ? openProfile(currentUser) : renderAccounts());
+
+  (async () => {
+    for (let i = 0; i < 100; i++) {
+      try { const s = await window.__TAURI__.core.invoke("get_settings"); applyFont(s.font || "system"); window.I18N.applyLang(s.language || "en"); break; }
+      catch { if (i === 99) window.I18N.applyLang("en"); await new Promise(r => setTimeout(r, 150)); }
+    }
+    headTitle.textContent = L("viewer_title");
+    renderAccounts();
+  })();
+  window.__TAURI__.event.listen("settings-changed", async () => {
+    try { const s = await window.__TAURI__.core.invoke("get_settings"); applyFont(s.font || "system"); window.I18N.applyLang(s.language || "en"); if (!currentUser) headTitle.textContent = L("viewer_title"); } catch {}
+  });
+  window.__TAURI__.event.listen("detection-updated", () => { if (!currentUser) renderAccounts(); });
+  setInterval(() => { if (!currentUser && document.visibilityState === "visible") renderAccounts(); }, 15000);
+</script>
+</body>
+</html>

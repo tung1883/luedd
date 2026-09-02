@@ -112,7 +112,7 @@ impl DownloadManager {
         let removed = self.store.remove_entry(id).await?;
         if let Some(entry) = &removed {
             if delete_files {
-                delete_artifacts(&entry.dest).await;
+                delete_artifacts(entry).await;
             }
         }
         Ok(removed.is_some())
@@ -127,7 +127,7 @@ impl DownloadManager {
         let count = removed.len();
         if delete_files {
             for entry in &removed {
-                delete_artifacts(&entry.dest).await;
+                delete_artifacts(entry).await;
             }
         }
         Ok(count)
@@ -200,7 +200,11 @@ async fn run_single(
     let backend = registry.get(&entry.backend_id).unwrap_or_else(|| registry.http());
     let req = DownloadReq {
         url: entry.url.clone(),
-        dest_dir: entry.dest.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")),
+        dest_dir: entry
+            .out_dir
+            .clone()
+            .or_else(|| entry.dest.parent().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from(".")),
         filename_hint: entry.dest.file_name().map(|s| s.to_string_lossy().into_owned()),
         ctx,
         quality: entry.quality.clone(),
@@ -249,9 +253,20 @@ async fn run_single(
     }
 }
 
-async fn delete_artifacts(dest: &std::path::Path) {
-    tokio::fs::remove_file(dest).await.ok();
-    tokio::fs::remove_dir_all(crate::naming::cache_dir_for(dest)).await.ok();
+async fn delete_artifacts(entry: &DownloadEntry) {
+    // A dedicated output folder (Instagram): wipe it whole — covers a
+    // half-finished carousel/profile whose files were never tracked on the entry.
+    if let Some(dir) = &entry.out_dir {
+        if dir.file_name().is_some() {
+            tokio::fs::remove_dir_all(dir).await.ok();
+        }
+    }
+    tokio::fs::remove_file(&entry.dest).await.ok();
+    tokio::fs::remove_dir_all(crate::naming::cache_dir_for(&entry.dest)).await.ok();
+    for f in &entry.extra_files {
+        tokio::fs::remove_file(f).await.ok();
+        tokio::fs::remove_dir_all(crate::naming::cache_dir_for(f)).await.ok();
+    }
 }
 
 #[cfg(test)]

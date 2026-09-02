@@ -23,11 +23,14 @@ struct AppState {
 /// The backend registry: the three transport built-ins plus (later phases)
 /// yt-dlp / Instagram / instaloader / torrent. Backends read their per-run
 /// config from `DownloadReq.config`, so this is built once and never rebuilt.
-fn build_registry(client: HttpClient) -> Arc<BackendRegistry> {
+fn build_registry(
+    client: HttpClient,
+) -> (Arc<BackendRegistry>, Arc<luedd_core::backend::instagram::InstagramBackend>) {
     let mut registry = BackendRegistry::with_builtins(client.clone());
     registry.register(Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone())));
-    registry.register(Arc::new(luedd_core::backend::InstagramBackend::new(client)));
-    Arc::new(registry)
+    let instagram = Arc::new(luedd_core::backend::InstagramBackend::new(client));
+    registry.register(instagram.clone());
+    (Arc::new(registry), instagram)
 }
 
 fn build_manager(
@@ -348,21 +351,30 @@ fn main() {
             let store_path = default_store_path(&data_dir);
             let settings_path = default_settings_path(&data_dir);
 
-            let (store, settings) = tauri::async_runtime::block_on(async {
+            let ig_library_path = luedd_core::ig_library::default_ig_library_path(&data_dir);
+
+            let (store, settings, ig_library) = tauri::async_runtime::block_on(async {
                 let store = Arc::new(DownloadStore::open(store_path).await.expect("failed to open download store"));
                 let settings =
                     Arc::new(SettingsStore::open(settings_path, &data_dir).await.expect("failed to open settings"));
-                (store, settings)
+                let ig_library = Arc::new(
+                    luedd_core::ig_library::IgLibraryStore::open(ig_library_path)
+                        .await
+                        .expect("failed to open ig_library"),
+                );
+                (store, settings, ig_library)
             });
 
             let initial_settings = tauri::async_runtime::block_on(settings.get());
-            let registry = build_registry(HttpClient::new().expect("failed to build http client"));
+            let (registry, instagram) = build_registry(HttpClient::new().expect("failed to build http client"));
             let manager = build_manager(store.clone(), &initial_settings, registry.clone())
                 .expect("failed to build download manager");
 
             let server_store = store.clone();
             let server_manager = manager.clone();
             let server_registry = registry.clone();
+            let server_instagram = instagram;
+            let server_ig_library = ig_library;
             let server_settings = settings.clone();
             let (detection_tx, mut detection_rx) = tokio::sync::mpsc::unbounded_channel();
             let (focus_tx, mut focus_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -373,8 +385,16 @@ fn main() {
                     on_new_detection: Some(detection_tx),
                     on_focus_request: Some(focus_tx),
                 };
-                if let Err(e) =
-                    luedd_ipc::server::serve(server_store, server_manager, server_registry, config, ipc_listener).await
+                if let Err(e) = luedd_ipc::server::serve(
+                    server_store,
+                    server_manager,
+                    server_registry,
+                    server_instagram,
+                    server_ig_library,
+                    config,
+                    ipc_listener,
+                )
+                .await
                 {
                     tracing::warn!(error = %e, "luedd-ipc server exited");
                 }
@@ -384,6 +404,9 @@ fn main() {
             // detection both hit the reliable "already exists" path.
             if let Err(e) = build_detection_window(&app.handle()) {
                 tracing::warn!(error = %e, "failed to pre-create detection window");
+            }
+            if let Err(e) = build_viewer_window(&app.handle()) {
+                tracing::warn!(error = %e, "failed to pre-create Instagram viewer window");
             }
 
             let detection_app_handle = app.handle().clone();
@@ -448,7 +471,8 @@ fn main() {
             open_external_url,
             detection_window_set_pinned,
             detection_window_hide,
-            detection_window_show
+            detection_window_show,
+            viewer_window_show
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -497,6 +521,53 @@ fn show_or_refresh_detection_window(app: &tauri::AppHandle, focus: bool) {
         let _ = win.set_focus();
     }
     let _ = win.emit("detection-updated", ());
+}
+
+const VIEWER_WINDOW_LABEL: &str = "viewer";
+
+/// The Instagram profile viewer — a separate window, built hidden at startup
+/// like the detection window, shown on demand from the ⋯ button.
+fn build_viewer_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let viewer_url = format!("viewer.html?v={}", env!("LUEDD_ASSET_VER"));
+    let win = tauri::WebviewWindowBuilder::new(app, VIEWER_WINDOW_LABEL, tauri::WebviewUrl::App(viewer_url.into()))
+        .title("Lüdd-Insta")
+        .inner_size(940.0, 720.0)
+        .min_inner_size(560.0, 460.0)
+        .resizable(true)
+        .visible(false)
+        .background_color(tauri::webview::Color(0x16, 0x17, 0x1a, 0xff))
+        .build()?;
+    let win_for_close = win.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win_for_close.hide();
+        }
+    });
+    Ok(win)
+}
+
+fn show_or_refresh_viewer_window(app: &tauri::AppHandle) {
+    let win = match app.get_webview_window(VIEWER_WINDOW_LABEL) {
+        Some(win) => win,
+        None => match build_viewer_window(app) {
+            Ok(win) => win,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open Instagram viewer window");
+                return;
+            }
+        },
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    let _ = win.emit("detection-updated", ());
+}
+
+#[tauri::command]
+fn viewer_window_show(app: tauri::AppHandle) -> Result<(), String> {
+    show_or_refresh_viewer_window(&app);
+    Ok(())
 }
 
 #[tauri::command]

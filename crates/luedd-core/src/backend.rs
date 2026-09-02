@@ -78,11 +78,18 @@ pub struct EntryMeta {
     pub title: Option<String>,
     /// Instagram sub-group: `post | reel | profile | story | highlight`.
     pub media_class: Option<String>,
+    /// A dedicated folder this entry's output lives in (Instagram writes a whole
+    /// carousel / profile / story here). Set at `describe` time so deleting the
+    /// entry can remove the folder wholesale — partial downloads included.
+    pub out_dir: Option<PathBuf>,
 }
 
 impl EntryMeta {
     pub fn is_empty(&self) -> bool {
-        self.author.is_none() && self.title.is_none() && self.media_class.is_none()
+        self.author.is_none()
+            && self.title.is_none()
+            && self.media_class.is_none()
+            && self.out_dir.is_none()
     }
 }
 
@@ -154,7 +161,7 @@ pub fn provider_label(backend_id: &str) -> &str {
     match backend_id {
         "http" | "hls" | "dash" => "Lüdd",
         "ytdlp" => "yt-dlp",
-        "instagram" => "Instagram",
+        "instagram" => "Lüdd-Insta",
         "instaloader" => "instaloader",
         "torrent" => "torrent",
         other => other,

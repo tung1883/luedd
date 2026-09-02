@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
+use luedd_core::backend::instagram::InstagramBackend;
+use luedd_core::ig_library::{IgCaught, IgLibraryStore, UNRESOLVED};
 use luedd_core::jobs::DownloadKind;
 use luedd_core::queue::{DownloadEntry, DownloadManager, DownloadStore, SettingsStore};
 use luedd_net::{HttpClient, RequestContext};
@@ -56,6 +58,14 @@ struct AppState {
     store: Arc<DownloadStore>,
     manager: Arc<DownloadManager>,
     registry: Arc<luedd_core::backend::BackendRegistry>,
+    /// The concrete Instagram backend — the `/ig/*` viewer endpoints call its
+    /// read-only metadata methods directly (not through the `DownloadBackend` trait).
+    instagram: Arc<InstagramBackend>,
+    /// Persistent index of caught Instagram accounts (survives restarts).
+    ig_library: Arc<IgLibraryStore>,
+    /// The most recent non-empty cookie seen on an Instagram detection — the
+    /// `/ig/*` endpoints have no per-request cookie of their own.
+    last_ig_cookie: Mutex<Option<String>>,
     config: ServerConfig,
     detected: Mutex<Vec<DetectedMedia>>,
     next_id: AtomicU64,
@@ -224,6 +234,8 @@ pub async fn serve(
     store: Arc<DownloadStore>,
     manager: Arc<DownloadManager>,
     registry: Arc<luedd_core::backend::BackendRegistry>,
+    instagram: Arc<InstagramBackend>,
+    ig_library: Arc<IgLibraryStore>,
     config: ServerConfig,
     listener: std::net::TcpListener,
 ) -> anyhow::Result<()> {
@@ -231,6 +243,9 @@ pub async fn serve(
         store,
         manager,
         registry,
+        instagram,
+        ig_library,
+        last_ig_cookie: Mutex::new(None),
         config,
         detected: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
@@ -239,7 +254,10 @@ pub async fn serve(
         ffmpeg_slots: Arc::new(tokio::sync::Semaphore::new(6)),
     });
 
-    let cors = CorsLayer::new().allow_methods([Method::GET, Method::POST]).allow_origin(Any);
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_origin(Any)
+        .allow_headers(Any);
 
     let app = Router::new()
         .route("/sync", get(sync))
@@ -253,6 +271,16 @@ pub async fn serve(
         .route("/clear", post(clear))
         .route("/monitoring", post(set_monitoring))
         .route("/focus-main", get(focus_main))
+        .route("/ig/profiles", get(ig_profiles))
+        .route("/ig/profile", post(ig_profile))
+        .route("/ig/posts", post(ig_posts))
+        .route("/ig/highlights", post(ig_highlights))
+        .route("/ig/story", post(ig_story))
+        .route("/ig/highlight", post(ig_highlight))
+        .route("/ig/post", post(ig_post))
+        .route("/ig/queue", post(ig_queue))
+        .route("/ig/cookie", post(ig_cookie))
+        .route("/ig/img", get(ig_img))
         .layer(cors)
         .with_state(state);
 
@@ -296,7 +324,7 @@ fn to_video_list_item(
 /// Instagram post…), derived from the URL — the raw URL is still on the row's
 /// detail view.
 fn page_label(url: &str, page_title: Option<&str>, provider: &str) -> String {
-    if provider == "Instagram" {
+    if provider == "Lüdd-Insta" {
         if let Some(rest) = url.split("instagram.com/").nth(1) {
             let segs: Vec<&str> = rest.split(['/', '?', '#']).filter(|s| !s.is_empty()).collect();
             match segs.as_slice() {
@@ -431,42 +459,323 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
         let url = canonical_page_url(&req.url);
         let cfg = state.config.settings.get().await.backends;
         let provider = luedd_core::backend::provider_label(state.registry.quick_id(&url, &cfg)).to_string();
-        let mut detected = state.detected.lock().await;
-        if !detected.iter().any(|m| m.url == url) {
-            let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
-            tracing::info!(url = %url, %id, provider = %provider, "page detection from browser extension");
-            let item = to_video_list_item(
-                &id,
-                &url,
-                Some(&url),
-                req.title.as_deref(),
-                Some(&url),
-                false,
-                true,
-                &provider,
-            );
-            if let Some(tx) = &state.config.on_new_detection {
-                let _ = tx.send(item.clone());
-            }
-            new_item = Some(item);
-            detected.push(DetectedMedia {
-                id,
-                url: url.clone(),
-                tab_url: Some(url.clone()),
-                page_title: req.title,
-                page_url: Some(url),
-                request_headers: HashMap::new(),
-                cookie: req.cookie,
-                user_agent: None,
-                is_image: false,
-                is_page: true,
-                provider,
-            });
+        if provider == "Lüdd-Insta" {
+            record_ig_catch(&state, &url, req.cookie.as_deref()).await;
+        }
+        new_item = ensure_page_detection(&state, &url, req.title, req.cookie).await;
+        if let Some(it) = &new_item {
+            tracing::info!(url = %url, id = %it.id, provider = %provider, "page detection from browser extension");
         }
     } else {
         tracing::warn!("malformed /page payload from extension");
     }
     Json(sync_response(video_list(&state).await, new_item))
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+impl AppState {
+    /// Cookie for an `/ig/*` call: the per-request one, else the last cookie any
+    /// Instagram detection carried this session, else the Settings fallback.
+    async fn ig_cookie(&self, per_req: Option<&str>) -> Option<String> {
+        if let Some(c) = per_req.filter(|c| !c.trim().is_empty()) {
+            return Some(c.to_string());
+        }
+        if let Some(c) = self.last_ig_cookie.lock().await.clone() {
+            return Some(c);
+        }
+        self.config.settings.get().await.backends.instagram.session_cookie.clone()
+    }
+}
+
+/// Classify a canonical Instagram page URL into `(account_from_url, IgCaught)`.
+/// `account` is `None` for `/p/…` and `/stories/highlights/…` (no username in
+/// the path) — those get a background owner resolve.
+fn ig_caught_of(url: &str) -> Option<(Option<String>, IgCaught)> {
+    let rest = url.split("instagram.com/").nth(1)?;
+    let segs: Vec<&str> = rest.split(['/', '?', '#']).filter(|s| !s.is_empty()).collect();
+    let mk = |account: Option<String>, kind: &str, key: String| {
+        Some((account, IgCaught { kind: kind.to_string(), key, url: url.to_string(), seen: unix_now() }))
+    };
+    match segs.as_slice() {
+        ["p", code, ..] => mk(None, "post", code.to_string()),
+        ["reel" | "reels", code, ..] => mk(None, "reel", code.to_string()),
+        ["tv", code, ..] => mk(None, "igtv", code.to_string()),
+        ["stories", "highlights", id, ..] => mk(None, "highlight", id.to_string()),
+        ["stories", user, ..] => mk(Some(user.to_string()), "story", String::new()),
+        [user] => mk(Some(user.to_string()), "profile", String::new()),
+        _ => None,
+    }
+}
+
+/// Record a page-URL detection into `state.detected` (deduped) so it shows in
+/// the detection panel. Mirrors the inner block of `page()`. Returns the new
+/// `VideoListItem` when one was actually added.
+async fn ensure_page_detection(
+    state: &Arc<AppState>,
+    url: &str,
+    title: Option<String>,
+    cookie: Option<String>,
+) -> Option<VideoListItem> {
+    let cfg = state.config.settings.get().await.backends;
+    let provider = luedd_core::backend::provider_label(state.registry.quick_id(url, &cfg)).to_string();
+    let mut detected = state.detected.lock().await;
+    if detected.iter().any(|m| m.url == url) {
+        return None;
+    }
+    let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+    let item = to_video_list_item(&id, url, Some(url), title.as_deref(), Some(url), false, true, &provider);
+    if let Some(tx) = &state.config.on_new_detection {
+        let _ = tx.send(item.clone());
+    }
+    detected.push(DetectedMedia {
+        id,
+        url: url.to_string(),
+        tab_url: Some(url.to_string()),
+        page_title: title,
+        page_url: Some(url.to_string()),
+        request_headers: HashMap::new(),
+        cookie,
+        user_agent: None,
+        is_image: false,
+        is_page: true,
+        provider,
+    });
+    Some(item)
+}
+
+/// Record an Instagram detection into the persistent library + remember its
+/// cookie; kick off a background owner resolve for account-less URLs.
+async fn record_ig_catch(state: &Arc<AppState>, url: &str, cookie: Option<&str>) {
+    if let Some(c) = cookie.filter(|c| !c.trim().is_empty()) {
+        *state.last_ig_cookie.lock().await = Some(c.to_string());
+    }
+    let Some((account, caught)) = ig_caught_of(url) else { return };
+    let _ = state.ig_library.record(account.as_deref(), caught).await;
+    if account.is_none() {
+        let st = state.clone();
+        let u = url.to_string();
+        tokio::spawn(async move {
+            let cfg = st.config.settings.get().await.backends;
+            let cookie = st.ig_cookie(None).await;
+            if let Some(owner) = st.instagram.resolve_account(&u, cookie.as_deref(), &cfg.instagram).await {
+                let owner = owner.trim_start_matches('@').to_string();
+                let _ = st.ig_library.set_account(&u, &owner).await;
+                // the viewer polls /ig/profiles, so it picks the move up on its own
+            }
+        });
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct IgUserReq {
+    username: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgPostsReq {
+    username: String,
+    after: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgIdReq {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgQueueReq {
+    url: String,
+}
+
+/// The caught-accounts list for the profile viewer's home screen.
+async fn ig_profiles(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let lib = state.ig_library.snapshot().await;
+    let mut accounts = Vec::new();
+    let mut unresolved = 0usize;
+    for (key, acct) in &lib.accounts {
+        if key == UNRESOLVED {
+            unresolved = acct.caught.len();
+            continue;
+        }
+        let mut kinds: Vec<String> = acct.caught.iter().map(|c| c.kind.clone()).collect();
+        kinds.sort();
+        kinds.dedup();
+        accounts.push(serde_json::json!({
+            "username": acct.username,
+            "caught_count": acct.caught.len(),
+            "kinds": kinds,
+            "last_seen": acct.last_seen,
+        }));
+    }
+    accounts.sort_by(|a, b| b["last_seen"].as_i64().unwrap_or(0).cmp(&a["last_seen"].as_i64().unwrap_or(0)));
+    Json(serde_json::json!({ "accounts": accounts, "unresolved": unresolved }))
+}
+
+async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgUserReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let cfg = state.config.settings.get().await.backends;
+    let cookie = state.ig_cookie(None).await;
+    let header = state.instagram.profile_header(&req.username, cookie.as_deref(), &cfg.instagram).await;
+    let has_story = state
+        .instagram
+        .story_items(&req.username, cookie.as_deref(), &cfg.instagram)
+        .await
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let caught = state
+        .ig_library
+        .snapshot()
+        .await
+        .accounts
+        .get(&req.username.to_ascii_lowercase())
+        .map(|a| a.caught.clone())
+        .unwrap_or_default();
+    let has_cookie = cookie.as_deref().map(|c| c.contains("sessionid=")).unwrap_or(false);
+    Json(serde_json::json!({ "header": header, "has_story": has_story, "caught": caught, "cookie": has_cookie }))
+}
+
+/// The extension pushes the current instagram.com cookie here (on connect and
+/// periodically), so `/ig/*` calls have a session even before any IG page
+/// detection this run. In-memory only, like `last_ig_cookie` from `/page`.
+async fn ig_cookie(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        cookie: Option<String>,
+    }
+    let ok = match serde_json::from_slice::<Req>(&body).ok().and_then(|r| r.cookie) {
+        Some(c) if c.contains("sessionid=") => {
+            *state.last_ig_cookie.lock().await = Some(c);
+            true
+        }
+        _ => false,
+    };
+    Json(serde_json::json!({ "ok": ok }))
+}
+
+async fn ig_posts(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgPostsReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let cfg = state.config.settings.get().await.backends;
+    let cookie = state.ig_cookie(None).await;
+    match state.instagram.profile_posts(&req.username, cookie.as_deref(), &cfg.instagram, req.after.as_deref()).await {
+        Ok((posts, next)) => Json(serde_json::json!({ "posts": posts, "next": next })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn ig_highlights(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgUserReq>(&body) else {
+        return Json(serde_json::json!({ "highlights": [] }));
+    };
+    let cfg = state.config.settings.get().await.backends;
+    let cookie = state.ig_cookie(None).await;
+    let hl = state.instagram.highlights_tray(&req.username, cookie.as_deref(), &cfg.instagram).await;
+    Json(serde_json::json!({ "highlights": hl }))
+}
+
+async fn ig_story(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgUserReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let cfg = state.config.settings.get().await.backends;
+    let cookie = state.ig_cookie(None).await;
+    match state.instagram.story_items(&req.username, cookie.as_deref(), &cfg.instagram).await {
+        Ok(items) => Json(serde_json::json!({ "items": items })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn ig_highlight(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgIdReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let cfg = state.config.settings.get().await.backends;
+    let cookie = state.ig_cookie(None).await;
+    match state.instagram.highlight_items(&req.id, cookie.as_deref(), &cfg.instagram).await {
+        Ok(items) => Json(serde_json::json!({ "items": items })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn ig_post(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgIdReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let cfg = state.config.settings.get().await.backends;
+    let cookie = state.ig_cookie(None).await;
+    match state.instagram.post_media(&req.id, cookie.as_deref(), &cfg.instagram).await {
+        Ok((items, caption)) => {
+            // a post pulled up in the viewer is also a catch: show it in the panel
+            let url = format!("https://www.instagram.com/p/{}", req.id);
+            record_ig_catch(&state, &url, cookie.as_deref()).await;
+            ensure_page_detection(&state, &url, None, cookie).await;
+            Json(serde_json::json!({ "items": items, "caption": caption }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn ig_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgQueueReq>(&body) else {
+        return Json(serde_json::json!({ "queued": false }));
+    };
+    let cookie = state.ig_cookie(None).await;
+    // an instagram.com page URL queued from the viewer is also a catch
+    if req.url.contains("instagram.com/") && !req.url.contains("cdninstagram.com") {
+        let canon = canonical_page_url(&req.url);
+        record_ig_catch(&state, &canon, cookie.as_deref()).await;
+        ensure_page_detection(&state, &canon, None, cookie.clone()).await;
+    }
+    let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, None).await;
+    Json(serde_json::json!({ "queued": id.is_some() }))
+}
+
+/// Proxy an Instagram CDN image through the server so the viewer webview gets it
+/// with a proper `Referer` (IG's CDN hotlink-blocks a `tauri://` origin).
+async fn ig_img(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let Some(url) = q.get("u") else {
+        return (axum::http::StatusCode::BAD_REQUEST, "missing u").into_response();
+    };
+    if !url.contains("cdninstagram.com") && !url.contains("fbcdn.net") {
+        return (axum::http::StatusCode::FORBIDDEN, "not an IG CDN url").into_response();
+    }
+    let cookie = state.ig_cookie(None).await;
+    let opts = luedd_net::RequestOptions {
+        headers: HashMap::from([
+            ("User-Agent".to_string(), FALLBACK_UA.to_string()),
+            ("Referer".to_string(), "https://www.instagram.com/".to_string()),
+        ]),
+        cookies: cookie,
+        byte_range: None,
+    };
+    match state.manager.http_client().get_response(url, &opts).await {
+        Ok(resp) if resp.status().is_success() => {
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("image/jpeg")
+                .to_string();
+            match resp.bytes().await {
+                Ok(b) => ([(axum::http::header::CONTENT_TYPE, ct), (axum::http::header::CACHE_CONTROL, "public, max-age=3600".to_string())], b).into_response(),
+                Err(_) => (axum::http::StatusCode::BAD_GATEWAY, "read failed").into_response(),
+            }
+        }
+        _ => (axum::http::StatusCode::BAD_GATEWAY, "fetch failed").into_response(),
+    }
 }
 
 async fn focus_main(State(state): State<Arc<AppState>>) -> &'static str {
@@ -1173,6 +1482,18 @@ async fn queue_url(
         backend.describe(&req).await
     };
 
+    // A backend that wants its own output folder (Instagram): re-root the dest
+    // into it and remember it on the entry so a delete removes the whole folder.
+    let dest = if let Some(dir) = &meta.out_dir {
+        tokio::fs::create_dir_all(dir).await.ok();
+        match dest.file_name() {
+            Some(name) => dir.join(name),
+            None => dest,
+        }
+    } else {
+        dest
+    };
+
     tracing::info!(%url, dest = %dest.display(), backend = %backend_id, "queued download from browser extension");
     let mut entry = DownloadEntry::new(url, dest, kind)
         .with_backend_id(backend_id)
@@ -1182,6 +1503,7 @@ async fn queue_url(
     entry.author = meta.author;
     entry.title = meta.title.or(title_hint);
     entry.media_class = meta.media_class;
+    entry.out_dir = meta.out_dir;
     let id = entry.id.clone();
     if let Err(e) = state.store.add_entry(entry).await {
         tracing::warn!(error = %e, "failed to persist download entry from extension");

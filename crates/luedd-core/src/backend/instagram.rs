@@ -13,11 +13,12 @@
 //! everything immediately and never persists a media URL.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use luedd_net::{HttpClient, ProgressTracker, ProgressTx, RequestContext, RequestOptions};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
@@ -48,6 +49,53 @@ const RESERVED_ROOTS: &[&str] = &[
     "press", "api", "graphql", "ajax", "web", "session",
 ];
 
+/// The `data.user` fields the profile viewer needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileHeader {
+    pub username: String,
+    pub full_name: String,
+    pub biography: String,
+    pub profile_pic_url: String,
+    pub is_private: bool,
+    pub is_verified: bool,
+    pub external_url: Option<String>,
+    pub post_count: u64,
+    pub follower_count: u64,
+    pub following_count: u64,
+    /// `false` = only the username is known (web_profile_info was blocked).
+    pub complete: bool,
+}
+
+/// One tile in the live profile grid — metadata only, no media URL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostMeta {
+    pub shortcode: String,
+    pub thumb_url: Option<String>,
+    pub is_video: bool,
+    pub is_carousel: bool,
+    pub taken_at: Option<i64>,
+    pub caption: String,
+}
+
+/// One story / highlight frame — a directly-downloadable media node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReelItem {
+    pub thumb_url: Option<String>,
+    pub media_url: String,
+    pub is_video: bool,
+    pub taken_at: Option<i64>,
+}
+
+/// A highlight in the account's tray.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightMeta {
+    pub id: String,
+    pub title: String,
+    pub cover_url: Option<String>,
+}
+
+const META_TTL: Duration = Duration::from_secs(300);
+
 pub struct InstagramBackend {
     client: HttpClient,
     /// Instagram soft-blocks a session that bursts; keep concurrency low.
@@ -55,11 +103,40 @@ pub struct InstagramBackend {
     /// Panel-preview thumbnail (url, square) per page URL — the panel calls
     /// `thumbnail()` on every visible row; `None` = looked, found nothing.
     thumb_cache: tokio::sync::Mutex<HashMap<String, Option<(String, bool)>>>,
+    /// Viewer metadata (headers, grid pages, reels, trays) keyed by a string,
+    /// value JSON-serialised, 5-minute TTL. Cheap re-polls without hammering IG.
+    meta_cache: tokio::sync::Mutex<HashMap<String, (Instant, Value)>>,
+    /// url -> resolved `@owner`; owners don't change, so no TTL.
+    owner_cache: tokio::sync::Mutex<HashMap<String, String>>,
+    /// When IG returns 429 on `web_profile_info`, skip that endpoint entirely
+    /// until this instant — retrying a rate-limit only deepens the block.
+    profile_info_rl_until: tokio::sync::Mutex<Option<Instant>>,
 }
 
 impl InstagramBackend {
     pub fn new(client: HttpClient) -> Self {
-        Self { client, slots: Semaphore::new(2), thumb_cache: tokio::sync::Mutex::new(HashMap::new()) }
+        Self {
+            client,
+            slots: Semaphore::new(2),
+            thumb_cache: tokio::sync::Mutex::new(HashMap::new()),
+            meta_cache: tokio::sync::Mutex::new(HashMap::new()),
+            owner_cache: tokio::sync::Mutex::new(HashMap::new()),
+            profile_info_rl_until: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn cache_get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        let g = self.meta_cache.lock().await;
+        let (t, v) = g.get(key)?;
+        if t.elapsed() > META_TTL {
+            return None;
+        }
+        serde_json::from_value(v.clone()).ok()
+    }
+    async fn cache_put<T: Serialize>(&self, key: &str, val: &T) {
+        if let Ok(v) = serde_json::to_value(val) {
+            self.meta_cache.lock().await.insert(key.to_string(), (Instant::now(), v));
+        }
     }
 }
 
@@ -349,20 +426,35 @@ impl DownloadBackend for InstagramBackend {
 
     async fn describe(&self, req: &DownloadReq) -> EntryMeta {
         let mut meta = EntryMeta::default();
-        match classify(&req.url) {
-            Some(Target::Shortcode(_, is_reel)) => {
+        let group = match classify(&req.url) {
+            Some(Target::Shortcode(code, is_reel)) => {
                 meta.media_class = Some(if is_reel { "reel" } else { "post" }.to_string());
+                Some(format!("instagram_{}_{code}", if is_reel { "reel" } else { "post" }))
             }
             Some(Target::Stories(user)) => {
                 meta.author = Some(format!("@{user}"));
                 meta.media_class = Some("story".to_string());
+                Some(format!("instagram_{user}_story"))
             }
-            Some(Target::Highlight(_)) => meta.media_class = Some("highlight".to_string()),
+            Some(Target::Highlight(id)) => {
+                meta.media_class = Some("highlight".to_string());
+                Some(format!("instagram_highlight_{id}"))
+            }
             Some(Target::Profile(user)) => {
                 meta.author = Some(format!("@{user}"));
                 meta.media_class = Some("profile".to_string());
+                Some(format!("instagram_{user}"))
             }
-            None => {}
+            None => None,
+        };
+        // Every Instagram entry gets its own folder so a delete (or a
+        // pause-then-delete of a half-finished carousel/profile) can wipe it whole.
+        if let Some(g) = group {
+            let safe: String = g
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .collect();
+            meta.out_dir = Some(req.dest_dir.join(safe));
         }
         meta
     }
@@ -409,10 +501,45 @@ impl InstagramBackend {
 
     /// insta-graphql.md §4.1: the `data.user` object for a username.
     async fn web_profile_info(&self, user: &str, cookie: Option<&str>, app_id: &str) -> Option<Value> {
+        let debug = std::env::var("IG_DEBUG").is_ok();
+        {
+            let g = self.profile_info_rl_until.lock().await;
+            if let Some(until) = *g {
+                if Instant::now() < until {
+                    if debug {
+                        eprintln!("[ig] web_profile_info {user} skipped — rate-limit backoff active");
+                    }
+                    return None;
+                }
+            }
+        }
         let url = format!("{PROFILE_INFO}?username={user}");
         let referer = format!("https://www.instagram.com/{user}/");
-        let text = self.client.get_text(&url, &ig_opts(cookie, &referer, app_id)).await.ok()?;
-        parse_ig_json(&text).ok()?.pointer("/data/user").cloned()
+        // one shot only — retrying a 429 deepens the block
+        match self.client.get_text(&url, &ig_opts(cookie, &referer, app_id)).await {
+            Ok(text) => match parse_ig_json(&text).ok().and_then(|v| v.pointer("/data/user").cloned()) {
+                Some(u) => Some(u),
+                None => {
+                    if debug {
+                        eprintln!(
+                            "[ig] web_profile_info {user} no /data/user; body: {}",
+                            &text.chars().take(300).collect::<String>()
+                        );
+                    }
+                    None
+                }
+            },
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("429") {
+                    *self.profile_info_rl_until.lock().await = Some(Instant::now() + Duration::from_secs(600));
+                }
+                if debug {
+                    eprintln!("[ig] web_profile_info {user} error: {e}");
+                }
+                None
+            }
+        }
     }
 
     /// username -> numeric user id (needed for stories).
@@ -425,6 +552,443 @@ impl InstagramBackend {
             .map(str::to_string)
             .ok_or_else(|| anyhow!("Instagram: could not resolve a user id for @{user} (stale cookie?)"))
     }
+
+    // -- read-only surface for the profile viewer -----------------------------
+
+    fn ig_cookie<'a>(cfg: &'a super::InstagramConfig, cookie: Option<&'a str>) -> Option<&'a str> {
+        cookie.filter(|c| !c.trim().is_empty()).or(cfg.session_cookie.as_deref())
+    }
+
+    /// Account header (name / bio / stats / pic). Falls back to a username-only
+    /// [`ProfileHeader`] with `complete: false` when web_profile_info is blocked.
+    pub async fn profile_header(
+        &self,
+        user: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> ProfileHeader {
+        if let Some(hit) = self.cache_get::<ProfileHeader>(&format!("hdr:{user}")).await {
+            return hit;
+        }
+        let cookie = Self::ig_cookie(cfg, cookie);
+        let count = |u: &Value, k: &str| u.get(k).and_then(|x| x.get("count")).and_then(Value::as_u64).unwrap_or(0);
+        let hdr = match self.web_profile_info(user, cookie, &cfg.app_id).await {
+            Some(u) => ProfileHeader {
+                username: u.get("username").and_then(Value::as_str).unwrap_or(user).to_string(),
+                full_name: u.get("full_name").and_then(Value::as_str).unwrap_or_default().to_string(),
+                biography: u.get("biography").and_then(Value::as_str).unwrap_or_default().to_string(),
+                profile_pic_url: deep_find_hd_pic(&u)
+                    .or_else(|| u.get("profile_pic_url_hd").and_then(Value::as_str).map(str::to_string))
+                    .or_else(|| u.get("profile_pic_url").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_default(),
+                is_private: u.get("is_private").and_then(Value::as_bool).unwrap_or(false),
+                is_verified: u.get("is_verified").and_then(Value::as_bool).unwrap_or(false),
+                external_url: u.get("external_url").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string),
+                post_count: count(&u, "edge_owner_to_timeline_media"),
+                follower_count: count(&u, "edge_followed_by"),
+                following_count: count(&u, "edge_follow"),
+                complete: true,
+            },
+            None => ProfileHeader {
+                username: user.to_string(),
+                full_name: String::new(),
+                biography: String::new(),
+                profile_pic_url: String::new(),
+                is_private: false,
+                is_verified: false,
+                external_url: None,
+                post_count: 0,
+                follower_count: 0,
+                following_count: 0,
+                complete: false,
+            },
+        };
+        let mut hdr = hdr;
+        // web_profile_info blocked → still get an avatar (and name) from the
+        // timeline GraphQL query, which isn't rate-limited the same way. Same
+        // fallback the detection-panel thumbnail already uses.
+        if !hdr.complete && hdr.profile_pic_url.is_empty() {
+            let doc_id = cfg.doc_id_timeline.as_deref().unwrap_or(DEFAULT_DOC_TIMELINE);
+            let vars = json!({
+                "data": { "count": 3, "include_relationship_info": false,
+                          "latest_besties_reel_media": false, "latest_reel_media": false },
+                "username": user,
+                "__relay_internal__pv__PolarisIsLoggedInrelayprovider": true,
+                "__relay_internal__pv__PolarisFeedShareMenurelayprovider": true,
+            });
+            let referer = format!("https://www.instagram.com/{user}/");
+            if let Ok(resp) = self.gql(("doc_id", doc_id), &vars, cookie, &referer, &cfg.app_id).await {
+                if let Some(pic) = deep_find_hd_pic(&resp)
+                    .or_else(|| deep_find_str(&resp, "profile_pic_url_hd"))
+                    .or_else(|| deep_find_str(&resp, "profile_pic_url"))
+                    .or_else(|| smallest_image_url(&resp))
+                {
+                    hdr.profile_pic_url = pic;
+                }
+                if hdr.full_name.is_empty() {
+                    if let Some(n) = deep_find_str(&resp, "full_name") {
+                        hdr.full_name = n;
+                    }
+                }
+            }
+        }
+        // only a good header is cached; a rate-limited one short-circuits inside
+        // `web_profile_info` via the backoff instead
+        if hdr.complete {
+            self.cache_put(&format!("hdr:{user}"), &hdr).await;
+        }
+        hdr
+    }
+
+    /// One timeline page: `(tiles, next_cursor)`. Frontend drives pagination.
+    pub async fn profile_posts(
+        &self,
+        user: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+        after: Option<&str>,
+    ) -> Result<(Vec<PostMeta>, Option<String>)> {
+        let ckey = format!("posts:{user}:{}", after.unwrap_or(""));
+        if let Some(hit) = self.cache_get::<(Vec<PostMeta>, Option<String>)>(&ckey).await {
+            return Ok(hit);
+        }
+        let _permit = self.slots.acquire().await.expect("semaphore closed");
+        let cookie = Self::ig_cookie(cfg, cookie);
+        let doc_id = cfg.doc_id_timeline.as_deref().unwrap_or(DEFAULT_DOC_TIMELINE);
+        let mut vars = json!({
+            "data": { "count": 24, "include_relationship_info": true,
+                      "latest_besties_reel_media": true, "latest_reel_media": true },
+            "username": user,
+            "__relay_internal__pv__PolarisIsLoggedInrelayprovider": true,
+            "__relay_internal__pv__PolarisFeedShareMenurelayprovider": true,
+        });
+        if let Some(cur) = after {
+            vars["after"] = json!(cur);
+            vars["first"] = json!(24);
+        }
+        let referer = format!("https://www.instagram.com/{user}/");
+        let resp = self.gql(("doc_id", doc_id), &vars, cookie, &referer, &cfg.app_id).await?;
+        let posts = parse_timeline_nodes(&resp);
+        let next = find_page_info(&resp)
+            .filter(|p| p.get("has_next_page").and_then(Value::as_bool).unwrap_or(false))
+            .and_then(|p| p.get("end_cursor").and_then(Value::as_str).map(str::to_string));
+        let out = (posts, next);
+        self.cache_put(&ckey, &out).await;
+        Ok(out)
+    }
+
+    /// Every frame of one post (a carousel's children, or a single item) plus
+    /// its caption — for the media overlay. `(items, caption)`.
+    pub async fn post_media(
+        &self,
+        shortcode: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Result<(Vec<ReelItem>, String)> {
+        let ckey = format!("post:{shortcode}");
+        if let Some(hit) = self.cache_get::<(Vec<ReelItem>, String)>(&ckey).await {
+            return Ok(hit);
+        }
+        let _permit = self.slots.acquire().await.expect("semaphore closed");
+        let cookie = Self::ig_cookie(cfg, cookie);
+        let doc_id = cfg.doc_id_shortcode.as_deref().unwrap_or(DEFAULT_DOC_SHORTCODE);
+        let vars = json!({ "shortcode": shortcode, "fetch_tagged_user_count": null,
+                           "hoisted_comment_id": null, "hoisted_reply_id": null });
+        let resp = self.gql(("doc_id", doc_id), &vars, cookie, "https://www.instagram.com/", &cfg.app_id).await?;
+        if std::env::var("IG_DEBUG").is_ok() {
+            let s = resp.to_string();
+            eprintln!("IG post_media resp ({} bytes): {}", s.len(), &s[..s.len().min(3000)]);
+        }
+        let out = parse_post_items(&resp);
+        self.cache_put(&ckey, &out).await;
+        Ok(out)
+    }
+
+    /// Active-story frames for a username. Empty = no active story.
+    pub async fn story_items(
+        &self,
+        user: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Result<Vec<ReelItem>> {
+        let ckey = format!("story:{user}");
+        if let Some(hit) = self.cache_get::<Vec<ReelItem>>(&ckey).await {
+            return Ok(hit);
+        }
+        let cookie = Self::ig_cookie(cfg, cookie);
+        let uid = self.resolve_user_id(user, cookie, &cfg.app_id).await?;
+        let resp = self
+            .reels_media(&uid, cookie, &cfg.app_id)
+            .await
+            .ok_or_else(|| anyhow!("Instagram: stories need a logged-in session"))?;
+        let items = parse_reel_items(&resp);
+        self.cache_put(&ckey, &items).await;
+        Ok(items)
+    }
+
+    /// Frames of one saved highlight.
+    pub async fn highlight_items(
+        &self,
+        id: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Result<Vec<ReelItem>> {
+        let ckey = format!("hl:{id}");
+        if let Some(hit) = self.cache_get::<Vec<ReelItem>>(&ckey).await {
+            return Ok(hit);
+        }
+        let cookie = Self::ig_cookie(cfg, cookie);
+        let resp = self
+            .reels_media(&format!("highlight%3A{id}"), cookie, &cfg.app_id)
+            .await
+            .ok_or_else(|| anyhow!("Instagram: highlights need a logged-in session"))?;
+        let items = parse_reel_items(&resp);
+        self.cache_put(&ckey, &items).await;
+        Ok(items)
+    }
+
+    /// The highlights tray for a profile. Best effort — the GraphQL `query_hash`
+    /// has rotted; try the REST tray, else return `[]` and the UI hides the row.
+    pub async fn highlights_tray(
+        &self,
+        user: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Vec<HighlightMeta> {
+        let ckey = format!("tray:{user}");
+        if let Some(hit) = self.cache_get::<Vec<HighlightMeta>>(&ckey).await {
+            return hit;
+        }
+        let cookie = Self::ig_cookie(cfg, cookie);
+        let Ok(uid) = self.resolve_user_id(user, cookie, &cfg.app_id).await else {
+            return Vec::new();
+        };
+        let url = format!("https://www.instagram.com/api/v1/highlights/{uid}/highlights_tray/");
+        let referer = format!("https://www.instagram.com/{user}/");
+        let tray = match self.client.get_text(&url, &ig_opts(cookie, &referer, &cfg.app_id)).await {
+            Ok(text) => parse_ig_json(&text).ok().map(|v| parse_highlights_tray(&v)).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        self.cache_put(&ckey, &tray).await;
+        tray
+    }
+
+    /// Resolve the owner (`@handle`) of an account-less caught URL (a `/p/<code>`
+    /// or `/stories/highlights/<id>`). One request, cached forever.
+    pub async fn resolve_account(
+        &self,
+        url: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Option<String> {
+        if let Some(hit) = self.owner_cache.lock().await.get(url).cloned() {
+            return Some(hit);
+        }
+        let _permit = self.slots.acquire().await.expect("semaphore closed");
+        let cookie = Self::ig_cookie(cfg, cookie);
+        let resp = match classify(url)? {
+            Target::Shortcode(code, _) => {
+                let doc_id = cfg.doc_id_shortcode.as_deref().unwrap_or(DEFAULT_DOC_SHORTCODE);
+                let vars = json!({ "shortcode": code, "fetch_tagged_user_count": null,
+                                   "hoisted_comment_id": null, "hoisted_reply_id": null });
+                self.gql(("doc_id", doc_id), &vars, cookie, "https://www.instagram.com/", &cfg.app_id).await.ok()?
+            }
+            Target::Highlight(id) => self.reels_media(&format!("highlight%3A{id}"), cookie, &cfg.app_id).await?,
+            _ => return None,
+        };
+        let owner = find_owner(&resp)?;
+        self.owner_cache.lock().await.insert(url.to_string(), owner.clone());
+        Some(owner)
+    }
+}
+
+/// `xdt_api__v1__feed__user_timeline_graphql_connection.edges[].node` -> tiles.
+fn parse_timeline_nodes(resp: &Value) -> Vec<PostMeta> {
+    fn nodes(v: &Value) -> Option<&Vec<Value>> {
+        match v {
+            Value::Object(m) => {
+                if let Some(e) = m.get("edges").and_then(Value::as_array) {
+                    return Some(e);
+                }
+                m.values().find_map(nodes)
+            }
+            Value::Array(a) => a.iter().find_map(nodes),
+            _ => None,
+        }
+    }
+    let Some(edges) = nodes(resp) else { return Vec::new() };
+    edges
+        .iter()
+        .filter_map(|e| {
+            let n = e.get("node").unwrap_or(e);
+            let shortcode = n.get("code").or_else(|| n.get("shortcode")).and_then(Value::as_str)?.to_string();
+            let mt = n.get("media_type").and_then(Value::as_i64);
+            Some(PostMeta {
+                shortcode,
+                thumb_url: smallest_resource(n.get("image_versions2").and_then(|x| x.get("candidates")), &["url"])
+                    .or_else(|| n.get("display_url").and_then(Value::as_str).map(str::to_string))
+                    .or_else(|| n.get("thumbnail_src").and_then(Value::as_str).map(str::to_string)),
+                is_video: mt == Some(2),
+                is_carousel: mt == Some(8)
+                    || n.get("carousel_media").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+                    || n.get("carousel_media_count").and_then(Value::as_i64).is_some_and(|c| c > 1)
+                    || n.get("edge_sidecar_to_children").and_then(|s| s.get("edges")).and_then(Value::as_array).is_some_and(|a| !a.is_empty()),
+                taken_at: n.get("taken_at").or_else(|| n.get("taken_at_timestamp")).and_then(Value::as_i64),
+                caption: n
+                    .get("caption")
+                    .and_then(|c| if c.is_string() { c.as_str() } else { c.get("text").and_then(Value::as_str) })
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+/// True only when the node actually carries a video (a `null` `video_versions`
+/// key must not count — IG includes it on image items).
+fn node_is_video(n: &Value) -> bool {
+    n.get("is_video").and_then(Value::as_bool).unwrap_or(false)
+        || n.get("media_type").and_then(Value::as_i64) == Some(2)
+        || n.get("video_url").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+        || n.get("video_versions").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+        || n.get("video_resources").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+}
+
+/// One post -> `(frames, caption)`. Handles both the `xdt_shortcode_media`
+/// (`edge_sidecar_to_children`) and `xdt_api__v1__media__shortcode__web_info`
+/// (`carousel_media`) shapes.
+fn parse_post_items(resp: &Value) -> (Vec<ReelItem>, String) {
+    fn find_media(v: &Value) -> Option<&Value> {
+        match v {
+            Value::Object(m) => {
+                for k in ["xdt_shortcode_media", "shortcode_media"] {
+                    if let Some(n) = m.get(k) {
+                        return Some(n);
+                    }
+                }
+                if let Some(items) = m.get("items").and_then(Value::as_array).and_then(|a| a.first()) {
+                    return Some(items);
+                }
+                m.values().find_map(find_media)
+            }
+            Value::Array(a) => a.iter().find_map(find_media),
+            _ => None,
+        }
+    }
+    let Some(node) = find_media(resp) else { return (Vec::new(), String::new()) };
+
+    let caption = node
+        .pointer("/edge_media_to_caption/edges/0/node/text")
+        .and_then(Value::as_str)
+        .or_else(|| node.get("caption").and_then(|c| if c.is_string() { c.as_str() } else { c.get("text").and_then(Value::as_str) }))
+        .unwrap_or_default()
+        .to_string();
+
+    let children: Vec<&Value> = node
+        .pointer("/edge_sidecar_to_children/edges")
+        .and_then(Value::as_array)
+        .map(|e| e.iter().filter_map(|c| c.get("node")).collect())
+        .or_else(|| node.get("carousel_media").and_then(Value::as_array).map(|a| a.iter().collect()))
+        .unwrap_or_else(|| vec![node]);
+
+    let frames = children
+        .iter()
+        .filter_map(|c| {
+            let is_video = node_is_video(c);
+            let media_url = if is_video {
+                best_resource(c.get("video_resources"), &["src", "url"])
+                    .or_else(|| c.get("video_url").and_then(Value::as_str).map(str::to_string))
+                    .or_else(|| best_resource(c.get("video_versions"), &["url"]))
+            } else {
+                best_resource(c.get("display_resources"), &["src", "url"])
+                    .or_else(|| c.get("display_url").and_then(Value::as_str).map(str::to_string))
+                    .or_else(|| best_resource(c.get("image_versions2").and_then(|x| x.get("candidates")), &["url"]))
+            }?;
+            Some(ReelItem {
+                thumb_url: smallest_resource(c.get("image_versions2").and_then(|x| x.get("candidates")), &["url"])
+                    .or_else(|| smallest_resource(c.get("display_resources"), &["src", "url"]))
+                    .or_else(|| c.get("display_url").and_then(Value::as_str).map(str::to_string)),
+                media_url,
+                is_video,
+                taken_at: node.get("taken_at").or_else(|| node.get("taken_at_timestamp")).and_then(Value::as_i64),
+            })
+        })
+        .collect();
+    (frames, caption)
+}
+
+/// `reels_media` (GraphQL `reels_media[]` or REST `reels{}`) -> item frames.
+fn parse_reel_items(resp: &Value) -> Vec<ReelItem> {
+    fn items(v: &Value) -> Option<&Vec<Value>> {
+        match v {
+            Value::Object(m) => {
+                if m.contains_key("image_versions2") || m.contains_key("video_versions") {
+                    return None; // this IS an item, handled by the caller's map
+                }
+                if let Some(a) = m.get("items").and_then(Value::as_array) {
+                    return Some(a);
+                }
+                m.values().find_map(items)
+            }
+            Value::Array(a) => a.iter().find_map(items),
+            _ => None,
+        }
+    }
+    let Some(arr) = items(resp) else { return Vec::new() };
+    arr.iter()
+        .filter_map(|it| {
+            let is_video = node_is_video(it);
+            let media_url = if is_video {
+                best_resource(it.get("video_versions"), &["url"])
+                    .or_else(|| best_resource(it.get("video_resources"), &["src", "url"]))
+            } else {
+                best_resource(it.get("image_versions2").and_then(|x| x.get("candidates")), &["url"])
+                    .or_else(|| it.get("display_url").and_then(Value::as_str).map(str::to_string))
+            }?;
+            Some(ReelItem {
+                thumb_url: smallest_resource(it.get("image_versions2").and_then(|x| x.get("candidates")), &["url"]),
+                media_url,
+                is_video,
+                taken_at: it.get("taken_at").and_then(Value::as_i64),
+            })
+        })
+        .collect()
+}
+
+fn parse_highlights_tray(resp: &Value) -> Vec<HighlightMeta> {
+    fn trays(v: &Value) -> Option<&Vec<Value>> {
+        match v {
+            Value::Object(m) => {
+                if let Some(a) = m.get("tray").and_then(Value::as_array) {
+                    return Some(a);
+                }
+                m.values().find_map(trays)
+            }
+            Value::Array(a) => a.iter().find_map(trays),
+            _ => None,
+        }
+    }
+    let Some(arr) = trays(resp) else { return Vec::new() };
+    arr.iter()
+        .filter_map(|t| {
+            let id = t
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|s| s.trim_start_matches("highlight:").to_string())?;
+            Some(HighlightMeta {
+                id,
+                title: t.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
+                cover_url: t
+                    .get("cover_media")
+                    .and_then(|c| c.get("cropped_image_version").or_else(|| c.get("cover_photo")))
+                    .and_then(|c| c.get("url"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 fn ig_opts(cookie: Option<&str>, referer: &str, app_id: &str) -> RequestOptions {
@@ -659,6 +1223,52 @@ fn find_owner(v: &Value) -> Option<String> {
     }
 }
 
+/// First non-empty string value for `key` anywhere in the tree.
+fn deep_find_str(v: &Value, key: &str) -> Option<String> {
+    match v {
+        Value::Object(m) => {
+            if let Some(s) = m.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                return Some(s.to_string());
+            }
+            m.values().find_map(|c| deep_find_str(c, key))
+        }
+        Value::Array(a) => a.iter().find_map(|c| deep_find_str(c, key)),
+        _ => None,
+    }
+}
+
+/// Largest available profile picture anywhere in the tree. IG exposes the
+/// full-res avatar as `hd_profile_pic_url_info` (an object) or
+/// `hd_profile_pic_versions` (a sized array); `profile_pic_url` alone is the
+/// 150px thumbnail.
+fn deep_find_hd_pic(v: &Value) -> Option<String> {
+    match v {
+        Value::Object(m) => {
+            if let Some(u) = m
+                .get("hd_profile_pic_url_info")
+                .and_then(|o| o.get("url"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(u.to_string());
+            }
+            if let Some(arr) = m.get("hd_profile_pic_versions").and_then(Value::as_array) {
+                if let Some(u) = arr
+                    .iter()
+                    .max_by_key(|c| c.get("width").and_then(Value::as_i64).unwrap_or(0))
+                    .and_then(|c| c.get("url"))
+                    .and_then(Value::as_str)
+                {
+                    return Some(u.to_string());
+                }
+            }
+            m.values().find_map(deep_find_hd_pic)
+        }
+        Value::Array(a) => a.iter().find_map(deep_find_hd_pic),
+        _ => None,
+    }
+}
+
 /// First `page_info`-shaped object anywhere in the response.
 fn find_page_info(v: &Value) -> Option<Value> {
     match v {
@@ -716,6 +1326,33 @@ mod tests {
         assert!(classify("https://www.instagram.com/accounts/login/").is_none());
         assert!(classify("https://youtube.com/watch?v=x").is_none());
         assert!(classify("https://scontent.cdninstagram.com/v/x.mp4").is_none());
+    }
+
+    #[test]
+    fn parse_timeline_nodes_reads_shortcodes_and_flags() {
+        let resp = json!({ "data": { "xdt_api__v1__feed__user_timeline_graphql_connection": {
+            "edges": [
+                { "node": { "code": "AAA", "media_type": 1,
+                            "image_versions2": { "candidates": [{ "url": "https://cdn/a.jpg", "width": 320 }] },
+                            "caption": { "text": "hello world" } } },
+                { "node": { "code": "BBB", "media_type": 2,
+                            "image_versions2": { "candidates": [{ "url": "https://cdn/b.jpg", "width": 320 }] } } },
+                { "node": { "code": "CCC", "media_type": 8, "carousel_media_count": 3,
+                            "display_url": "https://cdn/c.jpg" } }
+            ],
+            "page_info": { "has_next_page": true, "end_cursor": "CURSOR123" }
+        }}});
+        let posts = parse_timeline_nodes(&resp);
+        assert_eq!(posts.len(), 3);
+        assert_eq!(posts[0].shortcode, "AAA");
+        assert_eq!(posts[0].caption, "hello world");
+        assert!(!posts[0].is_video && !posts[0].is_carousel);
+        assert!(posts[1].is_video);
+        assert!(posts[2].is_carousel);
+        assert_eq!(posts[2].thumb_url.as_deref(), Some("https://cdn/c.jpg"));
+        let cur = find_page_info(&resp)
+            .and_then(|p| p.get("end_cursor").and_then(Value::as_str).map(str::to_string));
+        assert_eq!(cur.as_deref(), Some("CURSOR123"));
     }
 
     #[test]

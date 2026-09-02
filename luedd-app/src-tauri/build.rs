@@ -7,6 +7,7 @@ fn main() {
         "../dist",
         "../dist/index.html",
         "../dist/detected.html",
+        "../dist/viewer.html",
         "../dist/i18n.js",
         "../dist/fonts",
     ] {

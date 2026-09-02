@@ -99,6 +99,7 @@ export default class App {
         });
         this.updateActionIcon();
         this.syncWatcherRegistration();
+        this.maybePushIgCookie();
 
         // Let a page be re-detected once its item has left the panel.
         for (const k of this.postedPages) {
@@ -298,6 +299,21 @@ export default class App {
         } catch (e) { }
         this.logger.log("page detection: " + canon);
         this.connector.postMessage("/page", { url: canon, title: tab.title || null, cookie });
+    }
+
+    // Push the current instagram.com session cookie to Lüdd so the profile
+    // viewer's /ig/* calls work without first visiting an IG page this run.
+    // Throttled to ~once a minute; the app keeps it in memory only.
+    async maybePushIgCookie() {
+        const now = Date.now();
+        if (this._igCookieAt && now - this._igCookieAt < 60000) return;
+        this._igCookieAt = now;
+        try {
+            const cookies = await chrome.cookies.getAll({ url: "https://www.instagram.com/" });
+            if (!cookies || !cookies.some(c => c.name === "sessionid" && c.value)) return;
+            const cookie = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+            this.connector.postMessage("/ig/cookie", { cookie });
+        } catch (e) { }
     }
 
     register() {

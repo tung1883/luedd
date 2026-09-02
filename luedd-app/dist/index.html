@@ -113,8 +113,10 @@
   th.error-col, td.error-col { width: 180px; padding-left: 14px; }
   th.actions-col, td.actions-col { width: 128px; text-align: right; }
 
-  .details-toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0; width: 16px; }
+  .details-toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0; width: 16px; display: inline-flex; justify-content: center; }
   .details-toggle-btn:hover { color: var(--text); }
+  .details-toggle-btn svg { transition: transform .12s; }
+  .details-toggle-btn.open svg { transform: rotate(90deg); }
 
   /* status */
   td.status-col { white-space: nowrap; overflow: visible; }
@@ -268,7 +270,9 @@
   .pv-group { margin-bottom: 6px; }
   .pv-ghdr { display: flex; align-items: center; gap: 9px; padding: 9px 4px; cursor: pointer;
     position: sticky; top: 0; background: var(--bg); z-index: 2; }
-  .pv-gcaret { color: var(--dim); font-size: 10px; width: 10px; }
+  .pv-gcaret { color: var(--dim); width: 10px; display: inline-flex; }
+  .pv-gcaret svg { transition: transform .12s; }
+  .pv-gcaret.open svg { transform: rotate(90deg); }
   .pv-gav { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); flex-shrink: 0;
     display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 12px; font-weight: 600; }
   .pv-gname { font-weight: 600; }
@@ -542,7 +546,7 @@
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th class="toggle-col"><button id="expand-all-btn" class="details-toggle-btn" data-i18n-title="toggle_all" title="Show / hide all details">▸</button></th>
+          <th class="toggle-col"><button id="expand-all-btn" class="details-toggle-btn" data-i18n-title="toggle_all" title="Show / hide all details"><svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button></th>
           <th class="checkbox-col"><input type="checkbox" id="select-all-chk" /></th>
           <th class="id-col" data-sort-key="id" data-i18n="col_id">ID</th><th class="kind-col" data-sort-key="kind" data-i18n="col_kind">Kind</th><th class="status-col" data-sort-key="status" data-i18n="col_status">Status</th><th class="progress-col" data-sort-key="progress" data-i18n="col_progress">Progress</th><th class="speed-col" data-sort-key="speed" data-i18n="col_speed">Speed</th><th class="url-col" data-sort-key="url" data-i18n="col_url">URL</th><th class="error-col" data-i18n="col_error">Error</th><th class="actions-col" data-i18n="col_actions">Actions</th>
         </tr></thead>
@@ -581,6 +585,7 @@
 <script>
 const { invoke } = window.__TAURI__.core;
 const t = (k, v) => window.I18N.t(k, v);
+const CARET = '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
 const selected = new Set();
 const detailsOpen = new Set();
 
@@ -859,7 +864,7 @@ function kindLabel(kind) {
 }
 
 // The backend that fetched a download. http/hls/dash are all the built-in engine.
-const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Instagram", instaloader: "instaloader", torrent: "torrent" };
+const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Lüdd-Insta", instaloader: "instaloader", torrent: "torrent" };
 function providerLabel(id) {
   return PROVIDER_LABELS[id] ?? id ?? "Lüdd";
 }
@@ -970,7 +975,7 @@ async function refresh() {
     tr.className = "data-row";
     const isOpen = detailsOpen.has(e.id);
     tr.innerHTML = `
-      <td class="toggle-col"><button class="details-toggle-btn" data-id="${e.id}" title="${t("details")}">${isOpen ? "▾" : "▸"}</button></td>
+      <td class="toggle-col"><button class="details-toggle-btn${isOpen ? " open" : ""}" data-id="${e.id}" title="${t("details")}">${CARET}</button></td>
       <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${e.id}" ${selected.has(e.id) ? "checked" : ""} /></td>
       <td class="id id-col">${e.id.slice(0, 8)}</td>
       <td class="kind-col">${kindLabel(e.kind)}</td>
@@ -1047,7 +1052,7 @@ async function refresh() {
       if (!detailsTr) return;
       const nowOpen = detailsTr.style.display === "none";
       detailsTr.style.display = nowOpen ? "table-row" : "none";
-      btn.textContent = nowOpen ? "▾" : "▸";
+      btn.classList.toggle("open", nowOpen);
       if (nowOpen) { detailsOpen.add(id); loadDetailPreview(detailsTr); } else { detailsOpen.delete(id); }
     });
   });
@@ -1235,7 +1240,7 @@ function renderPluginView(provider, entries) {
     pv.innerHTML = `<div class="empty" style="padding:24px;text-align:center;color:var(--dim)">${esc(t("no_matches"))}</div>`;
     return;
   }
-  const isIG = provider === "Instagram";
+  const isIG = provider === "Lüdd-Insta";
   const groups = new Map();
   for (const e of entries) {
     const a = e.author || (isIG ? authorFromUrl(e.url) : null) || t("pv_unknown");
@@ -1255,7 +1260,7 @@ function renderPluginView(provider, entries) {
 
     const hdr = document.createElement("div");
     hdr.className = "pv-ghdr";
-    hdr.innerHTML = `<span class="pv-gcaret">${collapsed ? "▸" : "▾"}</span>`
+    hdr.innerHTML = `<span class="pv-gcaret${collapsed ? "" : " open"}">${CARET}</span>`
       + `<span class="pv-gav">${esc(initial)}</span>`
       + `<span><span class="pv-gname">${esc(author)}</span> <span class="pv-gsub">· ${esc(sub)}</span></span>`
       + `<span class="pv-sp"></span>`
@@ -1336,12 +1341,16 @@ function renderIgGroup(g, entries) {
 }
 
 let masterOpen = false;
-document.getElementById("expand-all-btn").addEventListener("click", async () => {
+document.getElementById("expand-all-btn").addEventListener("click", () => {
   masterOpen = !masterOpen;
-  document.getElementById("expand-all-btn").textContent = masterOpen ? "▾" : "▸";
+  document.getElementById("expand-all-btn").classList.toggle("open", masterOpen);
   detailsOpen.clear();
-  if (masterOpen) lastEntries.forEach(e => detailsOpen.add(e.id));
-  await refresh();
+  // toggle the already-rendered detail rows in place — no backend round-trip
+  document.querySelectorAll("#rows .details-row").forEach(tr => {
+    tr.style.display = masterOpen ? "table-row" : "none";
+    if (masterOpen) { detailsOpen.add(tr.dataset.id); loadDetailPreview(tr); }
+  });
+  document.querySelectorAll("#rows .details-toggle-btn").forEach(b => b.classList.toggle("open", masterOpen));
 });
 
 document.getElementById("select-all-chk").addEventListener("change", async (ev) => {

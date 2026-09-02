@@ -82,6 +82,10 @@ pub struct DownloadEntry {
     /// `"post" | "reel" | "profile" | "story" | "highlight"`.
     #[serde(default)]
     pub media_class: Option<String>,
+    /// A dedicated output folder (Instagram carousel / profile / story). When
+    /// set, deleting the entry removes this whole folder, partial files and all.
+    #[serde(default)]
+    pub out_dir: Option<PathBuf>,
 }
 
 /// Deserialization shim. Files written before the backend registry have
@@ -123,6 +127,8 @@ struct DownloadEntryRepr {
     title: Option<String>,
     #[serde(default)]
     media_class: Option<String>,
+    #[serde(default)]
+    out_dir: Option<PathBuf>,
 }
 
 impl From<DownloadEntryRepr> for DownloadEntry {
@@ -154,6 +160,7 @@ impl From<DownloadEntryRepr> for DownloadEntry {
             author: r.author,
             title: r.title,
             media_class: r.media_class,
+            out_dir: r.out_dir,
         }
     }
 }
@@ -181,6 +188,7 @@ impl DownloadEntry {
             author: None,
             title: None,
             media_class: None,
+            out_dir: None,
         }
     }
 

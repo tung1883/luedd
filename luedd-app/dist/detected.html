@@ -105,25 +105,34 @@
     border-bottom: 1px solid var(--line); cursor: pointer; user-select: none;
     background: var(--surface-2); }
   .ghdr:hover { color: var(--text); }
-  .ghdr .gcaret { color: var(--dim); font-size: 9px; width: 8px; }
+  .ghdr .gcaret { color: var(--dim); width: 10px; display: inline-flex; }
+  .ghdr .gcaret svg { transition: transform .12s; }
+  .ghdr .gcaret.open svg { transform: rotate(90deg); }
   .ghdr .gname { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim); font-weight: 600; }
-  .ghdr .gcount { margin-left: auto; font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .ghdr .gcount { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .ghdr .ghdr-more { margin-left: auto; padding: 0; width: 22px; height: 18px; border: 1px solid var(--line);
+    border-radius: 5px; background: none; color: var(--dim); display: flex; align-items: center; justify-content: center; }
+  .ghdr .ghdr-more:hover { color: var(--text); border-color: var(--dim); }
+  .ghdr .ghdr-more svg { width: 13px; height: 13px; }
   .row { display: grid; grid-template-columns: 14px 74px minmax(0,1fr) auto; gap: 10px;
     padding: 9px 12px 9px 10px; border-bottom: 1px solid var(--line); border-left: 2px solid transparent;
     align-items: center; }
   .row:hover { background: var(--surface); border-left-color: var(--accent);
     box-shadow: inset 3px 0 8px -4px rgba(79,163,216,.5); }
-  .toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0; align-self: center; }
+  .toggle-btn { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0; align-self: center; display: inline-flex; }
   .toggle-btn:hover { color: var(--text); }
+  .toggle-btn svg { transition: transform .12s; }
+  .toggle-btn.open svg { transform: rotate(90deg); }
   .row-preview { width: 74px; height: 44px; border-radius: 4px; border: 1px solid var(--line); overflow: hidden;
     background: linear-gradient(135deg, #242730, #2b2f38); display: flex; align-items: center; justify-content: center; }
   .row-preview svg { width: 22px; height: 22px; color: #6a6f7a; }
   .thumb { width: 74px; height: 44px; object-fit: cover; display: block; cursor: pointer; }
-  /* a square source (Instagram profile picture / highlight cover): keep the
-     74px column so rows stay aligned, drop the frame, and centre a 44px square
-     image inside — no letterbox bars, just the row background around it */
-  .row-preview.preview-square { border-color: transparent; background: none; }
-  .row-preview.preview-square .thumb { width: 44px; height: 44px; border-radius: 6px; }
+  /* a square source (Instagram profile picture / highlight cover): shrink the
+     slot itself to 44x44 (1:1) so neither the placeholder icon nor the image
+     ever sits in a 16:9 frame; 15px side margins keep the column 74px wide so
+     rows stay aligned */
+  .row-preview.preview-square { width: 44px; height: 44px; margin: 0 15px; border-radius: 8px; }
+  .row-preview.preview-square .thumb { width: 44px; height: 44px; border-radius: 8px; }
   .thumb-pdf { width: 74px; height: 44px; cursor: default; }
   .row-body { min-width: 0; }
   .title-btn { background: none; border: none; color: var(--text); cursor: pointer; text-align: left; font-size: 13px;
@@ -245,6 +254,7 @@
 <script src="i18n.js"></script>
 <script>
   const L = (k, v) => window.I18N.t(k, v);
+  const CARET = '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
   const FONTS = {
     system: null,
     georgia: 'Georgia, "Times New Roman", serif',
@@ -603,7 +613,10 @@
   // Generic file icon - anything we don't have a specific glyph for.
   const DATA_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><path d="M14 2v5h5"/></svg>';
 
+  const IMAGE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.8"/><path d="M21 15l-5-5L5 21"/></svg>';
+
   function iconFor(item) {
+    if (isSquarePreview(item)) return IMAGE_ICON; // IG profile picture / highlight cover
     switch (itemKind(item)) {
       case "video": case "hls": case "dash": return VIDEO_ICON;
       case "audio": return AUDIO_ICON;
@@ -611,9 +624,20 @@
     }
   }
 
+  // Instagram profile pictures and highlight covers are 1:1 — square the slot
+  // before /preview resolves so the placeholder icon never sits in a 16:9 box.
+  function isSquarePreview(item) {
+    if (providerOf(item) !== "Lüdd-Insta") return false;
+    const u = (item.url || item.pageUrl || "").toLowerCase().split("?")[0].replace(/\/+$/, "");
+    if (/\/stories\/highlights\//.test(u)) return true;
+    const m = u.match(/^https?:\/\/(www\.)?instagram\.com\/([^/]+)$/);
+    return !!m && !["p", "reel", "reels", "tv", "explore", "stories"].includes(m[2]);
+  }
+
   async function loadPreview(item, col) {
     if (col.dataset.loaded) return;
     col.dataset.loaded = "1";
+    if (isSquarePreview(item)) col.classList.add("preview-square");
     col.innerHTML = iconFor(item); // placeholder while /preview is in flight
 
     let data = previewCache.get(item.id);
@@ -742,14 +766,22 @@
         const collapsed = collapsedProviders.has(p);
         const h = document.createElement("div");
         h.className = "ghdr";
-        h.innerHTML = `<span class="gcaret">${collapsed ? "▸" : "▾"}</span>`
-          + `<span class="gname"></span><span class="gcount">${groups.get(p).length}</span>`;
+        const hasViewer = p === "Lüdd-Insta";
+        h.innerHTML = `<span class="gcaret${collapsed ? "" : " open"}">${CARET}</span>`
+          + `<span class="gname"></span><span class="gcount">${groups.get(p).length}</span>`
+          + (hasViewer ? `<button class="ghdr-more" title="Open the Instagram profile viewer" aria-label="Open the Instagram profile viewer"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>` : "");
         h.querySelector(".gname").textContent = p;
         h.addEventListener("click", () => {
           if (collapsedProviders.has(p)) collapsedProviders.delete(p);
           else collapsedProviders.add(p);
           renderList(items);
         });
+        if (hasViewer) {
+          h.querySelector(".ghdr-more").addEventListener("click", e => {
+            e.stopPropagation();
+            try { window.__TAURI__.core.invoke("viewer_window_show"); } catch (_) {}
+          });
+        }
         list.appendChild(h);
         if (collapsed) continue;
       }
@@ -790,7 +822,7 @@
 
     const toggle = document.createElement("button");
     toggle.className = "toggle-btn";
-    toggle.innerText = "▸";
+    toggle.innerHTML = CARET;
     toggle.title = L("details");
 
     const previewCol = document.createElement("div");
@@ -832,7 +864,7 @@
 
     if (expandedIds.has(item.id)) {
       detailsPanel.classList.add("open");
-      toggle.innerText = "▾";
+      toggle.classList.add("open");
       qualityProbed = true;
       probeQualityFor(item, qualityBox);
     }
@@ -846,7 +878,7 @@
       e.stopPropagation();
       const nowOpen = !detailsPanel.classList.contains("open");
       detailsPanel.classList.toggle("open", nowOpen);
-      toggle.innerText = nowOpen ? "▾" : "▸";
+      toggle.classList.toggle("open", nowOpen);
       if (nowOpen) {
         expandedIds.add(item.id);
       } else {

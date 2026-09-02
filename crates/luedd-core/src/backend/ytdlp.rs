@@ -329,6 +329,7 @@ impl YtdlpBackend {
             author: s("channel").or_else(|| s("uploader")).or_else(|| s("uploader_id")),
             title: s("title"),
             media_class: None,
+            out_dir: None,
         }
     }
 }
