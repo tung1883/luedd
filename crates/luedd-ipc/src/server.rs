@@ -611,6 +611,7 @@ async fn ig_profiles(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
             "caught_count": acct.caught.len(),
             "kinds": kinds,
             "last_seen": acct.last_seen,
+            "avatar": acct.avatar_url,
         }));
     }
     accounts.sort_by(|a, b| b["last_seen"].as_i64().unwrap_or(0).cmp(&a["last_seen"].as_i64().unwrap_or(0)));
@@ -624,6 +625,10 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
     let cfg = state.config.settings.get().await.backends;
     let cookie = state.ig_cookie(None).await;
     let header = state.instagram.profile_header(&req.username, cookie.as_deref(), &cfg.instagram).await;
+    if !header.profile_pic_url.is_empty() {
+        let (st, user, pic) = (state.clone(), req.username.clone(), header.profile_pic_url.clone());
+        tokio::spawn(async move { st.ig_library.set_avatar(&user, &pic).await.ok(); });
+    }
     // `story_items` is a second IG round-trip — keep it off the critical path.
     // The viewer always fetches `/ig/story` separately and hides the row if empty.
     let has_story = true;

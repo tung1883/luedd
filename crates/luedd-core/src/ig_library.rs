@@ -32,6 +32,14 @@ pub struct IgAccount {
     pub last_seen: i64,
     #[serde(default)]
     pub caught: Vec<IgCaught>,
+    /// Last resolved profile-picture URL — cached here so the accounts grid
+    /// renders from disk instead of hitting IG's heavily-throttled
+    /// `web_profile_info` once per card on every open.
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    /// When `avatar_url` was last refreshed (unix seconds).
+    #[serde(default)]
+    pub avatar_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +91,8 @@ impl IgLibraryStore {
                 first_seen: now(),
                 last_seen: now(),
                 caught: Vec::new(),
+                avatar_url: None,
+                avatar_at: 0,
             });
             acct.last_seen = now();
             if !acct.caught.iter().any(|x| x.kind == c.kind && x.key == c.key && x.url == c.url) {
@@ -120,6 +130,8 @@ impl IgLibraryStore {
                 first_seen: now(),
                 last_seen: now(),
                 caught: Vec::new(),
+                avatar_url: None,
+                avatar_at: 0,
             });
             if acct.username.is_empty() {
                 acct.username = account.to_string();
@@ -129,6 +141,24 @@ impl IgLibraryStore {
                     acct.caught.push(c);
                 }
             }
+        }
+        self.save().await
+    }
+
+    /// Cache the resolved profile picture for an account (no-op for an unknown
+    /// account or an unchanged URL, so it rarely writes).
+    pub async fn set_avatar(&self, account: &str, url: &str) -> Result<()> {
+        {
+            let mut lib = self.data.write().await;
+            let Some(acct) = lib.accounts.get_mut(&account.to_ascii_lowercase()) else {
+                return Ok(());
+            };
+            if acct.avatar_url.as_deref() == Some(url) {
+                acct.avatar_at = now();
+                return Ok(());
+            }
+            acct.avatar_url = Some(url.to_string());
+            acct.avatar_at = now();
         }
         self.save().await
     }
