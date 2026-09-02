@@ -624,12 +624,9 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
     let cfg = state.config.settings.get().await.backends;
     let cookie = state.ig_cookie(None).await;
     let header = state.instagram.profile_header(&req.username, cookie.as_deref(), &cfg.instagram).await;
-    let has_story = state
-        .instagram
-        .story_items(&req.username, cookie.as_deref(), &cfg.instagram)
-        .await
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
+    // `story_items` is a second IG round-trip — keep it off the critical path.
+    // The viewer always fetches `/ig/story` separately and hides the row if empty.
+    let has_story = true;
     let caught = state
         .ig_library
         .snapshot()
@@ -714,10 +711,15 @@ async fn ig_post(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_
     let cookie = state.ig_cookie(None).await;
     match state.instagram.post_media(&req.id, cookie.as_deref(), &cfg.instagram).await {
         Ok((items, caption)) => {
-            // a post pulled up in the viewer is also a catch: show it in the panel
-            let url = format!("https://www.instagram.com/p/{}", req.id);
-            record_ig_catch(&state, &url, cookie.as_deref()).await;
-            ensure_page_detection(&state, &url, None, cookie).await;
+            // a post pulled up in the viewer is also a catch: record it in the
+            // background so the response isn't held up by the library write / detection
+            let st = state.clone();
+            let id = req.id.clone();
+            tokio::spawn(async move {
+                let url = format!("https://www.instagram.com/p/{id}");
+                record_ig_catch(&st, &url, cookie.as_deref()).await;
+                ensure_page_detection(&st, &url, None, cookie).await;
+            });
             Json(serde_json::json!({ "items": items, "caption": caption }))
         }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
@@ -729,11 +731,16 @@ async fn ig_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
         return Json(serde_json::json!({ "queued": false }));
     };
     let cookie = state.ig_cookie(None).await;
-    // an instagram.com page URL queued from the viewer is also a catch
+    // an instagram.com page URL queued from the viewer is also a catch — record
+    // it in the background so the queue call returns as soon as the entry is added
     if req.url.contains("instagram.com/") && !req.url.contains("cdninstagram.com") {
+        let st = state.clone();
         let canon = canonical_page_url(&req.url);
-        record_ig_catch(&state, &canon, cookie.as_deref()).await;
-        ensure_page_detection(&state, &canon, None, cookie.clone()).await;
+        let ck = cookie.clone();
+        tokio::spawn(async move {
+            record_ig_catch(&st, &canon, ck.as_deref()).await;
+            ensure_page_detection(&st, &canon, None, ck).await;
+        });
     }
     let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, None).await;
     Json(serde_json::json!({ "queued": id.is_some() }))
@@ -1448,16 +1455,22 @@ async fn queue_url(
 ) -> Option<String> {
     let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
 
-    let detected_ext = if matches!(DownloadKind::guess_from_url(&url), DownloadKind::Http) {
-        luedd_core::naming::resolve_real_extension(&state.manager.http_client(), &url, &ctx).await
-    } else {
-        None
-    };
-
     let settings = state.config.settings.get().await;
     let backend = state.registry.resolve(&url, &ctx, &settings.backends).await;
     let backend_id = backend.id().to_string();
     let kind = luedd_core::backend::kind_for_backend_id(&backend_id);
+
+    // Only the plain-HTTP backend needs a network round-trip to sniff the real
+    // file extension. A plugin backend (Instagram, yt-dlp — all of which map to
+    // the Http *kind*) names its own outputs, so skip the sniff: it was adding
+    // 1-2 s to every viewer "download" click.
+    let detected_ext = if backend_id == "http"
+        && matches!(DownloadKind::guess_from_url(&url), DownloadKind::Http)
+    {
+        luedd_core::naming::resolve_real_extension(&state.manager.http_client(), &url, &ctx).await
+    } else {
+        None
+    };
 
     let filename = filename_hint.filter(|f| !f.is_empty()).unwrap_or_else(|| {
         luedd_core::naming::suggest_filename(title_hint.as_deref(), &url, detected_ext.as_deref())

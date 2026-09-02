@@ -138,6 +138,17 @@ impl InstagramBackend {
             self.meta_cache.lock().await.insert(key.to_string(), (Instant::now(), v));
         }
     }
+    /// Cache with a much shorter effective lifetime (~90 s) by back-dating the
+    /// timestamp — for a rate-limited/incomplete result we still want to stop
+    /// re-hitting IG on every viewer open, but recover quickly once it clears.
+    async fn cache_put_short<T: Serialize>(&self, key: &str, val: &T) {
+        if let Ok(v) = serde_json::to_value(val) {
+            let stamp = Instant::now()
+                .checked_sub(META_TTL.saturating_sub(Duration::from_secs(90)))
+                .unwrap_or_else(Instant::now);
+            self.meta_cache.lock().await.insert(key.to_string(), (stamp, v));
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -632,10 +643,12 @@ impl InstagramBackend {
                 }
             }
         }
-        // only a good header is cached; a rate-limited one short-circuits inside
-        // `web_profile_info` via the backoff instead
+        // a good header caches for the full TTL; an incomplete one caches briefly
+        // so repeated viewer opens don't each pay the timeline-fallback round-trip
         if hdr.complete {
             self.cache_put(&format!("hdr:{user}"), &hdr).await;
+        } else if !hdr.profile_pic_url.is_empty() || !hdr.full_name.is_empty() {
+            self.cache_put_short(&format!("hdr:{user}"), &hdr).await;
         }
         hdr
     }
