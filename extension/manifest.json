@@ -14,7 +14,8 @@
         "tabs",
         "storage",
         "contextMenus",
-        "alarms"
+        "alarms",
+        "webNavigation"
     ],
     "background": {
         "service_worker": "main.js",
@@ -24,5 +25,16 @@
         "16": "icon16.png",
         "48": "icon48.png",
         "128": "icon128.png"
-    }
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.instagram.com/*"
+            ],
+            "js": [
+                "content-ig.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ]
 }

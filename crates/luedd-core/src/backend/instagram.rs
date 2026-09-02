@@ -559,13 +559,39 @@ impl InstagramBackend {
 
     /// username -> numeric user id (needed for stories).
     async fn resolve_user_id(&self, user: &str, cookie: Option<&str>, app_id: &str) -> Result<String> {
-        self.web_profile_info(user, cookie, app_id)
+        let ckey = format!("uid:{user}");
+        if let Some(hit) = self.cache_get::<String>(&ckey).await {
+            return Ok(hit);
+        }
+        // 1. web_profile_info — cheapest, but IG rate-limits it hard (429).
+        if let Some(id) = self
+            .web_profile_info(user, cookie, app_id)
             .await
             .as_ref()
-            .and_then(|u| u.get("id"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("Instagram: could not resolve a user id for @{user} (stale cookie?)"))
+            .and_then(|u| u.get("id").or_else(|| u.get("pk")))
+            .and_then(|x| x.as_str().map(str::to_string).or_else(|| x.as_i64().map(|n| n.to_string())))
+        {
+            self.cache_put(&ckey, &id).await;
+            return Ok(id);
+        }
+        // 2. Fallback: the timeline GraphQL query is throttled far less. Its
+        // nodes carry `owner`/`user` objects with the numeric id.
+        let cfg_doc = DEFAULT_DOC_TIMELINE;
+        let vars = json!({
+            "data": { "count": 1, "include_relationship_info": false,
+                      "latest_besties_reel_media": false, "latest_reel_media": false },
+            "username": user,
+            "__relay_internal__pv__PolarisIsLoggedInrelayprovider": true,
+            "__relay_internal__pv__PolarisFeedShareMenurelayprovider": true,
+        });
+        let referer = format!("https://www.instagram.com/{user}/");
+        if let Ok(resp) = self.gql(("doc_id", cfg_doc), &vars, cookie, &referer, app_id).await {
+            if let Some(id) = find_user_id(&resp) {
+                self.cache_put(&ckey, &id).await;
+                return Ok(id);
+            }
+        }
+        Err(anyhow!("Instagram: could not resolve a user id for @{user} (stale cookie?)"))
     }
 
     // -- read-only surface for the profile viewer -----------------------------
@@ -1261,6 +1287,28 @@ fn deep_find_str(v: &Value, key: &str) -> Option<String> {
             m.values().find_map(|c| deep_find_str(c, key))
         }
         Value::Array(a) => a.iter().find_map(|c| deep_find_str(c, key)),
+        _ => None,
+    }
+}
+
+/// First numeric user id from an `owner` / `user` object anywhere in the tree.
+fn find_user_id(v: &Value) -> Option<String> {
+    let as_id = |x: &Value| {
+        x.as_str().filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())).map(str::to_string)
+            .or_else(|| x.as_i64().map(|n| n.to_string()))
+    };
+    match v {
+        Value::Object(m) => {
+            for key in ["owner", "user"] {
+                if let Some(o) = m.get(key) {
+                    if let Some(id) = o.get("id").or_else(|| o.get("pk")).or_else(|| o.get("pk_id")).and_then(as_id) {
+                        return Some(id);
+                    }
+                }
+            }
+            m.values().find_map(find_user_id)
+        }
+        Value::Array(a) => a.iter().find_map(find_user_id),
         _ => None,
     }
 }

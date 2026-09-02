@@ -315,18 +315,24 @@ export default class App {
         const host = url.host.toLowerCase();
         const match = (this.pageHosts || []).some(h => host === h || host.endsWith("." + h));
         if (!match) return;
-        // Skip bare home/search pages - only offer a real content URL.
-        if (url.pathname.replace(/\/+$/, "").length <= 1 && !url.search) return;
         if (url.pathname === "/results" || url.pathname === "/search") return;
 
         const tabId = (typeof tab.id === "number" && tab.id >= 0) ? tab.id : null;
-        // A synthetic tab (from a media request) carries no / a stale title —
-        // pull the live one so we don't post a title-less page.
+        // A synthetic tab (media request, or an ig-feed-item message) carries no
+        // title — borrow the live tab's title, but KEEP this call's url (the feed
+        // tab's url is the feed, not the post we were asked about).
         if ((tab.title == null || tab.title === "") && tabId != null) {
-            try { const full = await chrome.tabs.get(tabId); if (full) tab = full; } catch (e) { }
+            try {
+                const full = await chrome.tabs.get(tabId);
+                if (full && full.title) tab = Object.assign({}, tab, { title: full.title });
+            } catch (e) { }
         }
 
         const canon = this.canonicalPageUrl(tab.url);
+        try {
+            const cp = new URL(canon);
+            if (cp.pathname.replace(/\/+$/, "").length <= 1 && !cp.search) return;
+        } catch (e) { }
         const title = tab.title || null;
         const host0 = url.host.replace(/^www\./, "").split(".")[0];
         const GENERIC = new Set(["watch", "video", "videos", "home", "youtube", "shorts", host0]);
@@ -400,6 +406,13 @@ export default class App {
         chrome.tabs.onUpdated.addListener(
             this.onTabUpdateCallback
         );
+        // SPA route changes (Instagram feed -> /p/..., YouTube home -> /watch)
+        // don't fire tabs.onUpdated in Firefox — webNavigation does.
+        if (chrome.webNavigation && chrome.webNavigation.onHistoryStateUpdated) {
+            const onNav = d => { if (d && d.frameId === 0 && d.tabId >= 0) this.scheduleDetectPage(d.tabId); };
+            chrome.webNavigation.onHistoryStateUpdated.addListener(onNav);
+            chrome.webNavigation.onCommitted.addListener(onNav);
+        }
         chrome.runtime.onMessage.addListener(this.onPopupMessage.bind(this));
         this.syncWatcherRegistration();
         this.attachContextMenu();
@@ -541,6 +554,12 @@ export default class App {
         }
         else if (request.type === "clear") {
             this.connector.postMessage("/clear", {});
+        }
+        else if (request.type === "ig-feed-item" && request.url) {
+            if (this.isMonitoringEnabled()) {
+                const tid = sender && sender.tab ? sender.tab.id : undefined;
+                this.maybeDetectPage({ url: request.url, title: request.title || null, id: tid });
+            }
         }
     }
 

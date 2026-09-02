@@ -14,10 +14,13 @@
         "tabs",
         "storage",
         "contextMenus",
-        "alarms"
+        "alarms",
+        "webNavigation"
     ],
     "background": {
-        "scripts": ["main.js"],
+        "scripts": [
+            "main.js"
+        ],
         "type": "module"
     },
     "icons": {
@@ -30,8 +33,21 @@
             "id": "luedd@example.invalid",
             "strict_min_version": "140.0",
             "data_collection_permissions": {
-                "required": ["none"]
+                "required": [
+                    "none"
+                ]
             }
         }
-    }
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.instagram.com/*"
+            ],
+            "js": [
+                "content-ig.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ]
 }

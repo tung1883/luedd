@@ -154,6 +154,22 @@ const DEFAULT_MEDIA_TYPES: &[&str] = &[
     "image/",
 ];
 
+/// Hosts that only ever serve UI chrome / thumbnails / avatars — never a real
+/// download. Filtered out of detections so the panel isn't flooded (e.g. a
+/// YouTube playlist auto-advancing spews a `hqdefault.jpg` per video).
+const DEFAULT_BLOCKED_HOSTS: &[&str] = &[
+    "ytimg.com",
+    "ggpht.com",
+    "gstatic.com",
+    "googleusercontent.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "fonts.googleapis.com",
+    "cdn.jsdelivr.net",
+];
+
 /// Whether the browser extension should keep feeding detections. Toggled from
 /// the detection window (`POST /monitoring`); the extension reads it off every
 /// sync response and stops sending when it's false.
@@ -167,7 +183,7 @@ fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoList
     SyncResponse {
         enabled: MONITORING.load(Ordering::Relaxed),
         file_exts: Vec::new(),
-        blocked_hosts: Vec::new(),
+        blocked_hosts: DEFAULT_BLOCKED_HOSTS.iter().map(|s| s.to_string()).collect(),
         tabs_watcher: Vec::new(),
         video_list,
         request_file_exts: DEFAULT_MEDIA_EXTS.iter().map(|s| s.to_string()).collect(),
@@ -464,6 +480,9 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
     let mut new_item = None;
     if let Ok(req) = serde_json::from_slice::<PageRequest>(&body) {
         let url = canonical_page_url(&req.url);
+        if std::env::var("IG_DEBUG").is_ok() {
+            eprintln!("[/page] url={url} title={:?} cookie={}", req.title, req.cookie.is_some());
+        }
         let cfg = state.config.settings.get().await.backends;
         let provider = luedd_core::backend::provider_label(state.registry.quick_id(&url, &cfg)).to_string();
         if provider == "Lüdd-Insta" {
@@ -475,6 +494,9 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
         }
     } else {
         tracing::warn!("malformed /page payload from extension");
+        if std::env::var("IG_DEBUG").is_ok() {
+            eprintln!("[/page] MALFORMED body: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>());
+        }
     }
     Json(sync_response(video_list(&state).await, new_item))
 }
