@@ -159,10 +159,10 @@ impl DownloadBackend for YtdlpBackend {
         YTDLP_HOSTS
     }
 
-    async fn thumbnail(&self, req: &DownloadReq) -> Result<Option<String>> {
+    async fn thumbnail(&self, req: &DownloadReq) -> Result<Option<(String, bool)>> {
         let info = self.extract(&req.url, &req.config, req.ctx.cookie.as_deref()).await?;
         if let Some(t) = info.get("thumbnail").and_then(Value::as_str) {
-            return Ok(Some(t.to_string()));
+            return Ok(Some((t.to_string(), false)));
         }
         let best = info
             .get("thumbnails")
@@ -176,7 +176,7 @@ impl DownloadBackend for YtdlpBackend {
                 Some((area, url.to_string()))
             })
             .max_by_key(|(area, _)| *area)
-            .map(|(_, url)| url);
+            .map(|(_, url)| (url, false));
         Ok(best)
     }
 
@@ -235,6 +235,10 @@ impl DownloadBackend for YtdlpBackend {
 
         out.dedup_by(|a, b| a.variant_key == b.variant_key);
         Ok(out)
+    }
+
+    async fn describe(&self, req: &DownloadReq) -> super::EntryMeta {
+        self.cached_meta(&req.url).await
     }
 
     async fn run(&self, req: &DownloadReq, progress: Option<&ProgressTx>) -> Result<Outcome> {
@@ -308,7 +312,24 @@ impl DownloadBackend for YtdlpBackend {
                 Err(e) => return Err(e),
             }
         };
-        Ok(Outcome::single(path))
+        let meta = self.cached_meta(&req.url).await;
+        Ok(Outcome { files: vec![path], meta })
+    }
+}
+
+impl YtdlpBackend {
+    /// Channel / title from a cached `yt-dlp -J` (populated by `probe_qualities`
+    /// when the quality menu was shown). Empty if the extract never ran.
+    async fn cached_meta(&self, url: &str) -> super::EntryMeta {
+        let Some(info) = self.info_cache.lock().await.get(url).cloned() else {
+            return super::EntryMeta::default();
+        };
+        let s = |k: &str| info.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+        super::EntryMeta {
+            author: s("channel").or_else(|| s("uploader")).or_else(|| s("uploader_id")),
+            title: s("title"),
+            media_class: None,
+        }
     }
 }
 

@@ -25,7 +25,8 @@ struct AppState {
 /// config from `DownloadReq.config`, so this is built once and never rebuilt.
 fn build_registry(client: HttpClient) -> Arc<BackendRegistry> {
     let mut registry = BackendRegistry::with_builtins(client.clone());
-    registry.register(Arc::new(luedd_core::backend::YtdlpBackend::new(client)));
+    registry.register(Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone())));
+    registry.register(Arc::new(luedd_core::backend::InstagramBackend::new(client)));
     Arc::new(registry)
 }
 
@@ -77,7 +78,21 @@ async fn add_download(state: State<'_, AppState>, url: String, filename: Option<
     }
     let dest = luedd_core::jobs::sanitize_dest_for_kind(&dest, kind);
 
-    let entry = DownloadEntry::new(url, dest, kind).with_backend_id(backend_id).with_quality(quality);
+    let meta = backend
+        .describe(&luedd_core::backend::DownloadReq {
+            url: url.clone(),
+            dest_dir: dest.parent().map(std::path::PathBuf::from).unwrap_or_default(),
+            filename_hint: dest.file_name().map(|s| s.to_string_lossy().into_owned()),
+            ctx: ctx.clone(),
+            quality: quality.clone(),
+            concurrency: 1,
+            config: settings.backends.clone(),
+        })
+        .await;
+    let mut entry = DownloadEntry::new(url, dest, kind).with_backend_id(backend_id).with_quality(quality);
+    entry.author = meta.author;
+    entry.title = meta.title;
+    entry.media_class = meta.media_class;
     state.store.add_entry(entry).await.map_err(|e| e.to_string())
 }
 

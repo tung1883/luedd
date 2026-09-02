@@ -274,7 +274,11 @@ fn to_video_list_item(
     is_page: bool,
     provider: &str,
 ) -> VideoListItem {
-    let text = tab_url.or(page_title).unwrap_or(url).to_string();
+    let text = if is_page {
+        page_label(url, page_title, provider)
+    } else {
+        tab_url.or(page_title).unwrap_or(url).to_string()
+    };
     let info = luedd_core::naming::suggest_filename(page_title, url, None);
     VideoListItem {
         id: id.to_string(),
@@ -286,6 +290,39 @@ fn to_video_list_item(
         kind: is_page.then(|| "video".to_string()),
         provider: provider.to_string(),
     }
+}
+
+/// A friendly one-line label for a *page* detection (a yt-dlp watch page, an
+/// Instagram post…), derived from the URL — the raw URL is still on the row's
+/// detail view.
+fn page_label(url: &str, page_title: Option<&str>, provider: &str) -> String {
+    if provider == "Instagram" {
+        if let Some(rest) = url.split("instagram.com/").nth(1) {
+            let segs: Vec<&str> = rest.split(['/', '?', '#']).filter(|s| !s.is_empty()).collect();
+            match segs.as_slice() {
+                ["p", code, ..] => return format!("Post · {code}"),
+                ["reel" | "reels", code, ..] => return format!("Reel · {code}"),
+                ["tv", code, ..] => return format!("IGTV · {code}"),
+                ["stories", "highlights", ..] => return "Highlight".to_string(),
+                ["stories", user, ..] => return format!("@{user} · story"),
+                [user] => return format!("@{user}"),
+                _ => {}
+            }
+        }
+    }
+    // Other page hosts (yt-dlp): the page title if the extension captured one,
+    // trimmed of the site-name suffix; otherwise the URL.
+    if let Some(t) = page_title.map(str::trim).filter(|s| !s.is_empty()) {
+        for sep in [" - YouTube", " | ", " • ", " - "] {
+            if let Some((head, _)) = t.split_once(sep) {
+                if head.len() >= 4 {
+                    return head.to_string();
+                }
+            }
+        }
+        return t.to_string();
+    }
+    url.to_string()
 }
 
 /// First value for a header name (case-insensitive) from an extension-captured
@@ -347,6 +384,41 @@ struct PageRequest {
     cookie: Option<String>,
 }
 
+/// Mirror the extension's `canonicalPageUrl`: drop the fragment, strip tracking
+/// / view-state query params (`img_index`, `igsh`, `utm_*`…), trim a trailing
+/// slash — so the same post/profile isn't recorded once per URL variant.
+/// Identity params like YouTube's `v` are kept.
+fn canonical_page_url(raw: &str) -> String {
+    let no_frag = raw.split('#').next().unwrap_or(raw);
+    let (base, query) = match no_frag.split_once('?') {
+        Some((b, q)) => (b, Some(q)),
+        None => (no_frag, None),
+    };
+    let base = base.strip_suffix('/').unwrap_or(base);
+    let kept: Vec<&str> = query
+        .map(|q| {
+            q.split('&')
+                .filter(|p| {
+                    let k = p.split('=').next().unwrap_or(p).to_ascii_lowercase();
+                    !k.starts_with("utm_")
+                        && !k.starts_with("__")
+                        && !matches!(
+                            k.as_str(),
+                            "img_index" | "igsh" | "igshid" | "hl" | "si" | "feature"
+                                | "fbclid" | "ref_src" | "ref_url" | "source" | "_r"
+                        )
+                })
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", kept.join("&"))
+    }
+}
+
 /// The extension saw the user land on a page whose host a backend claims
 /// (a yt-dlp watch page, an Instagram post…). Record it as a detection so it
 /// shows in the panel; `/vid` then routes it to the right backend.
@@ -356,18 +428,19 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
     }
     let mut new_item = None;
     if let Ok(req) = serde_json::from_slice::<PageRequest>(&body) {
+        let url = canonical_page_url(&req.url);
         let cfg = state.config.settings.get().await.backends;
-        let provider = luedd_core::backend::provider_label(state.registry.quick_id(&req.url, &cfg)).to_string();
+        let provider = luedd_core::backend::provider_label(state.registry.quick_id(&url, &cfg)).to_string();
         let mut detected = state.detected.lock().await;
-        if !detected.iter().any(|m| m.url == req.url) {
+        if !detected.iter().any(|m| m.url == url) {
             let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
-            tracing::info!(url = %req.url, %id, provider = %provider, "page detection from browser extension");
+            tracing::info!(url = %url, %id, provider = %provider, "page detection from browser extension");
             let item = to_video_list_item(
                 &id,
-                &req.url,
-                Some(&req.url),
+                &url,
+                Some(&url),
                 req.title.as_deref(),
-                Some(&req.url),
+                Some(&url),
                 false,
                 true,
                 &provider,
@@ -378,10 +451,10 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
             new_item = Some(item);
             detected.push(DetectedMedia {
                 id,
-                url: req.url.clone(),
-                tab_url: Some(req.url.clone()),
+                url: url.clone(),
+                tab_url: Some(url.clone()),
                 page_title: req.title,
-                page_url: Some(req.url),
+                page_url: Some(url),
                 request_headers: HashMap::new(),
                 cookie: req.cookie,
                 user_agent: None,
@@ -426,6 +499,13 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
     let mut new_item = None;
     match serde_json::from_slice::<MediaRequest>(&body) {
         Ok(req) => {
+            // Media requests fired by a page a plugin owns (Instagram thumbnails,
+            // a yt-dlp watch page's HLS/ad requests) are noise — the page
+            // detection is the download. Drop them; keep the page instead.
+            let page_hosts = state.registry.page_hosts();
+            if req.tab_url.as_deref().map(|u| is_page_host(u, &page_hosts)).unwrap_or(false) {
+                return Json(default_sync_response(video_list(&state).await));
+            }
             let cfg = state.config.settings.get().await.backends;
             let provider = luedd_core::backend::provider_label(state.registry.quick_id(&req.url, &cfg)).to_string();
             let mut detected = state.detected.lock().await;
@@ -641,7 +721,9 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
         let cfg = state.config.settings.get().await.backends;
         let backend = state.registry.resolve(&media.url, &ctx, &cfg).await;
         let result = match backend.thumbnail(&probe_req(media.url.clone(), ctx.clone(), cfg)).await {
-            Ok(Some(thumb_url)) => fetch_image_data_url(&client, &thumb_url).await,
+            Ok(Some((thumb_url, square))) => fetch_image_data_url(&client, &thumb_url)
+                .await
+                .map(|(url, _)| (url, if square { "square" } else { "image" })),
             _ => None,
         };
         state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
@@ -1077,12 +1159,29 @@ async fn queue_url(
     }
     let dest = luedd_core::jobs::sanitize_dest_for_kind(&dest, kind);
 
+    // Cheap pre-run grouping metadata for the per-plugin views.
+    let meta = {
+        let req = luedd_core::backend::DownloadReq {
+            url: url.clone(),
+            dest_dir: dest.parent().map(std::path::PathBuf::from).unwrap_or_default(),
+            filename_hint: dest.file_name().map(|s| s.to_string_lossy().into_owned()),
+            ctx: ctx.clone(),
+            quality: quality.clone(),
+            concurrency: 1,
+            config: settings.backends.clone(),
+        };
+        backend.describe(&req).await
+    };
+
     tracing::info!(%url, dest = %dest.display(), backend = %backend_id, "queued download from browser extension");
-    let entry = DownloadEntry::new(url, dest, kind)
+    let mut entry = DownloadEntry::new(url, dest, kind)
         .with_backend_id(backend_id)
         .with_request_context(headers, cookie)
         .with_quality(quality)
         .with_preview(preview);
+    entry.author = meta.author;
+    entry.title = meta.title.or(title_hint);
+    entry.media_class = meta.media_class;
     let id = entry.id.clone();
     if let Err(e) = state.store.add_entry(entry).await {
         tracing::warn!(error = %e, "failed to persist download entry from extension");

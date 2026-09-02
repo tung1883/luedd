@@ -215,11 +215,21 @@ async fn run_single(
         Ok(outcome) => {
             let mut files = outcome.files;
             let final_dest = if files.is_empty() { entry.dest.clone() } else { files.remove(0) };
+            let meta = outcome.meta;
             store
                 .update_entry(&entry.id, |e| {
                     e.status = DownloadStatus::Finished;
                     e.dest = final_dest.clone();
                     e.extra_files = files.clone();
+                    if meta.author.is_some() {
+                        e.author = meta.author.clone();
+                    }
+                    if meta.title.is_some() {
+                        e.title = meta.title.clone();
+                    }
+                    if meta.media_class.is_some() {
+                        e.media_class = meta.media_class.clone();
+                    }
                 })
                 .await
                 .ok();

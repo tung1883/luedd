@@ -70,6 +70,18 @@ pub struct DownloadEntry {
     /// Extra output files beyond `dest` (carousels, torrents).
     #[serde(default)]
     pub extra_files: Vec<PathBuf>,
+    /// Grouping key for the per-plugin views: a yt-dlp channel/uploader, or an
+    /// Instagram `@account`. `None` = ungrouped.
+    #[serde(default)]
+    pub author: Option<String>,
+    /// Human title for the plugin views (yt-dlp video title). `None` falls back
+    /// to the filename.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Sub-group within an author for the Instagram view:
+    /// `"post" | "reel" | "profile" | "story" | "highlight"`.
+    #[serde(default)]
+    pub media_class: Option<String>,
 }
 
 /// Deserialization shim. Files written before the backend registry have
@@ -105,6 +117,12 @@ struct DownloadEntryRepr {
     preview_kind: Option<String>,
     #[serde(default)]
     extra_files: Vec<PathBuf>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    media_class: Option<String>,
 }
 
 impl From<DownloadEntryRepr> for DownloadEntry {
@@ -133,6 +151,9 @@ impl From<DownloadEntryRepr> for DownloadEntry {
             preview: r.preview,
             preview_kind: r.preview_kind,
             extra_files: r.extra_files,
+            author: r.author,
+            title: r.title,
+            media_class: r.media_class,
         }
     }
 }
@@ -157,6 +178,9 @@ impl DownloadEntry {
             preview: None,
             preview_kind: None,
             extra_files: Vec::new(),
+            author: None,
+            title: None,
+            media_class: None,
         }
     }
 

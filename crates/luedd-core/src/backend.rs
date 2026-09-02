@@ -15,9 +15,11 @@ use luedd_net::{HttpClient, ProgressTx, RequestContext};
 use crate::jobs::DownloadKind;
 
 pub mod builtin;
+pub mod instagram;
 pub mod ytdlp;
 
 pub use builtin::{DashBackend, HlsBackend, HttpBackend};
+pub use instagram::InstagramBackend;
 pub use ytdlp::YtdlpBackend;
 
 /// How strongly a backend claims a URL. Higher wins.
@@ -52,14 +54,35 @@ pub struct DownloadReq {
 }
 
 /// What a completed download produced. Plural for torrents / IG carousels.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Outcome {
     pub files: Vec<PathBuf>,
+    /// Grouping metadata for the per-plugin views, discovered during the run
+    /// (yt-dlp channel, Instagram account…). Written onto the entry on success.
+    pub meta: EntryMeta,
 }
 
 impl Outcome {
     pub fn single(path: PathBuf) -> Self {
-        Self { files: vec![path] }
+        Self { files: vec![path], meta: EntryMeta::default() }
+    }
+}
+
+/// Optional grouping fields the plugin views key off. Every field independently
+/// optional so a backend fills only what it knows.
+#[derive(Debug, Clone, Default)]
+pub struct EntryMeta {
+    /// yt-dlp channel/uploader, or an Instagram `@account`.
+    pub author: Option<String>,
+    /// A human title (yt-dlp video title).
+    pub title: Option<String>,
+    /// Instagram sub-group: `post | reel | profile | story | highlight`.
+    pub media_class: Option<String>,
+}
+
+impl EntryMeta {
+    pub fn is_empty(&self) -> bool {
+        self.author.is_none() && self.title.is_none() && self.media_class.is_none()
     }
 }
 
@@ -87,11 +110,19 @@ pub trait DownloadBackend: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// A thumbnail *image URL* for this item, when the backend can cheaply
-    /// supply one (e.g. from `yt-dlp -J`). Used for page detections, where
-    /// there is no media file to decode a frame from.
-    async fn thumbnail(&self, _req: &DownloadReq) -> Result<Option<String>> {
+    /// A thumbnail image for a page detection (no media file to decode a frame
+    /// from). Returns `(image_url, square)` — `square` is `true` for an
+    /// intrinsically 1:1 source (an Instagram profile picture / highlight
+    /// cover) so the panel can size its slot to match instead of letterboxing.
+    async fn thumbnail(&self, _req: &DownloadReq) -> Result<Option<(String, bool)>> {
         Ok(None)
+    }
+
+    /// Cheap, best-effort grouping metadata known *before* the download runs
+    /// (e.g. from the URL alone, or a cache). Used to place queued/running
+    /// entries in the per-plugin views; `run`'s `Outcome.meta` refines it after.
+    async fn describe(&self, _req: &DownloadReq) -> EntryMeta {
+        EntryMeta::default()
     }
 
     async fn run(&self, req: &DownloadReq, progress: Option<&ProgressTx>) -> Result<Outcome>;
@@ -297,8 +328,13 @@ pub struct HostRoute {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct InstagramConfig {
-    /// Fallback session cookie when a detection carries none.
+    /// Fallback session cookie for Add-box URLs. Extension-detected Instagram
+    /// pages already carry the browser's cookies, so this is only needed when a
+    /// URL is pasted by hand.
     pub session_cookie: Option<String>,
+    /// Persisted-query ids. Seeded with the values from `../insta-graphql.md`
+    /// so it works out of the box; Instagram rotates these every few weeks, at
+    /// which point the user refreshes them in Settings.
     pub doc_id_shortcode: Option<String>,
     pub doc_id_timeline: Option<String>,
     pub query_hash_reels: Option<String>,
@@ -309,8 +345,10 @@ impl Default for InstagramConfig {
     fn default() -> Self {
         Self {
             session_cookie: None,
-            doc_id_shortcode: None,
-            doc_id_timeline: None,
+            // insta-graphql.md §4.3 / §4.2 — observed 2025-2026, will drift.
+            doc_id_shortcode: Some("24368985919464652".to_string()),
+            doc_id_timeline: Some("8759034877476257".to_string()),
+            // Stories now use the REST reels_media endpoint, not this hash.
             query_hash_reels: None,
             app_id: "936619743392459".to_string(),
         }

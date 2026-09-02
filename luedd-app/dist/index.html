@@ -252,6 +252,48 @@
   .f-cascadia-mono { font-family: "Cascadia Mono", ui-monospace, Consolas, monospace; }
   .font-preview { margin-top: 8px; padding: 9px 12px; background: var(--bg); border: 1px solid var(--line);
     border-radius: 6px; font-size: 14px; color: var(--text); }
+  .ig-note { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  #settings-overlay .set-body { max-height: 74vh; overflow-y: auto; }
+
+  /* per-plugin views */
+  #views-row { display: flex; gap: 2px; margin-bottom: 10px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  #views-row[hidden] { display: none; }
+  .view-tab { font-size: 12px; padding: 7px 13px; color: var(--dim); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; user-select: none; }
+  .view-tab:hover { color: var(--text); }
+  .view-tab.on { color: var(--text); border-bottom-color: var(--accent); }
+  .view-tab .vc { color: var(--dim); font-size: 11px; margin-left: 5px; font-variant-numeric: tabular-nums; }
+  #plugin-view { flex: 1; min-height: 0; overflow: auto; }
+  #plugin-view[hidden] { display: none; }
+  .pv-group { margin-bottom: 6px; }
+  .pv-ghdr { display: flex; align-items: center; gap: 9px; padding: 9px 4px; cursor: pointer;
+    position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  .pv-gcaret { color: var(--dim); font-size: 10px; width: 10px; }
+  .pv-gav { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 12px; font-weight: 600; }
+  .pv-gname { font-weight: 600; }
+  .pv-gsub { color: var(--dim); font-size: 11px; }
+  .pv-sp { flex: 1; }
+  .pv-gopen { font-size: 11px; color: var(--disc); background: none; border: 0; cursor: pointer; padding: 2px 4px; }
+  .pv-sec { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); padding: 8px 4px 3px; }
+  .pv-vrow { display: grid; grid-template-columns: 104px 1fr 150px; gap: 12px; align-items: center;
+    padding: 8px 4px; border-top: 1px solid var(--line); }
+  .pv-vthumb { width: 104px; height: 58px; border-radius: 5px; background: var(--surface-2); overflow: hidden;
+    display: flex; align-items: center; justify-content: center; color: var(--dim); }
+  .pv-vthumb img { width: 100%; height: 100%; object-fit: cover; }
+  .pv-vthumb svg { width: 22px; height: 22px; }
+  .pv-vtitle { font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .pv-vmeta { font-size: 10px; color: var(--dim); margin-top: 3px; }
+  .pv-vstat { text-align: right; font-size: 11px; }
+  .pv-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; padding: 2px 4px 6px; }
+  .pv-cell { position: relative; aspect-ratio: 1; background: var(--surface-2); border-radius: 3px; overflow: hidden;
+    cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--dim); }
+  .pv-cell img { width: 100%; height: 100%; object-fit: cover; }
+  .pv-cell svg { width: 20px; height: 20px; }
+  .pv-cell .pv-ov { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: flex;
+    align-items: center; justify-content: center; color: #fff; font-size: 10px; text-align: center; }
+  .pv-cell .pv-badge { position: absolute; right: 3px; top: 2px; font-size: 9px; color: #fff;
+    text-shadow: 0 1px 2px rgba(0,0,0,.7); }
 
   /* icon-only header buttons */
   .strip button.icon-only { padding: 6px; display: inline-flex; align-items: center; }
@@ -365,6 +407,26 @@
             <div class="font-preview" id="font-preview" data-i18n="font_preview">The quick brown fox jumps over 1,234 downloads.</div>
           </div>
         </div>
+        <div class="set-section">
+          <h3 data-i18n="sec_instagram">Instagram</h3>
+          <div class="set-row">
+            <label for="ig-cookie" data-i18n="ig_cookie">Session cookie</label>
+            <input id="ig-cookie" type="text" class="set-field" placeholder="sessionid=…; csrftoken=…; ds_user_id=…" />
+          </div>
+          <div class="set-grid2">
+            <div class="set-row">
+              <label for="ig-doc-post" data-i18n="ig_doc_post">doc_id — post / reel</label>
+              <input id="ig-doc-post" type="text" class="set-field" />
+            </div>
+            <div class="set-row">
+              <label for="ig-doc-profile" data-i18n="ig_doc_profile">doc_id — profile grid</label>
+              <input id="ig-doc-profile" type="text" class="set-field" />
+            </div>
+          </div>
+          <div class="set-row">
+            <div class="ig-note" data-i18n="ig_note">These ids rot every few weeks.</div>
+          </div>
+        </div>
       </div>
       <div class="set-foot">
         <button id="settings-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
@@ -473,6 +535,9 @@
         </div>
       </div>
     </div>
+
+    <div id="views-row" hidden></div>
+    <div id="plugin-view" hidden></div>
 
     <div class="table-wrap">
       <table>
@@ -1046,10 +1111,230 @@ async function refresh() {
   updateBulkButtons();
   updateReadout(entries);
   lastEntries = entries;
+
+  syncPluginViews(entries, visible);
 }
 
 // The master toggle keeps its own state; toggling a single row doesn't move it.
 let lastEntries = [];
+
+// ---- per-plugin views (yt-dlp by channel, Instagram profile grid) ----
+let currentView = "all";
+const pvCollapsed = new Set();
+const MEDIA_CLASS_ORDER = ["story", "highlight", "reel", "post", "profile"];
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function pluginCounts(entries) {
+  const m = new Map();
+  for (const e of entries) {
+    const p = providerLabel(e.backend_id);
+    if (p !== "Lüdd") m.set(p, (m.get(p) || 0) + 1);
+  }
+  return m;
+}
+function entryFiles(e) {
+  return [e.dest, ...(e.extra_files || [])].filter(Boolean);
+}
+function baseName(p) {
+  const s = String(p || "").replace(/[\\/]+$/, "");
+  return s.slice(Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\")) + 1);
+}
+// Fallback account name from an Instagram URL when the backend didn't set one.
+function authorFromUrl(u) {
+  try {
+    const p = new URL(u);
+    if (!/(^|\.)instagram\.com$/.test(p.host.toLowerCase())) return null;
+    const segs = p.pathname.split("/").filter(Boolean);
+    const head = (segs[0] || "").toLowerCase();
+    if (["p", "reel", "reels", "tv", "explore", "accounts", "direct"].includes(head)) return null;
+    if (head === "stories") return segs[1] && segs[1].toLowerCase() !== "highlights" ? "@" + segs[1] : null;
+    return segs[0] ? "@" + segs[0] : null;
+  } catch { return null; }
+}
+
+// Lazy per-file thumbnails for the plugin views (finished downloads only).
+const pvThumbs = new Map();
+let pvObserver = null;
+function pvEnsureObserver() {
+  if (pvObserver) return;
+  pvObserver = new IntersectionObserver(async items => {
+    for (const it of items) {
+      if (!it.isIntersecting) continue;
+      const el = it.target;
+      pvObserver.unobserve(el);
+      const path = el.dataset.thumbPath;
+      if (!path) continue;
+      let data = pvThumbs.get(path);
+      if (data === undefined) {
+        try { data = (await invoke("read_preview", { path })).data_url; }
+        catch { data = null; }
+        pvThumbs.set(path, data);
+      }
+      if (data) {
+        const img = document.createElement("img");
+        img.src = data; img.alt = "";
+        const ph = el.querySelector(".pv-ph");
+        if (ph) ph.replaceWith(img); else el.prepend(img);
+      }
+    }
+  }, { rootMargin: "300px" });
+}
+function pvLazyThumb(el, path, finished) {
+  if (!finished || !path) return;
+  el.dataset.thumbPath = path;
+  pvEnsureObserver();
+  pvObserver.observe(el);
+}
+
+function syncPluginViews(entries, visible) {
+  const row = document.getElementById("views-row");
+  const pv = document.getElementById("plugin-view");
+  const tw = document.querySelector(".table-wrap");
+  const counts = pluginCounts(entries);
+
+  if (counts.size === 0) {
+    row.hidden = true; pv.hidden = true; tw.hidden = false;
+    currentView = "all";
+    return;
+  }
+  if (currentView !== "all" && !counts.has(currentView)) currentView = "all";
+
+  row.hidden = false;
+  const tab = (id, label, n) =>
+    `<span class="view-tab ${currentView === id ? "on" : ""}" data-view="${esc(id)}">${esc(label)}<span class="vc">${n}</span></span>`;
+  row.innerHTML = tab("all", t("view_all"), entries.length)
+    + [...counts.keys()].sort().map(p => tab(p, p, counts.get(p))).join("");
+  row.querySelectorAll(".view-tab").forEach(el => el.addEventListener("click", () => {
+    currentView = el.dataset.view;
+    refresh();
+  }));
+
+  if (currentView === "all") {
+    pv.hidden = true; tw.hidden = false;
+  } else {
+    tw.hidden = true; pv.hidden = false;
+    renderPluginView(currentView, visible.filter(e => providerLabel(e.backend_id) === currentView));
+  }
+}
+
+function pvStatusText(e) {
+  if (e.status === "Finished") return "";
+  if (e.status === "Downloading" && e.progress) {
+    const f = entryFraction(e);
+    return f > 0 ? Math.round(f * 100) + "%" : t("status_Running");
+  }
+  return statusLabel(e.status);
+}
+
+function renderPluginView(provider, entries) {
+  const pv = document.getElementById("plugin-view");
+  pv.innerHTML = "";
+  if (entries.length === 0) {
+    pv.innerHTML = `<div class="empty" style="padding:24px;text-align:center;color:var(--dim)">${esc(t("no_matches"))}</div>`;
+    return;
+  }
+  const isIG = provider === "Instagram";
+  const groups = new Map();
+  for (const e of entries) {
+    const a = e.author || (isIG ? authorFromUrl(e.url) : null) || t("pv_unknown");
+    if (!groups.has(a)) groups.set(a, []);
+    groups.get(a).push(e);
+  }
+
+  for (const [author, es] of groups) {
+    const key = provider + "|" + author;
+    const collapsed = pvCollapsed.has(key);
+    const g = document.createElement("div");
+    g.className = "pv-group";
+
+    const fileCount = es.reduce((n, e) => n + entryFiles(e).length, 0);
+    const sub = isIG ? t("pv_items", { n: fileCount }) : t("pv_videos", { n: es.length });
+    const initial = (author.replace(/^@/, "")[0] || "?").toUpperCase();
+
+    const hdr = document.createElement("div");
+    hdr.className = "pv-ghdr";
+    hdr.innerHTML = `<span class="pv-gcaret">${collapsed ? "▸" : "▾"}</span>`
+      + `<span class="pv-gav">${esc(initial)}</span>`
+      + `<span><span class="pv-gname">${esc(author)}</span> <span class="pv-gsub">· ${esc(sub)}</span></span>`
+      + `<span class="pv-sp"></span>`
+      + `<button class="pv-gopen" data-path="${esc(es[0].dest)}">${esc(t("pv_open_folder"))}</button>`;
+    hdr.addEventListener("click", ev => {
+      if (ev.target.closest(".pv-gopen")) return;
+      collapsed ? pvCollapsed.delete(key) : pvCollapsed.add(key);
+      refresh();
+    });
+    hdr.querySelector(".pv-gopen").addEventListener("click", async e => {
+      await invoke("open_containing_folder", { path: e.target.dataset.path });
+    });
+    g.appendChild(hdr);
+
+    if (!collapsed) {
+      if (isIG) renderIgGroup(g, es);
+      else renderYtGroup(g, es);
+    }
+    pv.appendChild(g);
+  }
+}
+
+function renderYtGroup(g, entries) {
+  for (const e of entries) {
+    const row = document.createElement("div");
+    row.className = "pv-vrow";
+    const meta = [kindLabel(e.kind), e.quality, formatSpeed(e)].filter(Boolean).join(" · ");
+    row.innerHTML = `<div class="pv-vthumb">${e.preview ? `<img src="${esc(e.preview)}" alt="" />` : `<span class="pv-ph">${previewGlyph(e.dest)}</span>`}</div>`
+      + `<div><div class="pv-vtitle">${esc(e.title || baseName(e.dest))}</div>`
+      + `<div class="pv-vmeta">${esc(meta)}</div></div>`
+      + `<div class="pv-vstat">${formatProgress(e)}</div>`;
+    if (!e.preview) pvLazyThumb(row.querySelector(".pv-vthumb"), e.dest, e.status === "Finished");
+    row.addEventListener("click", async ev => {
+      if (ev.target.closest("button, a")) return;
+      if (e.status === "Finished") await invoke("open_file", { path: e.dest });
+    });
+    g.appendChild(row);
+  }
+}
+
+function renderIgGroup(g, entries) {
+  const bySec = new Map();
+  for (const e of entries) {
+    const c = e.media_class || "post";
+    if (!bySec.has(c)) bySec.set(c, []);
+    bySec.get(c).push(e);
+  }
+  const rank = c => { const i = MEDIA_CLASS_ORDER.indexOf(c); return i < 0 ? 99 : i; };
+  const order = [...bySec.keys()].sort((a, b) => rank(a) - rank(b));
+  for (const sec of order) {
+    const label = t("mc_" + sec) || sec;
+    const secEs = bySec.get(sec);
+    const cells = secEs.flatMap(e => entryFiles(e).map(f => ({ e, f })));
+    const secEl = document.createElement("div");
+    secEl.className = "pv-sec";
+    secEl.textContent = `${label} · ${t("pv_items", { n: cells.length })}`;
+    g.appendChild(secEl);
+
+    const grid = document.createElement("div");
+    grid.className = "pv-grid";
+    for (const { e, f } of cells) {
+      const ext = (f.split(".").pop() || "").toLowerCase();
+      const isVid = ["mp4", "mov", "webm", "mkv"].includes(ext);
+      const cell = document.createElement("div");
+      cell.className = "pv-cell";
+      const st = pvStatusText(e);
+      cell.innerHTML = `<span class="pv-ph">${isVid ? VIDEO_GLYPH : "▦"}</span>`
+        + (isVid ? '<span class="pv-badge">▶</span>' : "")
+        + (st ? `<span class="pv-ov">${esc(st)}</span>` : "");
+      pvLazyThumb(cell, f, e.status === "Finished");
+      cell.addEventListener("click", async () => {
+        if (e.status === "Finished") await invoke("open_file", { path: f });
+      });
+      grid.appendChild(cell);
+    }
+    g.appendChild(grid);
+  }
+}
+
 let masterOpen = false;
 document.getElementById("expand-all-btn").addEventListener("click", async () => {
   masterOpen = !masterOpen;
@@ -1396,13 +1681,22 @@ wireFilterDD("lf-provider", "provider", () => t("f_all_providers"));
   });
 }
 
+// The whole Settings object as last loaded — `set_settings` replaces the file
+// wholesale, so Save must send back every field, not just the ones on screen.
+let loadedSettings = null;
+
 function openSettings(settings) {
+  loadedSettings = settings;
   document.getElementById("download-dir").value = settings.download_dir;
   document.getElementById("max-concurrent").value = settings.max_concurrent_downloads;
   document.getElementById("per-download-concurrency").value = settings.per_download_concurrency;
   ddLang.dataset.value = settings.language || "en"; ddLang._sync();
   ddFont.dataset.value = settings.font || "system"; ddFont._sync();
   previewFont(settings.font || "system");
+  const ig = (settings.backends && settings.backends.instagram) || {};
+  document.getElementById("ig-cookie").value = ig.session_cookie || "";
+  document.getElementById("ig-doc-post").value = ig.doc_id_shortcode || "";
+  document.getElementById("ig-doc-profile").value = ig.doc_id_timeline || "";
   settingsOverlay.style.display = "flex";
 }
 function closeSettings() {
@@ -1427,12 +1721,22 @@ document.getElementById("browse-btn").addEventListener("click", async () => {
 document.getElementById("save-settings-btn").addEventListener("click", async () => {
   const font = ddFont.dataset.value;
   const language = ddLang.dataset.value;
+  const backends = (loadedSettings && loadedSettings.backends) ? { ...loadedSettings.backends } : {};
+  const igIn = s => { const v = document.getElementById(s).value.trim(); return v || null; };
+  backends.instagram = {
+    ...(backends.instagram || {}),
+    session_cookie: igIn("ig-cookie"),
+    doc_id_shortcode: igIn("ig-doc-post"),
+    doc_id_timeline: igIn("ig-doc-profile"),
+  };
   const settings = {
+    ...(loadedSettings || {}),
     download_dir: document.getElementById("download-dir").value.trim(),
     max_concurrent_downloads: parseInt(document.getElementById("max-concurrent").value, 10) || 2,
     per_download_concurrency: parseInt(document.getElementById("per-download-concurrency").value, 10) || 8,
     font,
     language,
+    backends,
   };
   await invoke("set_settings", { settings });
   applyFont(font);

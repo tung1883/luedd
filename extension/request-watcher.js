@@ -193,12 +193,16 @@ export default class RequestWatcher {
                     this.callback(data);
                 };
                 if (req.tabId !== -1) {
-                    chrome.tabs.get(
-                        req.tabId,
-                        tab => {
+                    chrome.tabs.get(req.tabId, tab => {
+                        // Tab may be gone (closed, prefetch, SW request) - lastError
+                        // is set and `tab` is undefined.
+                        void chrome.runtime.lastError;
+                        if (tab) {
                             finish(tab.title, tab.url);
+                        } else {
+                            finish(null, null);
                         }
-                    );
+                    });
                 } else {
                     finish(null, null);
                 }

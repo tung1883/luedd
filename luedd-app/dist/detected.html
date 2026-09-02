@@ -119,6 +119,11 @@
     background: linear-gradient(135deg, #242730, #2b2f38); display: flex; align-items: center; justify-content: center; }
   .row-preview svg { width: 22px; height: 22px; color: #6a6f7a; }
   .thumb { width: 74px; height: 44px; object-fit: cover; display: block; cursor: pointer; }
+  /* a square source (Instagram profile picture / highlight cover): keep the
+     74px column so rows stay aligned, drop the frame, and centre a 44px square
+     image inside — no letterbox bars, just the row background around it */
+  .row-preview.preview-square { border-color: transparent; background: none; }
+  .row-preview.preview-square .thumb { width: 44px; height: 44px; border-radius: 6px; }
   .thumb-pdf { width: 74px; height: 44px; cursor: default; }
   .row-body { min-width: 0; }
   .title-btn { background: none; border: none; color: var(--text); cursor: pointer; text-align: left; font-size: 13px;
@@ -629,9 +634,21 @@
       el = document.createElement("img");
       el.className = "thumb";
       el.alt = "";
-      el.src = data.url;
       el.addEventListener("click", ev => { ev.stopPropagation(); showImageOverlay(data.url); });
       el.addEventListener("error", () => { col.innerHTML = iconFor(item); }, { once: true });
+      // A square source (Instagram profile picture / highlight cover): shrink
+      // the slot to a square up front so it never flashes 16:9-cropped. The
+      // server tags these as kind "square"; also catch any other 1:1 image.
+      if (data.kind === "square") {
+        col.classList.add("preview-square");
+      } else {
+        el.addEventListener("load", () => {
+          if (el.naturalWidth && Math.abs(el.naturalWidth / el.naturalHeight - 1) < 0.05) {
+            col.classList.add("preview-square");
+          }
+        }, { once: true });
+      }
+      el.src = data.url;
     }
     col.innerHTML = "";
     col.appendChild(el);

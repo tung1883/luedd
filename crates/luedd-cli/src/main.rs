@@ -107,6 +107,7 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
     let registry = {
         let mut r = luedd_core::backend::BackendRegistry::with_builtins(client.clone());
         r.register(Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone())));
+        r.register(Arc::new(luedd_core::backend::InstagramBackend::new(client.clone())));
         Arc::new(r)
     };
     let manager = Arc::new(

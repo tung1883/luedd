@@ -187,10 +187,23 @@ export default class App {
         this.updateActionIcon();
     }
 
+    hostMatchesPageHost(u) {
+        let host;
+        try { host = new URL(u).host.toLowerCase(); } catch { return false; }
+        return (this.pageHosts || []).some(h => host === h || host.endsWith("." + h));
+    }
+
     onRequestDataReceived(data) {
         this.logger.log("onRequestDataReceived");
         this.logger.log(data);
         if (!this.isMonitoringEnabled()) return;
+        // On a page a plugin owns (Instagram, a yt-dlp watch page…), the page
+        // detection is the download - the dozens of thumbnail/segment/ad media
+        // requests that page fires are noise. Offer the page instead.
+        if (this.hostMatchesPageHost(data.tabUrl)) {
+            this.maybeDetectPage({ url: data.tabUrl, title: "" });
+            return;
+        }
         this.recordLocalDetection(data);
         this.connector.postMessage("/media", data);
     }
@@ -245,6 +258,21 @@ export default class App {
         }
     }
 
+    // Strip tracking / view-state params and the trailing slash so the same
+    // post/profile isn't detected once per URL variant (`/p/X/`, `/p/X`,
+    // `/p/X/?img_index=1`, `?igsh=…`). Identity-bearing params (YouTube's `v`)
+    // are kept.
+    canonicalPageUrl(raw) {
+        try {
+            const u = new URL(raw);
+            u.hash = "";
+            const noise = /^(img_index|igsh|igshid|hl|si|feature|utm_|fbclid|ref_src|ref_url|__|source|_r)$/i;
+            for (const k of [...u.searchParams.keys()]) if (noise.test(k)) u.searchParams.delete(k);
+            if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
+            return u.toString();
+        } catch { return raw; }
+    }
+
     async maybeDetectPage(tab) {
         let url;
         try { url = new URL(tab.url); } catch { return; }
@@ -255,9 +283,9 @@ export default class App {
         // Skip bare home/search pages - only offer a real content URL.
         if (url.pathname.replace(/\/+$/, "").length <= 1 && !url.search) return;
         if (url.pathname === "/results" || url.pathname === "/search") return;
-        const key = tab.url;
-        if (this.postedPages.has(key) || this.seenUrls.has(key)) return;
-        this.postedPages.add(key);
+        const canon = this.canonicalPageUrl(tab.url);
+        if (this.postedPages.has(canon) || this.seenUrls.has(canon)) return;
+        this.postedPages.add(canon);
         if (this.postedPages.size > 300) {
             this.postedPages = new Set([...this.postedPages].slice(-150));
         }
@@ -268,8 +296,8 @@ export default class App {
                 cookie = cookies.map(c => `${c.name}=${c.value}`).join("; ");
             }
         } catch (e) { }
-        this.logger.log("page detection: " + tab.url);
-        this.connector.postMessage("/page", { url: tab.url, title: tab.title || null, cookie });
+        this.logger.log("page detection: " + canon);
+        this.connector.postMessage("/page", { url: canon, title: tab.title || null, cookie });
     }
 
     register() {
