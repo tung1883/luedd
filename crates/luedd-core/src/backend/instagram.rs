@@ -73,6 +73,10 @@ pub struct PostMeta {
     pub thumb_url: Option<String>,
     pub is_video: bool,
     pub is_carousel: bool,
+    /// Number of items in a carousel (0 when not a carousel / unknown) — lets the
+    /// viewer show the real frame count before the full post is fetched.
+    #[serde(default)]
+    pub carousel_count: u32,
     pub taken_at: Option<i64>,
     pub caption: String,
 }
@@ -846,6 +850,17 @@ fn parse_timeline_nodes(resp: &Value) -> Vec<PostMeta> {
                     || n.get("carousel_media").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
                     || n.get("carousel_media_count").and_then(Value::as_i64).is_some_and(|c| c > 1)
                     || n.get("edge_sidecar_to_children").and_then(|s| s.get("edges")).and_then(Value::as_array).is_some_and(|a| !a.is_empty()),
+                carousel_count: n
+                    .get("carousel_media_count")
+                    .and_then(Value::as_u64)
+                    .or_else(|| n.get("carousel_media").and_then(Value::as_array).map(|a| a.len() as u64))
+                    .or_else(|| {
+                        n.get("edge_sidecar_to_children")
+                            .and_then(|s| s.get("edges"))
+                            .and_then(Value::as_array)
+                            .map(|a| a.len() as u64)
+                    })
+                    .unwrap_or(0) as u32,
                 taken_at: n.get("taken_at").or_else(|| n.get("taken_at_timestamp")).and_then(Value::as_i64),
                 caption: n
                     .get("caption")

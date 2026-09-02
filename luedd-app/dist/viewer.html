@@ -443,19 +443,24 @@
 
   async function openPost(pm) {
     const src = `https://www.instagram.com/p/${pm.shortcode}/`;
-    // open immediately with the grid thumbnail (already loaded) so the overlay
-    // is instant, then swap in the real frames when /ig/post resolves
+    // open immediately: real grid thumbnail as frame 0 (already cached by the
+    // browser) + skeleton placeholders for the rest of a carousel, so the strip
+    // shows the true item count right away. Frames upgrade in place — no reload.
     const token = ++ovPending;
-    openOverlay([{ media_url: pm.thumb_url, thumb_url: pm.thumb_url, is_video: false }], src, pm.caption || "", L("viewer_posts"));
+    const n = pm.is_carousel ? (pm.carousel_count >= 1 ? pm.carousel_count : 2) : 1;
+    const provisional = [{ media_url: pm.thumb_url, thumb_url: pm.thumb_url, is_video: false }];
+    for (let i = 1; i < n; i++) provisional.push({ ph: true });
+    openOverlay(provisional, src, pm.caption || "", L("viewer_posts"));
     ov.classList.add("loading");
     const r = await post("/ig/post", { id: pm.shortcode });
     if (token !== ovPending || !ov.classList.contains("open")) return;
     ov.classList.remove("loading");
     if (!r || r.error || !(r.items || []).length) {
       if (pm.is_carousel || pm.is_video) { closeOverlay(); toast((r && r.error) || L("cant_reach")); }
-      return; // single image: the thumbnail is already fine
+      else { ovFrames = ovFrames.slice(0, 1); buildStrip(); buildAllGrid(); showFrame(0); }
+      return;
     }
-    openOverlay(r.items, src, r.caption || pm.caption || "", L("viewer_posts"));
+    upgradeFrames(r.items, r.caption || pm.caption || "");
   }
 
   // ---- full-window media overlay ----
@@ -463,20 +468,47 @@
   let ovFrames = [], ovIdx = 0, ovSource = "", ovCaption = "", ovZoom = 1, ovSlideTimer = null;
   let ovPan = { x: 0, y: 0 }, ovDrag = null, ovPending = 0;
 
+  const mapFrame = f => f.ph
+    ? { ph: true, media_url: "", thumb_url: "", is_video: false }
+    : { media_url: f.media_url || f.thumb_url, thumb_url: f.thumb_url || f.media_url, is_video: !!f.is_video };
+
   function openOverlay(frames, sourceUrl, caption, title) {
-    ovFrames = (frames || [])
-      .filter(f => f && (f.media_url || f.thumb_url))
-      .map(f => ({ media_url: f.media_url || f.thumb_url, thumb_url: f.thumb_url || f.media_url, is_video: !!f.is_video }));
+    ovFrames = (frames || []).filter(f => f && (f.ph || f.media_url || f.thumb_url)).map(mapFrame);
     if (!ovFrames.length) { toast(L("cant_reach")); return; }
     ovSource = sourceUrl; ovCaption = caption || ""; ovIdx = 0; ovZoom = 1;
     ov.classList.remove("allmode");
     ov.classList.add("open");
     renderCaption();
     buildStrip(); buildAllGrid(); showFrame(0);
-    // small carousels: warm every frame up front
-    if (ovFrames.length <= 8) {
-      for (const f of ovFrames) if (!f.is_video && f.media_url) { const p = new Image(); p.src = img(f.media_url); }
+    warmFrames();
+  }
+  function warmFrames() {
+    if (ovFrames.length > 12) return;
+    for (const f of ovFrames) if (!f.ph && !f.is_video && f.media_url) { const p = new Image(); p.src = img(f.media_url); }
+  }
+  // replace provisional frames with the real ones without reloading what's on screen
+  function upgradeFrames(items, caption) {
+    const real = (items || []).filter(f => f && (f.media_url || f.thumb_url)).map(mapFrame);
+    if (!real.length) return;
+    const cur = ovFrames[ovIdx] || {};
+    ovFrames = real;
+    if (ovIdx >= real.length) ovIdx = real.length - 1;
+    if (caption && caption !== ovCaption) { ovCaption = caption; renderCaption(); }
+    buildStrip(); buildAllGrid();
+    const nf = ovFrames[ovIdx];
+    const liveImg = document.querySelector("#ov-pic > img");
+    if (liveImg && !nf.ph && !nf.is_video && !cur.ph && !cur.is_video) {
+      // seamless: swap the src once the higher-res image is ready
+      const pre = new Image();
+      pre.onload = () => { if (document.querySelector("#ov-pic > img") === liveImg) liveImg.src = pre.src; };
+      pre.src = img(nf.media_url);
+    } else {
+      showFrame(ovIdx);
     }
+    document.getElementById("ov-ct").textContent = `${ovIdx + 1} / ${ovFrames.length}`;
+    document.querySelectorAll("#ov-strip .s").forEach((s, k) => s.classList.toggle("on", k === ovIdx));
+    centerStrip();
+    warmFrames();
   }
   function renderCaption() {
     const bar = document.getElementById("ov-cap"), txt = document.getElementById("ov-cap-txt"), more = document.getElementById("ov-cap-more");
@@ -494,9 +526,9 @@
     const strip = document.getElementById("ov-strip");
     strip.innerHTML = "";
     ovFrames.forEach((f, i) => {
-      const s = document.createElement("div"); s.className = "s";
-      s.innerHTML = `${f.thumb_url ? `<img src="${esc(img(f.thumb_url))}" alt="">` : ""}${f.is_video ? `<span class="v">${IC_REEL}</span>` : ""}`;
-      s.addEventListener("click", () => showFrame(i));
+      const s = document.createElement("div"); s.className = f.ph ? "s ph sk" : "s";
+      if (!f.ph) s.innerHTML = `${f.thumb_url ? `<img src="${esc(img(f.thumb_url))}" alt="">` : ""}${f.is_video ? `<span class="v">${IC_REEL}</span>` : ""}`;
+      s.addEventListener("click", () => { if (!f.ph) showFrame(i); });
       strip.appendChild(s);
     });
   }
@@ -504,9 +536,9 @@
     const g = document.getElementById("ov-allgrid");
     g.innerHTML = "";
     ovFrames.forEach((f, i) => {
-      const c = document.createElement("div"); c.className = "g";
-      c.innerHTML = f.thumb_url ? `<img src="${esc(img(f.thumb_url))}" alt="">` : "";
-      c.addEventListener("click", () => { ov.classList.remove("allmode"); showFrame(i); });
+      const c = document.createElement("div"); c.className = f.ph ? "g ph sk" : "g";
+      if (!f.ph) c.innerHTML = f.thumb_url ? `<img src="${esc(img(f.thumb_url))}" alt="">` : "";
+      c.addEventListener("click", () => { if (!f.ph) { ov.classList.remove("allmode"); showFrame(i); } });
       g.appendChild(c);
     });
   }
@@ -517,7 +549,9 @@
     document.getElementById("ov-ct").textContent = `${ovIdx + 1} / ${ovFrames.length}`;
     const pic = document.getElementById("ov-pic");
     pic.classList.remove("zoomed");
-    if (f.is_video) {
+    if (f.ph) {
+      pic.innerHTML = `<span class="sk"></span>`;
+    } else if (f.is_video) {
       pic.innerHTML = `<video src="${esc(f.media_url)}" controls autoplay playsinline></video>`;
     } else {
       pic.innerHTML = `<span class="sk"></span><img src="${esc(img(f.media_url))}" alt="" style="opacity:0">`;
@@ -528,7 +562,7 @@
     // warm the neighbouring frames so stepping is instant
     for (const j of [ovIdx + 1, ovIdx - 1, ovIdx + 2]) {
       const nf = ovFrames[j];
-      if (nf && !nf.is_video && nf.media_url) { const pre = new Image(); pre.src = img(nf.media_url); }
+      if (nf && !nf.ph && !nf.is_video && nf.media_url) { const pre = new Image(); pre.src = img(nf.media_url); }
     }
     document.getElementById("ov-prev").disabled = ovIdx === 0;
     document.getElementById("ov-next").disabled = ovIdx === ovFrames.length - 1;
@@ -541,7 +575,7 @@
       + (multi ? `<button class="btn2 g" id="ov-dlone">${esc(L("viewer_this_frame"))}</button>` : "");
     pill.querySelector("#ov-dlall").addEventListener("click", () => queue(ovSource));
     const one = pill.querySelector("#ov-dlone");
-    if (one) one.addEventListener("click", () => queue(f.media_url));
+    if (one) { one.disabled = !!f.ph; one.addEventListener("click", () => { if (!f.ph) queue(f.media_url); }); }
   }
   function centerStrip() {
     const strip = document.getElementById("ov-strip");
