@@ -307,7 +307,14 @@ fn to_video_list_item(
     } else {
         tab_url.or(page_title).unwrap_or(url).to_string()
     };
-    let info = luedd_core::naming::suggest_filename(page_title, url, None);
+    // For a page detection the secondary line is just the site — a URL-derived
+    // "filename" like "watch" is noise (and misread as the title before the real
+    // <title> settles).
+    let info = if is_page {
+        page_title.map(str::to_string).unwrap_or_default()
+    } else {
+        luedd_core::naming::suggest_filename(page_title, url, None)
+    };
     VideoListItem {
         id: id.to_string(),
         text,
@@ -525,7 +532,24 @@ async fn ensure_page_detection(
     let cfg = state.config.settings.get().await.backends;
     let provider = luedd_core::backend::provider_label(state.registry.quick_id(url, &cfg)).to_string();
     let mut detected = state.detected.lock().await;
-    if detected.iter().any(|m| m.url == url) {
+    if let Some(existing) = detected.iter_mut().find(|m| m.url == url) {
+        // Same page already offered — but a SPA (YouTube, Instagram) posts the
+        // stale/generic title first and re-posts the settled one a beat later.
+        // An explicit non-empty title that differs always wins.
+        let update = title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && Some(*t) != existing.page_title.as_deref());
+        if let Some(t) = update {
+            existing.page_title = Some(t.to_string());
+            let refreshed = to_video_list_item(
+                &existing.id, url, Some(url), Some(t), Some(url), false, true, &provider,
+            );
+            if let Some(tx) = &state.config.on_new_detection {
+                let _ = tx.send(refreshed.clone());
+            }
+            return Some(refreshed);
+        }
         return None;
     }
     let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));

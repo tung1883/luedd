@@ -788,6 +788,7 @@
       for (const item of groups.get(p)) {
         let row = rowElements.get(item.id);
         if (!row) { row = buildRow(item); rowElements.set(item.id, row); }
+        else refreshRowText(row, item);   // title/meta may have changed (SPA settled its <title>)
         list.appendChild(row);
       }
     }
@@ -814,6 +815,17 @@
       : res && res.vidQueued === false ? L("link_expired")
       : L("cant_reach");
     setTimeout(() => { btn.innerText = original; }, 1500);
+  }
+
+  function refreshRowText(row, item) {
+    const { title, meta } = rowTitleMeta(item);
+    const sig = JSON.stringify([title, meta]);
+    if (row._textSig === sig) return;
+    row._textSig = sig;
+    const tb = row.querySelector(".title-btn");
+    if (tb) { tb.innerText = title; tb.title = title; }
+    const it = row.querySelector(".info-text");
+    if (it) it.innerText = meta;
   }
 
   function buildRow(item) {

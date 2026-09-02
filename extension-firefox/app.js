@@ -202,7 +202,8 @@ export default class App {
         // detection is the download - the dozens of thumbnail/segment/ad media
         // requests that page fires are noise. Offer the page instead.
         if (this.hostMatchesPageHost(data.tabUrl)) {
-            this.maybeDetectPage({ url: data.tabUrl, title: "" });
+            const tid = parseInt(data.tabId, 10);
+            this.maybeDetectPage({ url: data.tabUrl, title: data.file || null, id: Number.isNaN(tid) ? undefined : tid });
             return;
         }
         this.recordLocalDetection(data);
@@ -254,9 +255,42 @@ export default class App {
                 }
             }
         }
-        if ((changeInfo.status === "complete" || changeInfo.title) && tab && tab.url) {
-            this.maybeDetectPage(tab);
+        // SPA sites (YouTube, Instagram) change the URL via history without a
+        // full load, and settle the <title> a beat later. Trigger on url / title
+        // / complete, debounced per-tab so we read the *settled* title.
+        if ((changeInfo.status === "complete" || changeInfo.title || changeInfo.url) && tab && tab.url) {
+            this.scheduleDetectPage(tabId);
         }
+    }
+
+    scheduleDetectPage(tabId) {
+        if (!this.pageDetectTimers) this.pageDetectTimers = new Map();
+        clearTimeout(this.pageDetectTimers.get(tabId));
+        this.pageDetectTimers.set(tabId, setTimeout(async () => {
+            this.pageDetectTimers.delete(tabId);
+            try {
+                const tab = await chrome.tabs.get(tabId);
+                if (tab && tab.url) this.maybeDetectPage(tab);
+            } catch (e) { }
+        }, 1500));
+    }
+
+    // A fresh page load (home -> video) sets the real <title> a few seconds
+    // after `onUpdated` stops firing. Poll the tab a handful of times so the
+    // title lands even without another navigation event.
+    scheduleTitleRetry(tabId) {
+        if (!this.titleRetries) this.titleRetries = new Map();
+        if (this.titleRetries.has(tabId)) return;   // one chain per tab
+        let tries = 0;
+        const iv = setInterval(async () => {
+            tries++;
+            let tab;
+            try { tab = await chrome.tabs.get(tabId); } catch (e) { tab = null; }
+            const done = tries >= 8 || !tab || !tab.url;
+            if (done) { clearInterval(iv); this.titleRetries.delete(tabId); }
+            if (tab && tab.url) this.maybeDetectPage(tab);
+        }, 2000);
+        this.titleRetries.set(tabId, iv);
     }
 
     // Strip tracking / view-state params and the trailing slash so the same
@@ -284,9 +318,44 @@ export default class App {
         // Skip bare home/search pages - only offer a real content URL.
         if (url.pathname.replace(/\/+$/, "").length <= 1 && !url.search) return;
         if (url.pathname === "/results" || url.pathname === "/search") return;
+
+        const tabId = (typeof tab.id === "number" && tab.id >= 0) ? tab.id : null;
+        // A synthetic tab (from a media request) carries no / a stale title —
+        // pull the live one so we don't post a title-less page.
+        if ((tab.title == null || tab.title === "") && tabId != null) {
+            try { const full = await chrome.tabs.get(tabId); if (full) tab = full; } catch (e) { }
+        }
+
         const canon = this.canonicalPageUrl(tab.url);
-        if (this.postedPages.has(canon) || this.seenUrls.has(canon)) return;
+        const title = tab.title || null;
+        const host0 = url.host.replace(/^www\./, "").split(".")[0];
+        const GENERIC = new Set(["watch", "video", "videos", "home", "youtube", "shorts", host0]);
+        const generic = t => !t || t.trim().length < 4 || GENERIC.has(t.trim().toLowerCase())
+            || /^https?:\/\//i.test(t.trim());
+        if (!this.postedPageTitles) this.postedPageTitles = new Map();
+
+        if (this.postedPages.has(canon) || this.seenUrls.has(canon)) {
+            const prev = this.postedPageTitles.get(canon);
+            if (title && title !== prev && !generic(title)) {
+                this.postedPageTitles.set(canon, title);
+                let ck;
+                try {
+                    const cs = await chrome.cookies.getAll({ url: tab.url });
+                    if (cs && cs.length) ck = cs.map(c => `${c.name}=${c.value}`).join("; ");
+                } catch (e) { }
+                this.connector.postMessage("/page", { url: canon, title, cookie: ck });
+                if (this.titleRetries && this.titleRetries.has(tabId)) {
+                    clearInterval(this.titleRetries.get(tabId));
+                    this.titleRetries.delete(tabId);
+                }
+            } else if (generic(title) && !this.postedPageTitles.get(canon) && tabId != null) {
+                this.scheduleTitleRetry(tabId);
+            }
+            return;
+        }
+
         this.postedPages.add(canon);
+        if (!generic(title)) this.postedPageTitles.set(canon, title);
         if (this.postedPages.size > 300) {
             this.postedPages = new Set([...this.postedPages].slice(-150));
         }
@@ -298,7 +367,8 @@ export default class App {
             }
         } catch (e) { }
         this.logger.log("page detection: " + canon);
-        this.connector.postMessage("/page", { url: canon, title: tab.title || null, cookie });
+        this.connector.postMessage("/page", { url: canon, title: generic(title) ? null : title, cookie });
+        if (generic(title) && tabId != null) this.scheduleTitleRetry(tabId);
     }
 
     // Push the current instagram.com session cookie to Lüdd so the profile
