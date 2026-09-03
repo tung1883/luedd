@@ -828,11 +828,27 @@ fn yt_caught_of(url: &str, title: Option<String>) -> Option<(String, YtCaught)> 
         _ => return None,
     };
 
+    // Canonical URL, so the same video caught via different query params
+    // (`&list=…&index=2` vs `&index=3`, `?si=…`, tracking) is one entry and
+    // re-downloads don't drag in a whole autoplay playlist.
+    let canon = match site.as_str() {
+        "youtube.com" | "youtu.be" => match segs.first().copied() {
+            Some(k @ ("shorts" | "live" | "embed" | "clip")) => {
+                format!("https://www.youtube.com/{k}/{id}")
+            }
+            _ => format!("https://www.youtube.com/watch?v={id}"),
+        },
+        _ => {
+            let b = url.split(['?', '#']).next().unwrap_or(url);
+            b.strip_suffix('/').unwrap_or(b).to_string()
+        }
+    };
+
     Some((
         site,
         YtCaught {
             id,
-            url: url.to_string(),
+            url: canon,
             title: title.unwrap_or_default(),
             thumbnail,
             duration: None,
@@ -2198,5 +2214,18 @@ mod tests {
         assert!(yt_caught_of("https://www.youtube.com/@SomeChannel", None).is_none());
         assert!(yt_caught_of("https://x.com/someone", None).is_none());
         assert!(yt_caught_of("https://www.twitch.tv/someone", None).is_none());
+    }
+
+    #[test]
+    fn yt_caught_of_canonicalises_youtube_playlist_variants() {
+        let u = |s: &str| yt_caught_of(s, None).map(|(_, c)| c.url);
+        let want = Some("https://www.youtube.com/watch?v=CUtNDBBLFpI".to_string());
+        assert_eq!(u("https://www.youtube.com/watch?v=CUtNDBBLFpI&list=RDx&index=2"), want);
+        assert_eq!(u("https://www.youtube.com/watch?v=CUtNDBBLFpI&list=RDx&index=3"), want);
+        assert_eq!(u("https://youtu.be/CUtNDBBLFpI?si=abcd"), want);
+        assert_eq!(
+            u("https://www.youtube.com/shorts/abcdefg?feature=share"),
+            Some("https://www.youtube.com/shorts/abcdefg".to_string())
+        );
     }
 }

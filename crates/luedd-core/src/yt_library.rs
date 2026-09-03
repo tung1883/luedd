@@ -210,7 +210,12 @@ impl YtLibraryStore {
                 ch.avatar_url = Some(a.clone());
                 ch.avatar_at = now();
             }
-            if !ch.caught.iter().any(|x| x.url == item.url) {
+            // Dedupe on canonical URL *and* on the resolved video id — the same
+            // video caught via two URL variants lands here twice otherwise.
+            let dup = ch.caught.iter().any(|x| {
+                x.url == item.url || (!item.id.is_empty() && x.id == item.id)
+            });
+            if !dup {
                 ch.caught.push(item);
             }
         }
