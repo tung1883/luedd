@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <title>Lüdd</title>
 <style>
-  /* bundled UI fonts (SIL OFL) — latin subsets, cover English + German */
+  /* bundled UI fonts (SIL OFL) - latin subsets, cover English + German */
   @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
   @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono-600.woff2") format("woff2"); font-weight: 600 900; font-display: swap; }
   @font-face { font-family: "Cascadia Mono"; src: url("fonts/cascadia-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
@@ -74,10 +74,10 @@
   button:disabled { opacity: 0.4; cursor: default; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  /* table — only this scrolls (both axes); header/form/toolbar stay put */
+  /* table - only this scrolls (both axes); header/form/toolbar stay put */
   .table-wrap { flex: 1; min-height: 0; overflow: auto; position: relative; }
 
-  /* first-load spinner — removed the moment `list_downloads` first returns */
+  /* first-load spinner - removed the moment `list_downloads` first returns */
   @keyframes spin { to { transform: rotate(360deg); } }
   /* full-window cover during boot - nothing behind it shows */
   #boot-spinner { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
@@ -88,7 +88,7 @@
     border: 2px solid var(--line); border-top-color: var(--accent);
     animation: spin .8s linear infinite; }
   @media (prefers-reduced-motion: reduce) { #boot-spinner .ring { animation-duration: 2s; } }
-  /* empty state — shown once the list has loaded and is genuinely empty */
+  /* empty state - shown once the list has loaded and is genuinely empty */
   td.empty { padding: 24px; color: var(--dim); font-size: 13px; text-align: center; }
   table { width: 100%; min-width: 1225px; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
   th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow: hidden; }
@@ -130,7 +130,7 @@
   .status-Failed { color: var(--bad); }
   .status-Cancelled { color: var(--dim); }
   .status-Paused { color: var(--warn); }
-  /* Finished: the green dot pings — a ring expands outward and fades, then repeats */
+  /* Finished: the green dot pings - a ring expands outward and fades, then repeats */
   .status-Finished::before { animation: ping 1.5s ease-out infinite; }
   @keyframes ping {
     0%   { box-shadow: 0 0 0 0 rgba(79,208,138,.55); }
@@ -224,11 +224,42 @@
   .set-row:last-child { margin-bottom: 0; }
   .set-row > label { display: block; font-size: 12px; color: var(--text); margin-bottom: 6px; }
   .set-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .set-fold-body .set-row > label.set-sub { font-size: 11px; color: var(--dim); font-family: var(--mono); margin-bottom: 4px; }
+  .set-subhead { margin: 18px 0 10px; font-size: 12px; color: var(--text); font-weight: 400; }
+  /* collapsible advanced group */
+  .set-fold { margin-bottom: 12px; }
+  .set-fold > summary { display: flex; align-items: center; gap: 6px; padding: 5px 0; cursor: pointer;
+    font-size: 12px; color: var(--text); list-style: none; user-select: none; }
+  .set-fold > summary::-webkit-details-marker { display: none; }
+  .fold-chev { display: inline-flex; color: var(--dim); flex-shrink: 0; transition: transform .12s; }
+  .set-fold[open] > summary .fold-chev { transform: rotate(90deg); }
+  .fold-action { margin-left: auto; padding: 3px; background: none; border: 0; border-radius: 4px;
+    color: var(--dim); display: inline-flex; cursor: pointer; }
+  .fold-action:hover { color: var(--text); background: var(--surface-2); }
+  .set-fold-body { padding: 8px 0 2px 14px; border-left: 1px solid var(--line); margin-left: 3px; }
+  .set-fold-body .set-row:last-child { margin-bottom: 0; }
   .set-field { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
     color: var(--text); font-family: var(--sans); font-size: 13px; padding: 8px 10px; }
   .set-field:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
   .dir-row { display: flex; gap: 8px; }
   .dir-row .set-field { flex: 1; font-family: var(--mono); font-size: 12px; }
+  /* number stepper */
+  .stepper { display: flex; align-items: stretch; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; overflow: hidden; }
+  .stepper:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  .stepper input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text);
+    font-family: var(--sans); font-size: 13px; text-align: center; padding: 8px 6px;
+    -moz-appearance: textfield; appearance: textfield; }
+  .stepper input::-webkit-outer-spin-button, .stepper input::-webkit-inner-spin-button {
+    -webkit-appearance: none; margin: 0; }
+  .stepper input:focus { outline: none; }
+  .stepper-btn { flex: 0 0 36px; padding: 0; background: var(--surface-2); border: 0;
+    color: var(--dim); font-family: var(--sans); font-size: 17px; font-weight: 600; line-height: 1;
+    cursor: pointer; user-select: none; transition: background .12s, color .12s; }
+  .stepper-btn:first-child { border-right: 1px solid var(--line); }
+  .stepper-btn:last-child { border-left: 1px solid var(--line); }
+  .stepper-btn:hover { background: var(--line); color: var(--text); }
+  .stepper-btn:active { background: var(--accent); color: var(--bg); }
   /* custom dropdown */
   .dd { position: relative; }
   .dd-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -254,7 +285,8 @@
   .f-cascadia-mono { font-family: "Cascadia Mono", ui-monospace, Consolas, monospace; }
   .font-preview { margin-top: 8px; padding: 9px 12px; background: var(--bg); border: 1px solid var(--line);
     border-radius: 6px; font-size: 14px; color: var(--text); }
-  .ig-note { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .ig-note { font-size: 11px; color: var(--dim); line-height: 1.5; overflow-wrap: anywhere; }
+  #ig-instaloader-status { font-family: var(--mono); font-size: 10px; }
   #settings-overlay .set-body { max-height: 74vh; overflow-y: auto; }
 
   /* per-plugin views */
@@ -370,11 +402,19 @@
           <div class="set-grid2">
             <div class="set-row">
               <label for="max-concurrent" data-i18n="max_concurrent">Max concurrent downloads</label>
-              <input id="max-concurrent" type="number" min="1" max="16" class="set-field" />
+              <div class="stepper">
+                <button type="button" class="stepper-btn" data-step="-1" aria-label="−" tabindex="-1">−</button>
+                <input id="max-concurrent" type="number" min="1" max="16" inputmode="numeric" />
+                <button type="button" class="stepper-btn" data-step="1" aria-label="+" tabindex="-1">+</button>
+              </div>
             </div>
             <div class="set-row">
               <label for="per-download-concurrency" data-i18n="connections">Connections per download</label>
-              <input id="per-download-concurrency" type="number" min="1" max="32" class="set-field" />
+              <div class="stepper">
+                <button type="button" class="stepper-btn" data-step="-1" aria-label="−" tabindex="-1">−</button>
+                <input id="per-download-concurrency" type="number" min="1" max="32" inputmode="numeric" />
+                <button type="button" class="stepper-btn" data-step="1" aria-label="+" tabindex="-1">+</button>
+              </div>
             </div>
           </div>
         </div>
@@ -412,24 +452,94 @@
           </div>
         </div>
         <div class="set-section">
-          <h3 data-i18n="sec_instagram">Instagram</h3>
-          <div class="set-row">
-            <label for="ig-cookie" data-i18n="ig_cookie">Session cookie</label>
-            <input id="ig-cookie" type="text" class="set-field" placeholder="sessionid=…; csrftoken=…; ds_user_id=…" />
-          </div>
+          <h3 data-i18n="sec_instagram">Lüdd-Insta</h3>
           <div class="set-grid2">
             <div class="set-row">
-              <label for="ig-doc-post" data-i18n="ig_doc_post">doc_id — post / reel</label>
-              <input id="ig-doc-post" type="text" class="set-field" />
+              <label data-i18n="ig_engine_main">Main engine</label>
+              <div class="dd" id="dd-ig-main" data-value="custom">
+                <button type="button" class="dd-btn"><span class="dd-cur">Lüdd-Insta Default</span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <ul class="dd-list">
+                  <li data-value="custom" data-i18n="ig_engine_custom">Lüdd-Insta Default</li>
+                  <li data-value="instaloader" data-i18n="ig_engine_instaloader">instaloader</li>
+                </ul>
+              </div>
             </div>
             <div class="set-row">
-              <label for="ig-doc-profile" data-i18n="ig_doc_profile">doc_id — profile grid</label>
-              <input id="ig-doc-profile" type="text" class="set-field" />
+              <label data-i18n="ig_engine_fallback">Fallback engine</label>
+              <div class="dd" id="dd-ig-fallback" data-value="none">
+                <button type="button" class="dd-btn"><span class="dd-cur">None</span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <ul class="dd-list">
+                  <li data-value="none" data-i18n="ig_engine_none">None</li>
+                  <li data-value="custom" data-i18n="ig_engine_custom">Lüdd-Insta Default</li>
+                  <li data-value="instaloader" data-i18n="ig_engine_instaloader">instaloader</li>
+                </ul>
+              </div>
             </div>
           </div>
-          <div class="set-row">
-            <div class="ig-note" data-i18n="ig_note">These ids rot every few weeks.</div>
+          <div id="ig-instaloader-block">
+            <div class="set-row">
+              <label for="ig-instaloader-path" data-i18n="ig_instaloader_path">instaloader path</label>
+              <div class="dir-row">
+                <input id="ig-instaloader-path" type="text" class="set-field" placeholder="instaloader on PATH" />
+                <button type="button" class="secondary" data-i18n="browse" data-pick="ig-instaloader-path">Browse&hellip;</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <label for="ig-python-path" data-i18n="ig_python_path">python path</label>
+              <div class="dir-row">
+                <input id="ig-python-path" type="text" class="set-field" placeholder="python" />
+                <button type="button" class="secondary" data-i18n="browse" data-pick="ig-python-path">Browse&hellip;</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="ig-note" id="ig-instaloader-status"></div>
+            </div>
           </div>
+          <h4 class="set-subhead" data-i18n="sec_ig_vars">Setting variables</h4>
+          <div class="set-row">
+            <div class="ig-note" data-i18n="ig_note" style="white-space:pre-line">These ids rot every few weeks.</div>
+          </div>
+          <details class="set-fold">
+            <summary>
+              <span class="fold-chev"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg></span>
+              <span data-i18n="ig_cookie">Session cookie</span>
+            </summary>
+            <div class="set-fold-body">
+              <div class="set-row">
+                <label for="ig-sessionid" class="set-sub">sessionid</label>
+                <input id="ig-sessionid" type="text" class="set-field" placeholder="value" />
+              </div>
+              <div class="set-row">
+                <label for="ig-csrftoken" class="set-sub">csrftoken</label>
+                <input id="ig-csrftoken" type="text" class="set-field" placeholder="value" />
+              </div>
+              <div class="set-row">
+                <label for="ig-dsuserid" class="set-sub">ds_user_id</label>
+                <input id="ig-dsuserid" type="text" class="set-field" placeholder="value" />
+              </div>
+            </div>
+          </details>
+          <details class="set-fold">
+            <summary>
+              <span class="fold-chev"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg></span>
+              <span>doc_id</span>
+              <button type="button" id="ig-doc-reset" class="fold-action" data-i18n-title="ig_doc_reset" title="Reset to default ids">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>
+              </button>
+            </summary>
+            <div class="set-fold-body">
+              <div class="set-row">
+                <label for="ig-doc-post" class="set-sub">doc_id_shortcode <span data-i18n="ig_doc_post_hint">(for post and reel)</span></label>
+                <input id="ig-doc-post" type="text" class="set-field" placeholder="value" />
+              </div>
+              <div class="set-row">
+                <label for="ig-doc-profile" class="set-sub">doc_id_timeline <span data-i18n="ig_doc_profile_hint">(for profile)</span></label>
+                <input id="ig-doc-profile" type="text" class="set-field" placeholder="value" />
+              </div>
+            </div>
+          </details>
         </div>
       </div>
       <div class="set-foot">
@@ -833,7 +943,7 @@ function formatProgress(e) {
 
 // Split a URL so the origin (scheme + host) always stays fully visible; the
 // middle path collapses first, the trailing segment (filename) second. The
-// query string is dropped here — the full URL is in the tooltip / on copy.
+// query string is dropped here - the full URL is in the tooltip / on copy.
 function splitUrl(u) {
   try {
     const url = new URL(u);
@@ -929,7 +1039,7 @@ function updateReadout(entries) {
     s + (e.status === "Downloading" && e.progress && e.progress.speed_bps ? e.progress.speed_bps : 0), 0);
   document.getElementById("stat-running").textContent = running;
   document.getElementById("stat-queued").textContent = queued;
-  document.getElementById("stat-speed").textContent = totalBps > 0 ? formatBytesPerSec(totalBps) : "—";
+  document.getElementById("stat-speed").textContent = totalBps > 0 ? formatBytesPerSec(totalBps) : "-";
 }
 
 let firstLoadOk = false;
@@ -950,7 +1060,7 @@ async function refresh() {
     entries = await invoke("list_downloads");
   } catch (e) {
     // On cold start the webview can call this before the Tauri side has
-    // finished `app.manage(AppState)`, so the command errors. Swallow it —
+    // finished `app.manage(AppState)`, so the command errors. Swallow it -
     // the fast startup poll retries until it lands.
     console.warn("list_downloads not ready yet", e);
     return;
@@ -1345,7 +1455,7 @@ document.getElementById("expand-all-btn").addEventListener("click", () => {
   masterOpen = !masterOpen;
   document.getElementById("expand-all-btn").classList.toggle("open", masterOpen);
   detailsOpen.clear();
-  // toggle the already-rendered detail rows in place — no backend round-trip
+  // toggle the already-rendered detail rows in place - no backend round-trip
   document.querySelectorAll("#rows .details-row").forEach(tr => {
     tr.style.display = masterOpen ? "table-row" : "none";
     if (masterOpen) { detailsOpen.add(tr.dataset.id); loadDetailPreview(tr); }
@@ -1483,6 +1593,14 @@ function initDropdown(dd, onChange) {
 }
 initDropdown(ddLang);
 initDropdown(ddFont, previewFont);
+const ddIgMain = document.getElementById("dd-ig-main");
+const ddIgFallback = document.getElementById("dd-ig-fallback");
+initDropdown(ddIgMain);
+initDropdown(ddIgFallback);
+// applyLang() retranslates the <li>s but not the closed .dd-cur label; re-sync.
+function syncEngineDDs() { ddIgMain._sync && ddIgMain._sync(); ddIgFallback._sync && ddIgFallback._sync(); }
+const _applyLang = window.I18N.applyLang;
+window.I18N.applyLang = (l) => { _applyLang(l); syncEngineDDs(); };
 document.addEventListener("click", () => document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open")));
 
 // ---- main-list search + filter (mirrors the detection panel) ----
@@ -1690,9 +1808,27 @@ wireFilterDD("lf-provider", "provider", () => t("f_all_providers"));
   });
 }
 
-// The whole Settings object as last loaded — `set_settings` replaces the file
+// The whole Settings object as last loaded - `set_settings` replaces the file
 // wholesale, so Save must send back every field, not just the ones on screen.
 let loadedSettings = null;
+
+// "a=1; b=2" -> {a:"1", b:"2"}
+function parseCookie(s) {
+  const o = {};
+  (s || "").split(";").forEach(p => {
+    const i = p.indexOf("=");
+    if (i > 0) o[p.slice(0, i).trim()] = p.slice(i + 1).trim();
+  });
+  return o;
+}
+// Extract one cookie's value from whatever the user pasted: a bare value, a
+// `name=value` pair, or a whole `a=1; b=2` cookie string.
+function cookieValue(raw, name) {
+  const v = (raw || "").trim();
+  if (!v) return "";
+  const m = v.match(new RegExp("(?:^|;\\s*)" + name + "=([^;]+)"));
+  return (m ? m[1] : v.split(";")[0]).trim();
+}
 
 function openSettings(settings) {
   loadedSettings = settings;
@@ -1703,11 +1839,54 @@ function openSettings(settings) {
   ddFont.dataset.value = settings.font || "system"; ddFont._sync();
   previewFont(settings.font || "system");
   const ig = (settings.backends && settings.backends.instagram) || {};
-  document.getElementById("ig-cookie").value = ig.session_cookie || "";
+  const ck = parseCookie(ig.session_cookie || "");
+  document.getElementById("ig-sessionid").value = ck.sessionid || "";
+  document.getElementById("ig-csrftoken").value = ck.csrftoken || "";
+  document.getElementById("ig-dsuserid").value = ck.ds_user_id || "";
   document.getElementById("ig-doc-post").value = ig.doc_id_shortcode || "";
   document.getElementById("ig-doc-profile").value = ig.doc_id_timeline || "";
+  const bk = (settings.backends) || {};
+  ddIgMain.dataset.value = bk.instagram_engine_main || "custom"; ddIgMain._sync();
+  ddIgFallback.dataset.value = bk.instagram_engine_fallback || "none"; ddIgFallback._sync();
+  document.getElementById("ig-instaloader-path").value = bk.instaloader_path || "";
+  document.getElementById("ig-python-path").value = bk.python_path || "";
+  // advanced groups start collapsed every time
+  document.querySelectorAll(".set-fold").forEach(d => { d.open = false; });
+  refreshInstaloaderStatus();
   settingsOverlay.style.display = "flex";
 }
+async function refreshInstaloaderStatus() {
+  const el = document.getElementById("ig-instaloader-status");
+  if (!el) return;
+  el.textContent = "";
+  try {
+    const s = await invoke("instaloader_status");
+    const where = s.resolved ? "  ·  " + s.resolved : "";
+    if (s.installed) {
+      el.textContent = window.I18N.t("ig_instaloader_ok", { v: s.version || "" }) + where;
+    } else {
+      el.textContent = window.I18N.t("ig_instaloader_missing") + where;
+    }
+  } catch (e) {}
+}
+// Number steppers in the Downloads section.
+document.querySelectorAll(".stepper").forEach(wrap => {
+  const input = wrap.querySelector("input");
+  const clamp = () => {
+    const min = parseInt(input.min, 10) || 1;
+    const max = parseInt(input.max, 10) || 999;
+    let n = parseInt(input.value, 10);
+    if (isNaN(n)) n = min;
+    input.value = Math.max(min, Math.min(max, n));
+  };
+  wrap.querySelectorAll(".stepper-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      input.value = (parseInt(input.value, 10) || 0) + parseInt(btn.dataset.step, 10);
+      clamp();
+    });
+  });
+  input.addEventListener("blur", clamp);
+});
 function closeSettings() {
   settingsOverlay.style.display = "none";
   document.querySelectorAll(".dd.open").forEach(o => o.classList.remove("open"));
@@ -1727,17 +1906,48 @@ document.getElementById("browse-btn").addEventListener("click", async () => {
   }
 });
 
+// "Browse…" next to the instaloader / python path fields.
+document.querySelectorAll("button[data-pick]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const picked = await invoke("pick_file");
+    if (picked) {
+      document.getElementById(btn.dataset.pick).value = picked;
+      refreshInstaloaderStatus();
+    }
+  });
+});
+
+document.getElementById("ig-doc-reset").addEventListener("click", async (e) => {
+  e.stopPropagation();        // don't toggle the <details>
+  e.preventDefault();
+  try {
+    const d = await invoke("ig_doc_defaults");
+    document.getElementById("ig-doc-post").value = d.shortcode || "";
+    document.getElementById("ig-doc-profile").value = d.timeline || "";
+    document.getElementById("ig-doc-post").closest("details").open = true;
+  } catch (e) {}
+});
+
 document.getElementById("save-settings-btn").addEventListener("click", async () => {
   const font = ddFont.dataset.value;
   const language = ddLang.dataset.value;
   const backends = (loadedSettings && loadedSettings.backends) ? { ...loadedSettings.backends } : {};
   const igIn = s => { const v = document.getElementById(s).value.trim(); return v || null; };
+  const cookieStr = [
+    ["sessionid", cookieValue(document.getElementById("ig-sessionid").value, "sessionid")],
+    ["csrftoken", cookieValue(document.getElementById("ig-csrftoken").value, "csrftoken")],
+    ["ds_user_id", cookieValue(document.getElementById("ig-dsuserid").value, "ds_user_id")],
+  ].filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join("; ");
   backends.instagram = {
     ...(backends.instagram || {}),
-    session_cookie: igIn("ig-cookie"),
+    session_cookie: cookieStr || null,
     doc_id_shortcode: igIn("ig-doc-post"),
     doc_id_timeline: igIn("ig-doc-profile"),
   };
+  backends.instagram_engine_main = ddIgMain.dataset.value || "custom";
+  backends.instagram_engine_fallback = ddIgFallback.dataset.value || "none";
+  backends.instaloader_path = igIn("ig-instaloader-path");
+  backends.python_path = igIn("ig-python-path");
   const settings = {
     ...(loadedSettings || {}),
     download_dir: document.getElementById("download-dir").value.trim(),

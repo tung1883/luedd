@@ -16,6 +16,7 @@ use crate::jobs::DownloadKind;
 
 pub mod builtin;
 pub mod instagram;
+pub mod instaloader;
 pub mod ytdlp;
 
 pub use builtin::{DashBackend, HlsBackend, HttpBackend};
@@ -80,7 +81,7 @@ pub struct EntryMeta {
     pub media_class: Option<String>,
     /// A dedicated folder this entry's output lives in (Instagram writes a whole
     /// carousel / profile / story here). Set at `describe` time so deleting the
-    /// entry can remove the folder wholesale — partial downloads included.
+    /// entry can remove the folder wholesale - partial downloads included.
     pub out_dir: Option<PathBuf>,
 }
 
@@ -118,7 +119,7 @@ pub trait DownloadBackend: Send + Sync {
     }
 
     /// A thumbnail image for a page detection (no media file to decode a frame
-    /// from). Returns `(image_url, square)` — `square` is `true` for an
+    /// from). Returns `(image_url, square)` - `square` is `true` for an
     /// intrinsically 1:1 source (an Instagram profile picture / highlight
     /// cover) so the panel can size its slot to match instead of letterboxing.
     async fn thumbnail(&self, _req: &DownloadReq) -> Result<Option<(String, bool)>> {
@@ -162,7 +163,6 @@ pub fn provider_label(backend_id: &str) -> &str {
         "http" | "hls" | "dash" => "Lüdd",
         "ytdlp" => "yt-dlp",
         "instagram" => "Lüdd-Insta",
-        "instaloader" => "instaloader",
         "torrent" => "torrent",
         other => other,
     }
@@ -224,7 +224,7 @@ impl BackendRegistry {
     }
 
     /// Human-facing provider labels for every registered backend, deduped,
-    /// registration order (so "Lüdd" — the built-ins — comes first). Sent to
+    /// registration order (so "Lüdd" - the built-ins - comes first). Sent to
     /// the detection panel so it can list a provider even when it has 0 links.
     pub fn provider_labels(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
@@ -249,8 +249,8 @@ impl BackendRegistry {
 
     /// Resolve a URL to the backend that should handle it.
     ///
-    /// 1. explicit `host_routing` override — exact host-suffix match wins.
-    /// 2. `can_handle(url, None)` across all backends — any `Certain` wins.
+    /// 1. explicit `host_routing` override - exact host-suffix match wins.
+    /// 2. `can_handle(url, None)` across all backends - any `Certain` wins.
     /// 3. if still below `Strong` and the URL looks like plain HTTP, sniff the
     ///    real extension once and re-ask with that.
     /// 4. fall back to `http`.
@@ -319,6 +319,11 @@ pub struct BackendConfig {
     pub ytdlp_path: Option<PathBuf>,
     pub instaloader_path: Option<PathBuf>,
     pub python_path: Option<PathBuf>,
+    /// Lüdd-Insta primary download engine: `"custom"` (default, unset) | `"instaloader"`.
+    pub instagram_engine_main: Option<String>,
+    /// Lüdd-Insta fallback engine, tried when the primary fails at runtime:
+    /// `"none"` (default, unset) | `"custom"` | `"instaloader"`.
+    pub instagram_engine_fallback: Option<String>,
     /// Browser to pull cookies from for the extraction leg ("chrome", "firefox", …).
     pub cookies_from_browser: Option<String>,
     /// Manual host -> backend overrides.
@@ -352,7 +357,7 @@ impl Default for InstagramConfig {
     fn default() -> Self {
         Self {
             session_cookie: None,
-            // insta-graphql.md §4.3 / §4.2 — observed 2025-2026, will drift.
+            // insta-graphql.md §4.3 / §4.2 - observed 2025-2026, will drift.
             doc_id_shortcode: Some("24368985919464652".to_string()),
             doc_id_timeline: Some("8759034877476257".to_string()),
             // Stories now use the REST reels_media endpoint, not this hash.

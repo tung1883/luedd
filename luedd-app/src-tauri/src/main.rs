@@ -285,6 +285,47 @@ async fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct InstaloaderStatus {
+    installed: bool,
+    version: Option<String>,
+    /// How instaloader will be invoked (a path, `instaloader`, or `<python> -m instaloader`).
+    resolved: String,
+}
+
+#[tauri::command]
+async fn instaloader_status(state: State<'_, AppState>) -> Result<InstaloaderStatus, String> {
+    let cfg = state.settings.get().await.backends;
+    let (installed, version, resolved) =
+        luedd_core::backend::instaloader::instaloader_status(&cfg).await;
+    Ok(InstaloaderStatus { installed, version, resolved })
+}
+
+#[tauri::command]
+async fn pick_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tokio::task::spawn_blocking(move || app.dialog().file().blocking_pick_file())
+        .await
+        .map_err(|e| e.to_string())
+        .map(|picked| picked.map(|p| p.to_string()))
+}
+
+#[derive(serde::Serialize)]
+struct IgDocDefaults {
+    shortcode: String,
+    timeline: String,
+}
+
+/// The persisted-query ids Lüdd-Insta ships with (`InstagramConfig::default`).
+#[tauri::command]
+fn ig_doc_defaults() -> IgDocDefaults {
+    let d = luedd_core::backend::InstagramConfig::default();
+    IgDocDefaults {
+        shortcode: d.doc_id_shortcode.unwrap_or_default(),
+        timeline: d.doc_id_timeline.unwrap_or_default(),
+    }
+}
+
 const IPC_PORT: u16 = 8597;
 
 /// A GUI-subsystem release build has no console, so a panicking thread's
@@ -463,7 +504,10 @@ fn main() {
             clear_finished,
             get_settings,
             set_settings,
+            instaloader_status,
+            ig_doc_defaults,
             pick_folder,
+            pick_file,
             open_file,
             read_image_data_url,
             read_preview,

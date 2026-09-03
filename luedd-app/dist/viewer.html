@@ -264,7 +264,7 @@
     const avSlots = new Map();
     for (const a of accts) {
       const card = document.createElement("div"); card.className = "acard";
-      // avatar comes from the library (served by /ig/profiles) — no per-card IG hit
+      // avatar comes from the library (served by /ig/profiles) - no per-card IG hit
       const url = avatarCache.get(a.username) || a.avatar || null;
       if (a.avatar) avatarCache.set(a.username, a.avatar);
       const avInner = url ? `<img src="${esc(img(url))}" alt="" onerror="this.remove()">`
@@ -279,7 +279,7 @@
     accountsEl.appendChild(grid);
     warmAvatars(avSlots);
   }
-  // Fetch missing avatars ONE AT A TIME with a gap — IG's web_profile_info is
+  // Fetch missing avatars ONE AT A TIME with a gap - IG's web_profile_info is
   // heavily throttled, a burst of parallel calls trips a 10-min 429 backoff.
   let warming = false;
   async function warmAvatars(slots) {
@@ -366,7 +366,7 @@
     if (p.cookie === false) hd.insertAdjacentHTML("afterend", `<div class="empty note" style="padding:8px 18px">${esc(L("viewer_need_login"))}</div>`);
     else if (!h.complete) hd.insertAdjacentHTML("afterend", `<div class="empty note" style="padding:8px 18px">${esc(L("viewer_rate_limited"))}</div>`);
 
-    // story — stays hidden until /ig/story confirms an active story
+    // story - stays hidden until /ig/story confirms an active story
     {
       const box = document.getElementById("p-story");
       box.hidden = true;
@@ -403,7 +403,7 @@
       }
     });
 
-    // posts — first page auto, then an explicit "load more" button
+    // posts - first page auto, then an explicit "load more" button
     const moreBtn = document.getElementById("posts-more");
     moreBtn.addEventListener("click", () => loadMorePosts(username));
     loadMorePosts(username);
@@ -457,7 +457,7 @@
     const src = `https://www.instagram.com/p/${pm.shortcode}/`;
     // open immediately: real grid thumbnail as frame 0 (already cached by the
     // browser) + skeleton placeholders for the rest of a carousel, so the strip
-    // shows the true item count right away. Frames upgrade in place — no reload.
+    // shows the true item count right away. Frames upgrade in place - no reload.
     const token = ++ovPending;
     const n = pm.is_carousel ? (pm.carousel_count >= 1 ? pm.carousel_count : 2) : 1;
     const provisional = [{ media_url: pm.thumb_url, thumb_url: pm.thumb_url, is_video: false }];
@@ -656,8 +656,8 @@
   ov.addEventListener("click", e => {
     if (suppressClick || (ovDrag && ovDrag.moved)) { suppressClick = false; e.stopPropagation(); return; }
     if (e.target.closest("button, .ovbar, .ovstrip, .ovallgrid, #ov-cap-more")) return;
-    if (e.target.closest("#ov-pic img, #ov-pic video")) return;   // on the photo/video itself — never closes
-    closeOverlay();                                      // backdrop / margins / caption bar — closes (even when zoomed)
+    if (e.target.closest("#ov-pic img, #ov-pic video")) return;   // on the photo/video itself - never closes
+    closeOverlay();                                      // backdrop / margins / caption bar - closes (even when zoomed)
   }, true);
   document.getElementById("ov-copy").addEventListener("click", async () => { try { await navigator.clipboard.writeText(ovFrames[ovIdx].media_url); toast(L("viewer_copied")); } catch (_) {} });
   document.getElementById("ov-dl").addEventListener("click", () => queue(ovFrames[ovIdx].media_url));

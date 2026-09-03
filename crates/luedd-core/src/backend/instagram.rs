@@ -66,14 +66,14 @@ pub struct ProfileHeader {
     pub complete: bool,
 }
 
-/// One tile in the live profile grid — metadata only, no media URL.
+/// One tile in the live profile grid - metadata only, no media URL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostMeta {
     pub shortcode: String,
     pub thumb_url: Option<String>,
     pub is_video: bool,
     pub is_carousel: bool,
-    /// Number of items in a carousel (0 when not a carousel / unknown) — lets the
+    /// Number of items in a carousel (0 when not a carousel / unknown) - lets the
     /// viewer show the real frame count before the full post is fetched.
     #[serde(default)]
     pub carousel_count: u32,
@@ -81,7 +81,7 @@ pub struct PostMeta {
     pub caption: String,
 }
 
-/// One story / highlight frame — a directly-downloadable media node.
+/// One story / highlight frame - a directly-downloadable media node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReelItem {
     pub thumb_url: Option<String>,
@@ -104,7 +104,7 @@ pub struct InstagramBackend {
     client: HttpClient,
     /// Instagram soft-blocks a session that bursts; keep concurrency low.
     slots: Semaphore,
-    /// Panel-preview thumbnail (url, square) per page URL — the panel calls
+    /// Panel-preview thumbnail (url, square) per page URL - the panel calls
     /// `thumbnail()` on every visible row; `None` = looked, found nothing.
     thumb_cache: tokio::sync::Mutex<HashMap<String, Option<(String, bool)>>>,
     /// Viewer metadata (headers, grid pages, reels, trays) keyed by a string,
@@ -113,7 +113,7 @@ pub struct InstagramBackend {
     /// url -> resolved `@owner`; owners don't change, so no TTL.
     owner_cache: tokio::sync::Mutex<HashMap<String, String>>,
     /// When IG returns 429 on `web_profile_info`, skip that endpoint entirely
-    /// until this instant — retrying a rate-limit only deepens the block.
+    /// until this instant - retrying a rate-limit only deepens the block.
     profile_info_rl_until: tokio::sync::Mutex<Option<Instant>>,
 }
 
@@ -143,7 +143,7 @@ impl InstagramBackend {
         }
     }
     /// Cache with a much shorter effective lifetime (~90 s) by back-dating the
-    /// timestamp — for a rate-limited/incomplete result we still want to stop
+    /// timestamp - for a rate-limited/incomplete result we still want to stop
     /// re-hitting IG on every viewer open, but recover quickly once it clears.
     async fn cache_put_short<T: Serialize>(&self, key: &str, val: &T) {
         if let Ok(v) = serde_json::to_value(val) {
@@ -156,19 +156,19 @@ impl InstagramBackend {
 }
 
 #[derive(Debug)]
-enum Target {
-    /// `/p/<code>/`, `/reel/<code>/`, `/tv/<code>/` — one post / reel / carousel.
+pub(crate) enum Target {
+    /// `/p/<code>/`, `/reel/<code>/`, `/tv/<code>/` - one post / reel / carousel.
     /// The bool is `true` for a reel URL.
     Shortcode(String, bool),
-    /// `/stories/<user>/` — the user's live story reel.
+    /// `/stories/<user>/` - the user's live story reel.
     Stories(String),
-    /// `/stories/highlights/<id>/` — one saved highlight.
+    /// `/stories/highlights/<id>/` - one saved highlight.
     Highlight(String),
-    /// `/<user>/` — the whole post grid (paginated).
+    /// `/<user>/` - the whole post grid (paginated).
     Profile(String),
 }
 
-fn classify(url: &str) -> Option<Target> {
+pub(crate) fn classify(url: &str) -> Option<Target> {
     let u = url::Url::parse(url).ok()?;
     let host = u.host_str()?.trim_start_matches("www.").to_ascii_lowercase();
     if host != "instagram.com" && !host.ends_with(".instagram.com") {
@@ -277,14 +277,10 @@ impl DownloadBackend for InstagramBackend {
 
     async fn run(&self, req: &DownloadReq, progress: Option<&ProgressTx>) -> Result<Outcome> {
         let _permit = self.slots.acquire().await.expect("semaphore closed");
-        let cfg = &req.config.instagram;
-        let cookie = req.ctx.cookie.as_deref().filter(|c| !c.trim().is_empty()).or(cfg.session_cookie.as_deref());
         let target = classify(&req.url)
             .ok_or_else(|| anyhow!("not an Instagram post / reel / story / profile URL"))?;
 
-        let mut items: Vec<MediaItem> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        // Grouping metadata for the plugin views, refined as we learn it.
+        // Grouping metadata for the plugin views, refined as an engine learns it.
         let mut meta = EntryMeta::default();
         meta.media_class = Some(match &target {
             Target::Shortcode(_, true) => "reel",
@@ -298,7 +294,88 @@ impl DownloadBackend for InstagramBackend {
             meta.author = Some(format!("@{u}"));
         }
 
-        match &target {
+        // Lüdd-Insta has two interchangeable engines: the custom crawler and the
+        // `instaloader` CLI. `engine_plan` orders them (primary, then a distinct
+        // fallback); a failing engine hands off to the next, and the last one's
+        // error surfaces.
+        let plan = super::instaloader::engine_plan(&req.config, &target);
+        let mut last_err: Option<anyhow::Error> = None;
+        for (idx, engine) in plan.iter().enumerate() {
+            let is_last = idx + 1 == plan.len();
+            let result = match engine {
+                super::instaloader::Engine::Custom => {
+                    self.run_custom(req, progress, &target, meta.clone()).await
+                }
+                super::instaloader::Engine::Instaloader => super::instaloader::run(req, &target, progress)
+                    .await
+                    .map(|files| Outcome { files, meta: meta.clone() }),
+            };
+            match result {
+                Ok(outcome) => return Ok(outcome),
+                Err(e) if is_last => return Err(e),
+                Err(e) => {
+                    tracing::warn!(?engine, error = %e, "Instagram engine failed - trying the fallback");
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("no Instagram download engine configured")))
+    }
+
+    async fn describe(&self, req: &DownloadReq) -> EntryMeta {
+        let mut meta = EntryMeta::default();
+        // Folder layout mirrors instaloader's `{target}/` - the owner's username
+        // when known, else the shortcode / highlight id.
+        let group = match classify(&req.url) {
+            Some(Target::Shortcode(code, is_reel)) => {
+                meta.media_class = Some(if is_reel { "reel" } else { "post" }.to_string());
+                Some(code)
+            }
+            Some(Target::Stories(user)) => {
+                meta.author = Some(format!("@{user}"));
+                meta.media_class = Some("story".to_string());
+                Some(user)
+            }
+            Some(Target::Highlight(id)) => {
+                meta.media_class = Some("highlight".to_string());
+                Some(format!("highlight_{id}"))
+            }
+            Some(Target::Profile(user)) => {
+                meta.author = Some(format!("@{user}"));
+                meta.media_class = Some("profile".to_string());
+                Some(user)
+            }
+            None => None,
+        };
+        // Every Instagram entry gets its own folder so a delete (or a
+        // pause-then-delete of a half-finished carousel/profile) can wipe it whole.
+        if let Some(g) = group {
+            let safe: String = g
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .collect();
+            meta.out_dir = Some(req.dest_dir.join(safe));
+        }
+        meta
+    }
+}
+
+impl InstagramBackend {
+    /// The custom engine: crawl Instagram's own GraphQL/REST endpoints for the
+    /// media list, then fetch each item off the CDN.
+    async fn run_custom(
+        &self,
+        req: &DownloadReq,
+        progress: Option<&ProgressTx>,
+        target: &Target,
+        mut meta: EntryMeta,
+    ) -> Result<Outcome> {
+        let cfg = &req.config.instagram;
+        let cookie = req.ctx.cookie.as_deref().filter(|c| !c.trim().is_empty()).or(cfg.session_cookie.as_deref());
+        let mut items: Vec<MediaItem> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        match target {
             Target::Shortcode(code, _) => {
                 let doc_id = cfg.doc_id_shortcode.as_deref().unwrap_or(DEFAULT_DOC_SHORTCODE);
                 let vars = json!({
@@ -316,7 +393,7 @@ impl DownloadBackend for InstagramBackend {
             }
             Target::Highlight(id) => {
                 if cookie.is_none() {
-                    bail!("Instagram: highlights need a logged-in session — open the highlight in your browser or paste a session cookie in Settings");
+                    bail!("Instagram: highlights need a logged-in session - open the highlight in your browser or paste a session cookie in Settings");
                 }
                 let url = format!("{REELS_MEDIA}?reel_ids=highlight%3A{id}");
                 let text = self
@@ -335,7 +412,7 @@ impl DownloadBackend for InstagramBackend {
                 // GraphQL onto this REST endpoint (insta-graphql.md §4.6 / §8);
                 // the old `query_hash` for reels no longer resolves.
                 if cookie.is_none() {
-                    bail!("Instagram: stories need a logged-in session — open the story in your browser (so the extension captures the cookie) or paste a session cookie in Settings");
+                    bail!("Instagram: stories need a logged-in session - open the story in your browser (so the extension captures the cookie) or paste a session cookie in Settings");
                 }
                 let uid = self.resolve_user_id(user, cookie, &cfg.app_id).await?;
                 let referer = format!("https://www.instagram.com/stories/{user}/");
@@ -387,7 +464,7 @@ impl DownloadBackend for InstagramBackend {
                         .map(str::to_string);
                     // Stop on the last page, a missing cursor, or a page that
                     // added nothing (insta-graphql.md §7: an empty page is a
-                    // soft-block signal — back off).
+                    // soft-block signal - back off).
                     if !has_next || after.is_none() || items.len() == before {
                         break;
                     }
@@ -397,7 +474,7 @@ impl DownloadBackend for InstagramBackend {
 
         if items.is_empty() {
             bail!(
-                "Instagram: no media found — a private/non-followed account, an expired story, \
+                "Instagram: no media found - a private/non-followed account, an expired story, \
                  or a rotted doc_id/query_hash (refresh it in Settings)"
             );
         }
@@ -446,51 +523,12 @@ impl DownloadBackend for InstagramBackend {
         if files.is_empty() {
             bail!(
                 "Instagram: every media item failed to download (CDN URLs may have expired){}",
-                last_err.map(|e| format!(" — last error: {e}")).unwrap_or_default()
+                last_err.map(|e| format!(" - last error: {e}")).unwrap_or_default()
             );
         }
         Ok(Outcome { files, meta })
     }
 
-    async fn describe(&self, req: &DownloadReq) -> EntryMeta {
-        let mut meta = EntryMeta::default();
-        // Folder layout mirrors instaloader's `{target}/` — the owner's username
-        // when known, else the shortcode / highlight id.
-        let group = match classify(&req.url) {
-            Some(Target::Shortcode(code, is_reel)) => {
-                meta.media_class = Some(if is_reel { "reel" } else { "post" }.to_string());
-                Some(code)
-            }
-            Some(Target::Stories(user)) => {
-                meta.author = Some(format!("@{user}"));
-                meta.media_class = Some("story".to_string());
-                Some(user)
-            }
-            Some(Target::Highlight(id)) => {
-                meta.media_class = Some("highlight".to_string());
-                Some(format!("highlight_{id}"))
-            }
-            Some(Target::Profile(user)) => {
-                meta.author = Some(format!("@{user}"));
-                meta.media_class = Some("profile".to_string());
-                Some(user)
-            }
-            None => None,
-        };
-        // Every Instagram entry gets its own folder so a delete (or a
-        // pause-then-delete of a half-finished carousel/profile) can wipe it whole.
-        if let Some(g) = group {
-            let safe: String = g
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-                .collect();
-            meta.out_dir = Some(req.dest_dir.join(safe));
-        }
-        meta
-    }
-}
-
-impl InstagramBackend {
     /// One GraphQL read. `doc_key` is `("doc_id", <id>)` or `("query_hash", <hash>)`.
     async fn gql(
         &self,
@@ -537,7 +575,7 @@ impl InstagramBackend {
             if let Some(until) = *g {
                 if Instant::now() < until {
                     if debug {
-                        eprintln!("[ig] web_profile_info {user} skipped — rate-limit backoff active");
+                        eprintln!("[ig] web_profile_info {user} skipped - rate-limit backoff active");
                     }
                     return None;
                 }
@@ -545,7 +583,7 @@ impl InstagramBackend {
         }
         let url = format!("{PROFILE_INFO}?username={user}");
         let referer = format!("https://www.instagram.com/{user}/");
-        // one shot only — retrying a 429 deepens the block
+        // one shot only - retrying a 429 deepens the block
         match self.client.get_text(&url, &ig_opts(cookie, &referer, app_id)).await {
             Ok(text) => match parse_ig_json(&text).ok().and_then(|v| v.pointer("/data/user").cloned()) {
                 Some(u) => Some(u),
@@ -578,7 +616,7 @@ impl InstagramBackend {
         if let Some(hit) = self.cache_get::<String>(&ckey).await {
             return Ok(hit);
         }
-        // 1. web_profile_info — cheapest, but IG rate-limits it hard (429).
+        // 1. web_profile_info - cheapest, but IG rate-limits it hard (429).
         if let Some(id) = self
             .web_profile_info(user, cookie, app_id)
             .await
@@ -736,7 +774,7 @@ impl InstagramBackend {
     }
 
     /// Every frame of one post (a carousel's children, or a single item) plus
-    /// its caption — for the media overlay. `(items, caption)`.
+    /// its caption - for the media overlay. `(items, caption)`.
     pub async fn post_media(
         &self,
         shortcode: &str,
@@ -805,7 +843,7 @@ impl InstagramBackend {
         Ok(items)
     }
 
-    /// The highlights tray for a profile. Best effort — the GraphQL `query_hash`
+    /// The highlights tray for a profile. Best effort - the GraphQL `query_hash`
     /// has rotted; try the REST tray, else return `[]` and the UI hides the row.
     pub async fn highlights_tray(
         &self,
@@ -916,7 +954,7 @@ fn parse_timeline_nodes(resp: &Value) -> Vec<PostMeta> {
 }
 
 /// True only when the node actually carries a video (a `null` `video_versions`
-/// key must not count — IG includes it on image items).
+/// key must not count - IG includes it on image items).
 fn node_is_video(n: &Value) -> bool {
     n.get("is_video").and_then(Value::as_bool).unwrap_or(false)
         || n.get("media_type").and_then(Value::as_i64) == Some(2)
@@ -1085,7 +1123,7 @@ fn parse_ig_json(text: &str) -> Result<Value> {
     let trimmed = text.trim_start();
     if !trimmed.starts_with('{') {
         bail!(
-            "Instagram returned a non-JSON response (a login or challenge page) — \
+            "Instagram returned a non-JSON response (a login or challenge page) - \
              the session cookie is missing or stale"
         );
     }
@@ -1109,7 +1147,7 @@ fn parse_ig_json(text: &str) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// Extraction — a direct port of ../ig_media.py
+// Extraction - a direct port of ../ig_media.py
 // ---------------------------------------------------------------------------
 
 /// Keys that mark a node as carrying downloadable media. The first five are the
@@ -1153,7 +1191,7 @@ fn best_resource(list: Option<&Value>, keys: &[&str]) -> Option<String> {
     best.map(|(s, _)| s)
 }
 
-/// *Smallest* `src`/`url` from a resource list — for a lightweight panel thumb.
+/// *Smallest* `src`/`url` from a resource list - for a lightweight panel thumb.
 fn smallest_resource(list: Option<&Value>, keys: &[&str]) -> Option<String> {
     let arr = list?.as_array()?;
     let mut best: Option<(String, i64)> = None;
@@ -1205,7 +1243,7 @@ fn smallest_image_url(resp: &Value) -> Option<String> {
 }
 
 fn media_url(node: &Value) -> Option<(String, bool)> {
-    // A carousel container: no media of its own — its children get walked.
+    // A carousel container: no media of its own - its children get walked.
     if node.get("carousel_media").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
         || node.get("edge_sidecar_to_children").is_some()
     {
@@ -1509,7 +1547,7 @@ mod tests {
         match backend.run(&req, None).await {
             Ok(o) => {
                 eprintln!("meta: author={:?} class={:?} title={:?}", o.meta.author, o.meta.media_class, o.meta.title);
-                eprintln!("OK — {} files:", o.files.len());
+                eprintln!("OK - {} files:", o.files.len());
                 for f in &o.files {
                     eprintln!("  {} ({} bytes)", f.display(), std::fs::metadata(f).map(|m| m.len()).unwrap_or(0));
                 }

@@ -100,7 +100,7 @@
   input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
   #list { flex: 1; overflow-y: auto; }
   .empty { padding: 24px; color: var(--dim); font-size: 13px; text-align: center; }
-  /* provider group header — dropped by renderList when only one provider is present */
+  /* provider group header - dropped by renderList when only one provider is present */
   .ghdr { display: flex; align-items: center; gap: 8px; padding: 8px 13px 7px;
     border-bottom: 1px solid var(--line); cursor: pointer; user-select: none;
     background: var(--surface-2); }
@@ -527,7 +527,7 @@
 
   // Split a URL so the origin (scheme + host) always stays fully visible; the
   // middle path collapses first, the trailing segment (filename) second. The
-  // query string is dropped here — the full URL is in the tooltip / on copy.
+  // query string is dropped here - the full URL is in the tooltip / on copy.
   function splitUrl(u) {
     try {
       const url = new URL(u);
@@ -624,7 +624,7 @@
     }
   }
 
-  // Instagram profile pictures and highlight covers are 1:1 — square the slot
+  // Instagram profile pictures and highlight covers are 1:1 - square the slot
   // before /preview resolves so the placeholder icon never sits in a 16:9 box.
   function isSquarePreview(item) {
     if (providerOf(item) !== "Lüdd-Insta") return false;
@@ -803,7 +803,7 @@
     const looksUrl = /^https?:\/\//i.test(txt);
     if (looksUrl && item.info) return { title: item.info, meta: hostOf(item.pageUrl || item.url) || txt };
     return {
-      title: txt || item.info || "—",
+      title: txt || item.info || "-",
       meta: (item.info && item.info !== txt) ? item.info : (hostOf(item.pageUrl || item.url) || ""),
     };
   }

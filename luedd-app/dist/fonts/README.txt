@@ -1,4 +1,4 @@
-Bundled UI fonts — all under the SIL Open Font License 1.1.
+Bundled UI fonts - all under the SIL Open Font License 1.1.
 
 ibm-plex-mono*.woff2   IBM Plex Mono        (c) IBM Corp.  https://github.com/IBM/plex
 cascadia-mono*.woff2   Cascadia Mono        (c) Microsoft  https://github.com/microsoft/cascadia-code

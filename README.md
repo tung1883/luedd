@@ -7,13 +7,13 @@ Unterstützt einfache HTTP-, HLS- und DASH-Downloads.
 
 ## Struktur
 
-- `crates/luedd-net` — HTTP-Client
-- `crates/luedd-media` — HLS/DASH-Parsing, Muxing, Qualitätsabfrage
-- `crates/luedd-core` — Download-Warteschlange, Jobs, Benennung
-- `crates/luedd-cli` — CLI
-- `crates/luedd-ipc` — lokaler Server, mit dem die Browser-Erweiterung kommuniziert
-- `luedd-app` — Tauri-Desktop-App (`dist/` = Frontend, `src-tauri/` = Backend)
-- `extension` / `extension-firefox` — Browser-Erweiterungen
+- `crates/luedd-net` - HTTP-Client
+- `crates/luedd-media` - HLS/DASH-Parsing, Muxing, Qualitätsabfrage
+- `crates/luedd-core` - Download-Warteschlange, Jobs, Benennung
+- `crates/luedd-cli` - CLI
+- `crates/luedd-ipc` - lokaler Server, mit dem die Browser-Erweiterung kommuniziert
+- `luedd-app` - Tauri-Desktop-App (`dist/` = Frontend, `src-tauri/` = Backend)
+- `extension` / `extension-firefox` - Browser-Erweiterungen
 
 ## Erstellen
 
@@ -28,6 +28,15 @@ Die Binaries landen in `target/release/` (`luedd-app.exe`, `luedd-cli.exe`).
 ```
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 ```
+
+## Instagram
+
+Lüdd-Insta hat zwei Download-Engines: die eingebaute Engine („Lüdd-Insta Standard")
+und [instaloader](https://instaloader.github.io/) (`pip install "instaloader>=4.11"`).
+Unter Einstellungen → Lüdd-Insta wählt man eine **Haupt-Engine** und optional eine
+**Ausweich-Engine** (wird genutzt, wenn die Haupt-Engine fehlschlägt). Beide
+verwenden das vom Add-on erfasste `sessionid`-Cookie des Browsers oder das in den
+Einstellungen hinterlegte Cookie.
 
 ## Extension
 
