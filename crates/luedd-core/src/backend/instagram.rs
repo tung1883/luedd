@@ -30,6 +30,7 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 const GRAPHQL: &str = "https://www.instagram.com/graphql/query/";
 const PROFILE_INFO: &str = "https://www.instagram.com/api/v1/users/web_profile_info/";
 const REELS_MEDIA: &str = "https://www.instagram.com/api/v1/feed/reels_media/";
+const TOPSEARCH: &str = "https://www.instagram.com/web/search/topsearch/?context=blended&query=";
 
 /// insta-graphql.md §5: "Sleep 1-3 s between pages. A tight cursor loop is the
 /// fastest way to a temporary block on the session." Delays and page cap are now
@@ -567,6 +568,41 @@ impl InstagramBackend {
 
     /// `GET /api/v1/feed/reels_media/?reel_ids=<id>` -> parsed JSON, or `None`.
     /// `reel_id` is already URL-encoded (`<uid>` or `highlight%3A<id>`).
+    /// `(user_id, profile_pic_url, full_name)` from the blended search endpoint.
+    /// Works for accounts with zero posts (unlike the timeline fallback) and IG
+    /// throttles it far less than `web_profile_info`. Best effort.
+    async fn search_user(
+        &self,
+        user: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Option<(String, String, String)> {
+        let url = format!("{TOPSEARCH}{user}");
+        let text = self
+            .client
+            .get_text(&url, &ig_opts(cookie, "https://www.instagram.com/", &cfg.app_id))
+            .await
+            .ok()?;
+        let v = parse_ig_json(&text).ok()?;
+        let want = user.trim().to_ascii_lowercase();
+        for entry in v.get("users")?.as_array()? {
+            let u = entry.get("user").unwrap_or(entry);
+            let uname = u.get("username").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
+            if uname != want {
+                continue;
+            }
+            let id = u
+                .get("pk")
+                .and_then(|x| x.as_str().map(str::to_string).or_else(|| x.as_i64().map(|n| n.to_string())))
+                .or_else(|| u.get("pk_id").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            let pic = u.get("profile_pic_url").and_then(Value::as_str).unwrap_or_default().to_string();
+            let name = u.get("full_name").and_then(Value::as_str).unwrap_or_default().to_string();
+            return Some((id, pic, name));
+        }
+        None
+    }
+
     async fn reels_media(&self, reel_id: &str, cookie: Option<&str>, app_id: &str) -> Option<Value> {
         let url = format!("{REELS_MEDIA}?reel_ids={reel_id}");
         let text = self
@@ -666,6 +702,13 @@ impl InstagramBackend {
                 return Ok(id);
             }
         }
+        // 3. Blended search - the only one that still answers for a 0-post account.
+        if let Some((id, _, _)) = self.search_user(user, cookie, cfg).await {
+            if !id.is_empty() {
+                self.cache_put(&ckey, &id).await;
+                return Ok(id);
+            }
+        }
         Err(anyhow!("Instagram: could not resolve a user id for @{user} (stale cookie?)"))
     }
 
@@ -745,6 +788,18 @@ impl InstagramBackend {
                     if let Some(n) = deep_find_str(&resp, "full_name") {
                         hdr.full_name = n;
                     }
+                }
+            }
+        }
+        // Still nothing (e.g. a zero-post account the timeline query can't help
+        // with) — the blended search endpoint carries the avatar regardless.
+        if hdr.profile_pic_url.is_empty() {
+            if let Some((_, pic, name)) = self.search_user(user, cookie, cfg).await {
+                if !pic.is_empty() {
+                    hdr.profile_pic_url = pic;
+                }
+                if hdr.full_name.is_empty() && !name.is_empty() {
+                    hdr.full_name = name;
                 }
             }
         }

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
-use luedd_core::backend::instagram::InstagramBackend;
+use luedd_core::backend::instagram::{InstagramBackend, ProfileHeader};
 use luedd_core::backend::{DownloadBackend, YtdlpBackend};
 use luedd_core::ig_library::{IgCaught, IgLibraryStore, UNRESOLVED};
 use luedd_core::jobs::DownloadKind;
@@ -1123,9 +1123,12 @@ async fn ig_profiles(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
         let mut kinds: Vec<String> = acct.caught.iter().map(|c| c.kind.clone()).collect();
         kinds.sort();
         kinds.dedup();
+        // "caught" = actual content (posts / reels / highlights / a live story),
+        // not a bare profile visit — that only put the account in this list.
+        let caught_count = acct.caught.iter().filter(|c| c.kind != "profile").count();
         accounts.push(serde_json::json!({
             "username": acct.username,
-            "caught_count": acct.caught.len(),
+            "caught_count": caught_count,
             "kinds": kinds,
             "last_seen": acct.last_seen,
             "avatar": acct.avatar_url,
@@ -1140,11 +1143,11 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
-    let (cookie, header) = {
+    let header = {
         let inst = state.instagram.clone();
         let igc = cfg.instagram.clone();
         let user = req.username.clone();
-        let (ck, res) = state
+        let (_ck, res) = state
             .ig_try(None, move |ck| {
                 let (inst, igc, user) = (inst.clone(), igc.clone(), user.clone());
                 async move {
@@ -1158,9 +1161,23 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
             })
             .await;
         match res {
-            Ok(h) => (ck, h),
-            // every session was blocked — still return the username-only header
-            Err(_) => (None, state.instagram.profile_header(&req.username, None, &cfg.instagram).await),
+            Ok(h) => h,
+            // Every session was blocked (IG throttling). Don't burn another
+            // request — hand back a username-only header; the viewer shows its
+            // "rate limited" note.
+            Err(_) => ProfileHeader {
+                username: req.username.clone(),
+                full_name: String::new(),
+                biography: String::new(),
+                profile_pic_url: String::new(),
+                is_private: false,
+                is_verified: false,
+                external_url: None,
+                post_count: 0,
+                follower_count: 0,
+                following_count: 0,
+                complete: false,
+            },
         }
     };
     if !header.profile_pic_url.is_empty() {
@@ -1178,7 +1195,9 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
         .get(&req.username.to_ascii_lowercase())
         .map(|a| a.caught.clone())
         .unwrap_or_default();
-    let has_cookie = cookie.as_deref().map(|c| c.contains("sessionid=")).unwrap_or(false);
+    // Whether we HAVE a session at all — not whether this fetch happened to
+    // succeed. A blocked/throttled request must not read as "you're logged out".
+    let has_cookie = state.ig_candidates(None).await.iter().any(|c| c.contains("sessionid="));
     Json(serde_json::json!({ "header": header, "has_story": has_story, "caught": caught, "cookie": has_cookie }))
 }
 
