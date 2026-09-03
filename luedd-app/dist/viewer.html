@@ -474,6 +474,10 @@
     }
     postsCursor = r.next || null;
     if (!postsCursor) postsDone = true;
+    if (postsDone && !grid.children.length && !grid.dataset.noposts) {
+      grid.dataset.noposts = "1";
+      grid.insertAdjacentHTML("afterend", `<div class="empty note">${esc(L("viewer_no_posts"))}</div>`);
+    }
     updateMoreBtn();
   }
 
