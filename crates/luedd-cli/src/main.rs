@@ -105,21 +105,25 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
     tokio::fs::create_dir_all(&settings.get().await.download_dir).await.ok();
     let client = HttpClient::new().context("building http client")?;
     let instagram = Arc::new(luedd_core::backend::InstagramBackend::new(client.clone()));
+    let ytdlp = Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone()));
     let registry = {
         let mut r = luedd_core::backend::BackendRegistry::with_builtins(client.clone());
-        r.register(Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone())));
+        r.register(ytdlp.clone());
         r.register(instagram.clone());
         Arc::new(r)
     };
     let ig_library = Arc::new(
         luedd_core::ig_library::IgLibraryStore::open(luedd_core::ig_library::default_ig_library_path(&data_dir)).await?,
     );
+    let yt_library = Arc::new(
+        luedd_core::yt_library::YtLibraryStore::open(luedd_core::yt_library::default_yt_library_path(&data_dir)).await?,
+    );
     let manager = Arc::new(
         DownloadManager::new(store.clone(), client, 2, 8)
             .with_backends(registry.clone(), settings.get().await.backends),
     );
     let listener = std::net::TcpListener::bind(("127.0.0.1", port)).with_context(|| format!("binding 127.0.0.1:{port}"))?;
-    luedd_ipc::server::serve(store, manager, registry, instagram, ig_library, luedd_ipc::server::ServerConfig { settings, build_id: "cli".into(), on_new_detection: None, on_focus_request: None }, listener).await
+    luedd_ipc::server::serve(store, manager, registry, instagram, ig_library, ytdlp, yt_library, luedd_ipc::server::ServerConfig { settings, build_id: "cli".into(), on_new_detection: None, on_focus_request: None }, listener).await
 }
 
 async fn run_job(kind: DownloadKind, url: &str, output: &PathBuf, concurrency: usize) -> Result<()> {

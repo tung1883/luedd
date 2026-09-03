@@ -25,12 +25,17 @@ struct AppState {
 /// config from `DownloadReq.config`, so this is built once and never rebuilt.
 fn build_registry(
     client: HttpClient,
-) -> (Arc<BackendRegistry>, Arc<luedd_core::backend::instagram::InstagramBackend>) {
+) -> (
+    Arc<BackendRegistry>,
+    Arc<luedd_core::backend::instagram::InstagramBackend>,
+    Arc<luedd_core::backend::YtdlpBackend>,
+) {
     let mut registry = BackendRegistry::with_builtins(client.clone());
-    registry.register(Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone())));
+    let ytdlp = Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone()));
+    registry.register(ytdlp.clone());
     let instagram = Arc::new(luedd_core::backend::InstagramBackend::new(client));
     registry.register(instagram.clone());
-    (Arc::new(registry), instagram)
+    (Arc::new(registry), instagram, ytdlp)
 }
 
 fn build_manager(
@@ -52,6 +57,7 @@ fn probe_req(url: String, ctx: RequestContext, config: BackendConfig) -> Downloa
         filename_hint: None,
         ctx,
         quality: None,
+        extras: Default::default(),
         concurrency: 1,
         config,
     }
@@ -88,6 +94,7 @@ async fn add_download(state: State<'_, AppState>, url: String, filename: Option<
             filename_hint: dest.file_name().map(|s| s.to_string_lossy().into_owned()),
             ctx: ctx.clone(),
             quality: quality.clone(),
+            extras: Default::default(),
             concurrency: 1,
             config: settings.backends.clone(),
         })
@@ -286,19 +293,48 @@ async fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<
 }
 
 #[derive(serde::Serialize)]
-struct InstaloaderStatus {
+struct ToolStatus {
     installed: bool,
     version: Option<String>,
-    /// How instaloader will be invoked (a path, `instaloader`, or `<python> -m instaloader`).
+    /// How the tool will be invoked (an absolute path, a bare name, or `<python> -m instaloader`).
     resolved: String,
+    /// The resolved Python interpreter (instaloader only).
+    python: Option<String>,
 }
 
 #[tauri::command]
-async fn instaloader_status(state: State<'_, AppState>) -> Result<InstaloaderStatus, String> {
+async fn instaloader_status(state: State<'_, AppState>) -> Result<ToolStatus, String> {
     let cfg = state.settings.get().await.backends;
-    let (installed, version, resolved) =
+    let (installed, version, resolved, python) =
         luedd_core::backend::instaloader::instaloader_status(&cfg).await;
-    Ok(InstaloaderStatus { installed, version, resolved })
+    Ok(ToolStatus { installed, version, resolved, python: Some(python) })
+}
+
+#[tauri::command]
+async fn ytdlp_status(state: State<'_, AppState>) -> Result<ToolStatus, String> {
+    let cfg = state.settings.get().await.backends;
+    let (installed, version, resolved) = luedd_core::backend::ytdlp::ytdlp_status(&cfg).await;
+    Ok(ToolStatus { installed, version, resolved, python: None })
+}
+
+#[derive(serde::Serialize)]
+struct UpdateResult {
+    ok: bool,
+    message: String,
+}
+
+#[tauri::command]
+async fn ytdlp_update(state: State<'_, AppState>) -> Result<UpdateResult, String> {
+    let cfg = state.settings.get().await.backends;
+    let (ok, message) = luedd_core::backend::ytdlp::ytdlp_update(&cfg).await;
+    Ok(UpdateResult { ok, message })
+}
+
+#[tauri::command]
+async fn instaloader_update(state: State<'_, AppState>) -> Result<UpdateResult, String> {
+    let cfg = state.settings.get().await.backends;
+    let (ok, message) = luedd_core::backend::instaloader::instaloader_update(&cfg).await;
+    Ok(UpdateResult { ok, message })
 }
 
 #[tauri::command]
@@ -393,8 +429,9 @@ fn main() {
             let settings_path = default_settings_path(&data_dir);
 
             let ig_library_path = luedd_core::ig_library::default_ig_library_path(&data_dir);
+            let yt_library_path = luedd_core::yt_library::default_yt_library_path(&data_dir);
 
-            let (store, settings, ig_library) = tauri::async_runtime::block_on(async {
+            let (store, settings, ig_library, yt_library) = tauri::async_runtime::block_on(async {
                 let store = Arc::new(DownloadStore::open(store_path).await.expect("failed to open download store"));
                 let settings =
                     Arc::new(SettingsStore::open(settings_path, &data_dir).await.expect("failed to open settings"));
@@ -403,11 +440,17 @@ fn main() {
                         .await
                         .expect("failed to open ig_library"),
                 );
-                (store, settings, ig_library)
+                let yt_library = Arc::new(
+                    luedd_core::yt_library::YtLibraryStore::open(yt_library_path)
+                        .await
+                        .expect("failed to open yt_library"),
+                );
+                (store, settings, ig_library, yt_library)
             });
 
             let initial_settings = tauri::async_runtime::block_on(settings.get());
-            let (registry, instagram) = build_registry(HttpClient::new().expect("failed to build http client"));
+            let (registry, instagram, ytdlp) =
+                build_registry(HttpClient::new().expect("failed to build http client"));
             let manager = build_manager(store.clone(), &initial_settings, registry.clone())
                 .expect("failed to build download manager");
 
@@ -416,6 +459,8 @@ fn main() {
             let server_registry = registry.clone();
             let server_instagram = instagram;
             let server_ig_library = ig_library;
+            let server_ytdlp = ytdlp;
+            let server_yt_library = yt_library;
             let server_settings = settings.clone();
             let (detection_tx, mut detection_rx) = tokio::sync::mpsc::unbounded_channel();
             let (focus_tx, mut focus_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -432,6 +477,8 @@ fn main() {
                     server_registry,
                     server_instagram,
                     server_ig_library,
+                    server_ytdlp,
+                    server_yt_library,
                     config,
                     ipc_listener,
                 )
@@ -448,6 +495,9 @@ fn main() {
             }
             if let Err(e) = build_viewer_window(&app.handle()) {
                 tracing::warn!(error = %e, "failed to pre-create Instagram viewer window");
+            }
+            if let Err(e) = build_ytdlp_viewer_window(&app.handle()) {
+                tracing::warn!(error = %e, "failed to pre-create yt-dlp viewer window");
             }
 
             let detection_app_handle = app.handle().clone();
@@ -505,6 +555,9 @@ fn main() {
             get_settings,
             set_settings,
             instaloader_status,
+            ytdlp_status,
+            ytdlp_update,
+            instaloader_update,
             ig_doc_defaults,
             pick_folder,
             pick_file,
@@ -516,7 +569,8 @@ fn main() {
             detection_window_set_pinned,
             detection_window_hide,
             detection_window_show,
-            viewer_window_show
+            viewer_window_show,
+            ytdlp_viewer_window_show
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -611,6 +665,57 @@ fn show_or_refresh_viewer_window(app: &tauri::AppHandle) {
 #[tauri::command]
 fn viewer_window_show(app: tauri::AppHandle) -> Result<(), String> {
     show_or_refresh_viewer_window(&app);
+    Ok(())
+}
+
+const YTDLP_VIEWER_WINDOW_LABEL: &str = "yt-viewer";
+
+/// The yt-dlp viewer — caught channels → videos → format picker. Same
+/// separate-window pattern as the Instagram viewer.
+fn build_ytdlp_viewer_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let url = format!("ytdlp-viewer.html?v={}", env!("LUEDD_ASSET_VER"));
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        YTDLP_VIEWER_WINDOW_LABEL,
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title("yt-dlp")
+    .inner_size(980.0, 720.0)
+    .min_inner_size(560.0, 460.0)
+    .resizable(true)
+    .visible(false)
+    .background_color(tauri::webview::Color(0x16, 0x17, 0x1a, 0xff))
+    .build()?;
+    let win_for_close = win.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win_for_close.hide();
+        }
+    });
+    Ok(win)
+}
+
+fn show_or_refresh_ytdlp_viewer_window(app: &tauri::AppHandle) {
+    let win = match app.get_webview_window(YTDLP_VIEWER_WINDOW_LABEL) {
+        Some(win) => win,
+        None => match build_ytdlp_viewer_window(app) {
+            Ok(win) => win,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open yt-dlp viewer window");
+                return;
+            }
+        },
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    let _ = win.emit("yt-library-updated", ());
+}
+
+#[tauri::command]
+fn ytdlp_viewer_window_show(app: tauri::AppHandle) -> Result<(), String> {
+    show_or_refresh_ytdlp_viewer_window(&app);
     Ok(())
 }
 

@@ -14,8 +14,10 @@ use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
 use luedd_core::backend::instagram::InstagramBackend;
+use luedd_core::backend::{DownloadBackend, YtdlpBackend};
 use luedd_core::ig_library::{IgCaught, IgLibraryStore, UNRESOLVED};
 use luedd_core::jobs::DownloadKind;
+use luedd_core::yt_library::{YtCaught, YtLibraryStore, YtResolve};
 use luedd_core::queue::{DownloadEntry, DownloadManager, DownloadStore, SettingsStore};
 use luedd_net::{HttpClient, RequestContext};
 
@@ -63,6 +65,14 @@ struct AppState {
     instagram: Arc<InstagramBackend>,
     /// Persistent index of caught Instagram accounts (survives restarts).
     ig_library: Arc<IgLibraryStore>,
+    /// The concrete yt-dlp backend — the `/yt/*` viewer endpoints call
+    /// `probe_meta` / `probe_qualities` directly.
+    ytdlp: Arc<YtdlpBackend>,
+    /// Persistent index of caught yt-dlp channels (survives restarts).
+    yt_library: Arc<YtLibraryStore>,
+    /// Set while the background `-J` resolver is walking the unresolved bucket,
+    /// so overlapping `/yt/channels` calls don't double-spawn it.
+    yt_resolving: AtomicBool,
     /// The most recent non-empty cookie seen on an Instagram detection — the
     /// `/ig/*` endpoints have no per-request cookie of their own.
     last_ig_cookie: Mutex<Option<String>>,
@@ -246,12 +256,15 @@ struct ProbeQualityRequest {
     vid: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     store: Arc<DownloadStore>,
     manager: Arc<DownloadManager>,
     registry: Arc<luedd_core::backend::BackendRegistry>,
     instagram: Arc<InstagramBackend>,
     ig_library: Arc<IgLibraryStore>,
+    ytdlp: Arc<YtdlpBackend>,
+    yt_library: Arc<YtLibraryStore>,
     config: ServerConfig,
     listener: std::net::TcpListener,
 ) -> anyhow::Result<()> {
@@ -261,6 +274,9 @@ pub async fn serve(
         registry,
         instagram,
         ig_library,
+        ytdlp,
+        yt_library,
+        yt_resolving: AtomicBool::new(false),
         last_ig_cookie: Mutex::new(None),
         config,
         detected: Mutex::new(Vec::new()),
@@ -297,6 +313,11 @@ pub async fn serve(
         .route("/ig/queue", post(ig_queue))
         .route("/ig/cookie", post(ig_cookie))
         .route("/ig/img", get(ig_img))
+        .route("/yt/channels", get(yt_channels))
+        .route("/yt/channel", post(yt_channel))
+        .route("/yt/video", post(yt_video))
+        .route("/yt/queue", post(yt_queue))
+        .route("/library/counts", get(library_counts))
         .layer(cors)
         .with_state(state);
 
@@ -487,6 +508,8 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
         let provider = luedd_core::backend::provider_label(state.registry.quick_id(&url, &cfg)).to_string();
         if provider == "Lüdd-Insta" {
             record_ig_catch(&state, &url, req.cookie.as_deref()).await;
+        } else if provider == "yt-dlp" {
+            record_yt_catch(&state, &url, req.title.clone()).await;
         }
         new_item = ensure_page_detection(&state, &url, req.title, req.cookie).await;
         if let Some(it) = &new_item {
@@ -616,6 +639,311 @@ async fn record_ig_catch(state: &Arc<AppState>, url: &str, cookie: Option<&str>)
             }
         });
     }
+}
+
+// ------------------------------------------------------------------------
+// yt-dlp viewer — caught channels, mirrors the /ig/* block above
+// ------------------------------------------------------------------------
+
+/// `(site, YtCaught)` for a yt-dlp *watchable* page URL. Returns `None` for
+/// feed / home / search / bare-profile pages that aren't a single video, so
+/// they never enter the library. The `-J` resolver fills in the channel later.
+fn yt_caught_of(url: &str, title: Option<String>) -> Option<(String, YtCaught)> {
+    let after = url.split("://").nth(1)?;
+    let host = after.split(['/', '?', '#']).next()?;
+    let site = host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase();
+    let path = after.split_once('/').map(|(_, p)| p).unwrap_or("");
+    let segs: Vec<&str> = path.split(['/', '?', '#']).filter(|s| !s.is_empty()).collect();
+
+    // A watchable URL yields a video id; anything else is not a catch.
+    let (id, thumbnail): (String, Option<String>) = match site.as_str() {
+        "youtu.be" => {
+            let v = segs.first().filter(|s| s.len() >= 6)?;
+            ((*v).to_string(), Some(format!("https://i.ytimg.com/vi/{v}/hqdefault.jpg")))
+        }
+        "youtube.com" => {
+            let v = if url.contains("watch?") || url.contains("&v=") || url.contains("?v=") {
+                url.split("v=").nth(1).map(|s| s.split('&').next().unwrap_or(s))
+            } else {
+                ["shorts", "live", "embed", "clip"]
+                    .iter()
+                    .find_map(|p| (segs.first() == Some(p)).then(|| segs.get(1).copied()).flatten())
+            };
+            let v = v.filter(|s| s.len() >= 6)?;
+            (v.to_string(), Some(format!("https://i.ytimg.com/vi/{v}/hqdefault.jpg")))
+        }
+        "twitch.tv" => match segs.as_slice() {
+            ["videos", id, ..] if id.chars().all(|c| c.is_ascii_digit()) => (format!("v{id}"), None),
+            [_ch, "clip", slug, ..] => ((*slug).to_string(), None),
+            _ => return None,
+        },
+        "twitter.com" | "x.com" => match segs.as_slice() {
+            [_user, "status", id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
+                ((*id).to_string(), None)
+            }
+            _ => return None,
+        },
+        "vimeo.com" => {
+            let id = segs.first().filter(|s| s.chars().all(|c| c.is_ascii_digit()))?;
+            ((*id).to_string(), None)
+        }
+        "tiktok.com" => match segs.as_slice() {
+            [_user, "video", id, ..] => ((*id).to_string(), None),
+            _ => return None,
+        },
+        "reddit.com" => match segs.as_slice() {
+            ["r", _sub, "comments", id, ..] => ((*id).to_string(), None),
+            _ => return None,
+        },
+        // dailymotion / bilibili / soundcloud / facebook: accept a 2+-segment
+        // path (a real permalink), reject the bare host / a 1-segment profile.
+        _ if segs.len() >= 2 => (slug(url), None),
+        _ => return None,
+    };
+
+    Some((
+        site,
+        YtCaught {
+            id,
+            url: url.to_string(),
+            title: title.unwrap_or_default(),
+            thumbnail,
+            duration: None,
+            uploader: None,
+            upload_date: None,
+            view_count: None,
+            resolved: false,
+            seen: unix_now(),
+        },
+    ))
+}
+
+fn slug(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).take(24).collect()
+}
+
+/// Record a caught yt-dlp video (channel unknown → the UNRESOLVED bucket).
+/// Does NOT fork `yt-dlp -J` — resolution is lazy, kicked by `/yt/channels`.
+async fn record_yt_catch(state: &Arc<AppState>, url: &str, title: Option<String>) {
+    let Some((site, caught)) = yt_caught_of(url, title) else { return };
+    let _ = state.yt_library.record(luedd_core::yt_library::UNRESOLVED, &site, caught).await;
+}
+
+/// Walk the UNRESOLVED bucket, one `yt-dlp -J` at a time with a gap, moving each
+/// caught video under its real channel. Idempotent — guarded by `yt_resolving`.
+fn spawn_yt_resolver(state: Arc<AppState>) {
+    if state.yt_resolving.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            let next = {
+                let lib = state.yt_library.snapshot().await;
+                lib.channels
+                    .get(luedd_core::yt_library::UNRESOLVED)
+                    .and_then(|c| c.caught.first().map(|x| x.url.clone()))
+            };
+            let Some(url) = next else { break };
+            let cfg = state.config.settings.get().await.backends;
+            match state.ytdlp.probe_meta(&url, &cfg, None).await {
+                Ok(m) => {
+                    let key = m
+                        .channel_id
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| slug(m.channel_url.as_deref().unwrap_or(&url)));
+                    let r = YtResolve {
+                        channel_key: key,
+                        channel_name: m.channel.clone().unwrap_or_default(),
+                        channel_url: m.channel_url.clone(),
+                        avatar_url: None,
+                        video_id: m.id.clone(),
+                        title: m.title.clone(),
+                        thumbnail: m.thumbnail.clone(),
+                        duration: m.duration,
+                        uploader: m.uploader.clone(),
+                        upload_date: m.upload_date.clone(),
+                        view_count: m.view_count,
+                    };
+                    let _ = state.yt_library.resolve(&url, &r).await;
+
+                    // Fetch the channel avatar once, if this channel still lacks one.
+                    if let Some(chan_url) = m.channel_url.clone().filter(|s| !s.is_empty()) {
+                        let key = m
+                            .channel_id
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| slug(&chan_url));
+                        let need_avatar = state
+                            .yt_library
+                            .snapshot()
+                            .await
+                            .channels
+                            .get(&key)
+                            .is_some_and(|c| c.avatar_url.is_none());
+                        if need_avatar {
+                            if let Some(av) = state.ytdlp.channel_avatar(&chan_url, &cfg).await {
+                                let _ = state.yt_library.set_channel_avatar(&key, &av).await;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Not a real video page (private / deleted / a feed or profile
+                    // page). Drop it so the loop doesn't spin forever.
+                    tracing::warn!(%url, error = %e, "yt-dlp -J resolve failed; forgetting");
+                    let _ = state.yt_library.forget(&url).await;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+        state.yt_resolving.store(false, Ordering::SeqCst);
+    });
+}
+
+#[derive(Debug, Deserialize)]
+struct YtKeyReq {
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct YtUrlReq {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct YtQueueReq {
+    url: String,
+    #[serde(default)]
+    quality: Option<String>,
+    #[serde(default)]
+    subs: Option<String>,
+    #[serde(default)]
+    thumbnail: bool,
+    #[serde(default)]
+    chapters: bool,
+}
+
+/// Caught-channels list for the yt-dlp viewer home. Also kicks the lazy resolver.
+async fn yt_channels(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let lib = state.yt_library.snapshot().await;
+    let mut channels = Vec::new();
+    let mut unresolved = 0usize;
+    for (key, ch) in &lib.channels {
+        if key == luedd_core::yt_library::UNRESOLVED {
+            unresolved = ch.caught.len();
+            continue;
+        }
+        channels.push(serde_json::json!({
+            "key": ch.key,
+            "name": if ch.name.is_empty() { ch.key.clone() } else { ch.name.clone() },
+            "site": ch.site,
+            "avatar": ch.avatar_url,
+            "channel_url": ch.channel_url,
+            "caught_count": ch.caught.len(),
+            "last_seen": ch.last_seen,
+        }));
+    }
+    channels.sort_by(|a, b| b["last_seen"].as_i64().unwrap_or(0).cmp(&a["last_seen"].as_i64().unwrap_or(0)));
+    if unresolved > 0 {
+        spawn_yt_resolver(state.clone());
+    }
+    Json(serde_json::json!({ "channels": channels, "unresolved": unresolved }))
+}
+
+/// One channel's caught videos, from the library (no network).
+async fn yt_channel(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<YtKeyReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let lib = state.yt_library.snapshot().await;
+    let Some(ch) = lib.channels.get(&req.key) else {
+        return Json(serde_json::json!({ "error": "unknown channel" }));
+    };
+    let mut videos: Vec<_> = ch
+        .caught
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.id, "url": c.url, "title": c.title, "thumbnail": c.thumbnail,
+                "duration": c.duration, "upload_date": c.upload_date, "view_count": c.view_count,
+                "uploader": c.uploader, "resolved": c.resolved,
+            })
+        })
+        .collect();
+    videos.reverse(); // newest catch first
+    Json(serde_json::json!({
+        "channel": {
+            "key": ch.key, "name": if ch.name.is_empty() { ch.key.clone() } else { ch.name.clone() },
+            "site": ch.site, "avatar": ch.avatar_url, "channel_url": ch.channel_url,
+        },
+        "videos": videos,
+    }))
+}
+
+/// Full metadata + format list for one video — forks `yt-dlp -J` on demand.
+async fn yt_video(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<YtUrlReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let cfg = state.config.settings.get().await.backends;
+    let meta = match state.ytdlp.probe_meta(&req.url, &cfg, None).await {
+        Ok(m) => m,
+        Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let ctx = RequestContext::default();
+    let formats = state
+        .ytdlp
+        .probe_qualities(&probe_req(req.url.clone(), ctx, cfg))
+        .await
+        .unwrap_or_default();
+    Json(serde_json::json!({ "meta": meta, "formats": formats }))
+}
+
+/// Queue a yt-dlp download with the chosen quality + extras.
+async fn yt_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<YtQueueReq>(&body) else {
+        return Json(serde_json::json!({ "queued": false }));
+    };
+    let mut extras: std::collections::BTreeMap<String, String> = Default::default();
+    if let Some(s) = req.subs.filter(|s| !s.trim().is_empty()) {
+        extras.insert("subs".into(), s);
+    }
+    if req.thumbnail {
+        extras.insert("thumbnail".into(), "1".into());
+    }
+    if req.chapters {
+        extras.insert("chapters".into(), "1".into());
+    }
+    {
+        let st = state.clone();
+        let u = req.url.clone();
+        tokio::spawn(async move { record_yt_catch(&st, &u, None).await });
+    }
+    let id =
+        queue_url(&state, req.url, None, None, HashMap::new(), None, req.quality, extras, None).await;
+    Json(serde_json::json!({ "queued": id.is_some() }))
+}
+
+/// Caught-library sizes for the main window's header badges.
+async fn library_counts(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let ig = state
+        .ig_library
+        .snapshot()
+        .await
+        .accounts
+        .keys()
+        .filter(|k| *k != UNRESOLVED)
+        .count();
+    let yt = state
+        .yt_library
+        .snapshot()
+        .await
+        .channels
+        .keys()
+        .filter(|k| *k != luedd_core::yt_library::UNRESOLVED)
+        .count();
+    Json(serde_json::json!({ "instagram": ig, "ytdlp": yt }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -793,7 +1121,7 @@ async fn ig_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
             ensure_page_detection(&st, &canon, None, ck).await;
         });
     }
-    let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, None).await;
+    let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, Default::default(), None).await;
     Json(serde_json::json!({ "queued": id.is_some() }))
 }
 
@@ -855,7 +1183,7 @@ async fn download(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncR
             return Json(default_sync_response(video_list(&state).await));
         }
     };
-    let _ = queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None, None).await;
+    let _ = queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None, Default::default(), None).await;
     Json(default_sync_response(video_list(&state).await))
 }
 
@@ -923,6 +1251,11 @@ async fn vid(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespon
         };
         match found {
             Some(media) => {
+                if media.provider == "yt-dlp" && media.is_page {
+                    let st = state.clone();
+                    let (u, t) = (media.url.clone(), media.page_title.clone());
+                    tokio::spawn(async move { record_yt_catch(&st, &u, t).await });
+                }
                 let flat_headers = flatten_headers(media.request_headers.clone(), media.user_agent.clone());
                 let cached = state
                     .preview_cache
@@ -941,6 +1274,7 @@ async fn vid(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespon
                     flat_headers,
                     media.cookie.clone(),
                     req.quality,
+                    Default::default(),
                     cached,
                 )
                 .await;
@@ -1470,6 +1804,7 @@ fn probe_req(
         filename_hint: None,
         ctx,
         quality: None,
+        extras: Default::default(),
         concurrency: 1,
         config,
     }
@@ -1494,6 +1829,7 @@ async fn clear(State(state): State<Arc<AppState>>, _body: Bytes) -> Json<SyncRes
     Json(default_sync_response(video_list(&state).await))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn queue_url(
     state: &AppState,
     url: String,
@@ -1502,6 +1838,7 @@ async fn queue_url(
     headers: HashMap<String, String>,
     cookie: Option<String>,
     quality: Option<String>,
+    extras: std::collections::BTreeMap<String, String>,
     preview: Option<(String, String)>,
 ) -> Option<String> {
     let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
@@ -1540,6 +1877,7 @@ async fn queue_url(
             filename_hint: dest.file_name().map(|s| s.to_string_lossy().into_owned()),
             ctx: ctx.clone(),
             quality: quality.clone(),
+            extras: extras.clone(),
             concurrency: 1,
             config: settings.backends.clone(),
         };
@@ -1563,6 +1901,7 @@ async fn queue_url(
         .with_backend_id(backend_id)
         .with_request_context(headers, cookie)
         .with_quality(quality)
+        .with_extras(extras)
         .with_preview(preview);
     entry.author = meta.author;
     entry.title = meta.title.or(title_hint);
@@ -1657,5 +1996,26 @@ mod tests {
         assert!(DEFAULT_MEDIA_EXTS.contains(&".PNG"));
         assert!(DEFAULT_MEDIA_TYPES.contains(&"application/pdf"));
         assert!(DEFAULT_MEDIA_TYPES.contains(&"image/"));
+    }
+
+    #[test]
+    fn yt_caught_of_only_matches_watchable_urls() {
+        let id = |u: &str| yt_caught_of(u, None).map(|(_, c)| c.id);
+
+        // watchable
+        assert_eq!(id("https://www.youtube.com/watch?v=dQw4w9WgXcQ").as_deref(), Some("dQw4w9WgXcQ"));
+        assert_eq!(id("https://youtu.be/dQw4w9WgXcQ").as_deref(), Some("dQw4w9WgXcQ"));
+        assert_eq!(id("https://www.youtube.com/shorts/abcdefg").as_deref(), Some("abcdefg"));
+        assert_eq!(id("https://www.twitch.tv/videos/123456789").as_deref(), Some("v123456789"));
+        assert_eq!(id("https://x.com/someone/status/1790000000000000000").as_deref(), Some("1790000000000000000"));
+        assert_eq!(id("https://vimeo.com/76979871").as_deref(), Some("76979871"));
+
+        // NOT watchable
+        assert!(yt_caught_of("https://www.youtube.com/feed/subscriptions", None).is_none());
+        assert!(yt_caught_of("https://www.youtube.com/", None).is_none());
+        assert!(yt_caught_of("https://www.youtube.com/results?search_query=cats", None).is_none());
+        assert!(yt_caught_of("https://www.youtube.com/@SomeChannel", None).is_none());
+        assert!(yt_caught_of("https://x.com/someone", None).is_none());
+        assert!(yt_caught_of("https://www.twitch.tv/someone", None).is_none());
     }
 }

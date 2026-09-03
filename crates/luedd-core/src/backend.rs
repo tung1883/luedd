@@ -50,6 +50,9 @@ pub struct DownloadReq {
     pub ctx: RequestContext,
     /// Opaque, backend-defined variant key (from `probe_qualities`).
     pub quality: Option<String>,
+    /// Backend-defined per-download flags (yt-dlp: `subs` / `thumbnail` /
+    /// `chapters`). Empty for most downloads; other backends ignore it.
+    pub extras: std::collections::BTreeMap<String, String>,
     pub concurrency: usize,
     pub config: BackendConfig,
 }
@@ -308,6 +311,40 @@ fn host_matches(host: &str, suffix: &str) -> bool {
     !s.is_empty() && (host == s || host.ends_with(&format!(".{s}")))
 }
 
+/// First absolute path to an executable named `name` found on `$PATH`
+/// (trying the platform's executable extensions on Windows). Used to turn a
+/// bare command name into the real location for the Settings status line.
+pub(crate) fn which_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into())
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    #[cfg(not(windows))]
+    let exts: Vec<String> = vec![String::new()];
+
+    for dir in std::env::split_paths(&path) {
+        // exact name first (covers an explicit extension or a unix binary)
+        let direct = dir.join(name);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        for ext in &exts {
+            if ext.is_empty() {
+                continue;
+            }
+            let c = dir.join(format!("{name}{ext}"));
+            if c.is_file() {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Config (embedded in Settings.backends)
 // ---------------------------------------------------------------------------
@@ -326,6 +363,10 @@ pub struct BackendConfig {
     pub instagram_engine_fallback: Option<String>,
     /// Browser to pull cookies from for the extraction leg ("chrome", "firefox", …).
     pub cookies_from_browser: Option<String>,
+    /// yt-dlp `--limit-rate` value (e.g. "2M", "500K"); `None` = unlimited.
+    pub ytdlp_limit_rate: Option<String>,
+    /// yt-dlp `-N` concurrent fragment downloads; `None` = yt-dlp's default (1).
+    pub ytdlp_concurrent_fragments: Option<u32>,
     /// Manual host -> backend overrides.
     pub host_routing: Vec<HostRoute>,
     pub instagram: InstagramConfig,
@@ -351,6 +392,19 @@ pub struct InstagramConfig {
     pub doc_id_timeline: Option<String>,
     pub query_hash_reels: Option<String>,
     pub app_id: String,
+
+    // --- custom-engine rate limiting ---
+    /// Pace preset: `"gentle" | "normal" | "fast" | "manual"`. `None` = normal.
+    /// A preset seeds the three values below; an explicit value always wins.
+    pub pace: Option<String>,
+    /// Delay between profile-grid pages (ms).
+    pub page_delay_ms: Option<u64>,
+    /// Delay between CDN item fetches (ms).
+    pub item_delay_ms: Option<u64>,
+    /// Simultaneous Instagram downloads (clamped 1..=3).
+    pub max_concurrent: Option<usize>,
+    /// Cap on a whole-profile crawl; `None` = crawl everything.
+    pub max_posts: Option<usize>,
 }
 
 impl Default for InstagramConfig {
@@ -363,7 +417,28 @@ impl Default for InstagramConfig {
             // Stories now use the REST reels_media endpoint, not this hash.
             query_hash_reels: None,
             app_id: "936619743392459".to_string(),
+            pace: None,
+            page_delay_ms: None,
+            item_delay_ms: None,
+            max_concurrent: None,
+            max_posts: None,
         }
+    }
+}
+
+impl InstagramConfig {
+    /// Resolved `(page_delay, item_delay, concurrency)` for the custom engine:
+    /// the pace preset's base values, each overridden by an explicit field.
+    pub fn pace_values(&self) -> (std::time::Duration, std::time::Duration, usize) {
+        let (pg, it, cc) = match self.pace.as_deref() {
+            Some("gentle") => (5000u64, 800u64, 1usize),
+            Some("fast") => (800, 100, 3),
+            _ => (2000, 300, 2), // normal / manual / unset
+        };
+        let pg = self.page_delay_ms.unwrap_or(pg);
+        let it = self.item_delay_ms.unwrap_or(it);
+        let cc = self.max_concurrent.unwrap_or(cc).clamp(1, 3);
+        (std::time::Duration::from_millis(pg), std::time::Duration::from_millis(it), cc)
     }
 }
 
@@ -384,6 +459,28 @@ mod tests {
         assert!(host_matches("cdn.instagram.com", ".instagram.com"));
         assert!(!host_matches("notyoutube.com", "youtube.com"));
         assert!(!host_matches("youtube.com.evil.com", "youtube.com"));
+    }
+
+    #[test]
+    fn instagram_pace_values_preset_and_overrides() {
+        use std::time::Duration;
+        let normal = InstagramConfig::default();
+        assert_eq!(
+            normal.pace_values(),
+            (Duration::from_millis(2000), Duration::from_millis(300), 2)
+        );
+
+        let mut gentle = InstagramConfig::default();
+        gentle.pace = Some("gentle".into());
+        assert_eq!(gentle.pace_values().2, 1);
+        assert_eq!(gentle.pace_values().0, Duration::from_millis(5000));
+
+        let mut manual = InstagramConfig::default();
+        manual.pace = Some("fast".into());
+        manual.page_delay_ms = Some(1234);
+        manual.max_concurrent = Some(9); // clamps to 3
+        let (pg, it, cc) = manual.pace_values();
+        assert_eq!((pg, it, cc), (Duration::from_millis(1234), Duration::from_millis(100), 3));
     }
 
     #[tokio::test]

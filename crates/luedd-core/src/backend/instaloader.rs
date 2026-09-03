@@ -6,7 +6,7 @@
 //!   `instagram.rs`.
 //! - **instaloader** - forks the [instaloader](https://instaloader.github.io/)
 //!   CLI. Auth comes from the browser `sessionid` cookie (written to a temp
-//!   Netscape cookie file via `--load-cookies`, which needs instaloader ≥ 4.11).
+//!   Netscape cookie file via `--cookiefile`, which needs instaloader >= 4.14).
 //!
 //! [`engine_plan`] turns `BackendConfig.instagram_engine_main` +
 //! `instagram_engine_fallback` into an ordered list of engines to try (primary
@@ -34,9 +34,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const AVAIL_TTL: Duration = Duration::from_secs(60);
-/// `--load-cookies` landed in instaloader 4.11 (Nov 2023). Older installs fall
-/// back to the custom engine.
-const MIN_VERSION: (u32, u32) = (4, 11);
+/// `--cookiefile` (Netscape cookie file) landed in instaloader 4.14. Older
+/// installs fall back to the custom engine.
+const MIN_VERSION: (u32, u32) = (4, 14);
 
 /// Media extensions instaloader writes that we keep.
 const MEDIA_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "mp4"];
@@ -104,13 +104,24 @@ fn program(cfg: &BackendConfig) -> (PathBuf, Vec<String>) {
             }
         }
     }
-    if let Some(py) = &cfg.python_path {
-        return (py.clone(), vec!["-m".into(), "instaloader".into()]);
+    if let Some(p) = super::which_on_path("instaloader") {
+        return (p, Vec::new());
     }
-    (PathBuf::from("instaloader"), Vec::new())
+    let py = resolved_python(cfg);
+    (py, vec!["-m".into(), "instaloader".into()])
 }
 
-/// Is a usable (≥ 4.11) instaloader reachable? Cached for 60 s.
+/// The Python interpreter instaloader runs under: `cfg.python_path`, else
+/// `python` / `python3` on `$PATH`, else bare `python`.
+pub(crate) fn resolved_python(cfg: &BackendConfig) -> PathBuf {
+    cfg.python_path
+        .clone()
+        .or_else(|| super::which_on_path("python"))
+        .or_else(|| super::which_on_path("python3"))
+        .unwrap_or_else(|| PathBuf::from("python"))
+}
+
+/// Is a usable (>= 4.14) instaloader reachable? Cached for 60 s.
 async fn usable(cfg: &BackendConfig) -> bool {
     {
         let g = avail_cache().lock().await;
@@ -127,7 +138,7 @@ async fn usable(cfg: &BackendConfig) -> bool {
     if ver.is_some() && usable.is_none() {
         tracing::warn!(
             version = ?ver,
-            "instaloader is older than {}.{} (no --load-cookies) - using the custom engine",
+            "instaloader is older than {}.{} (no --cookiefile) - using the custom engine",
             MIN_VERSION.0,
             MIN_VERSION.1
         );
@@ -148,16 +159,44 @@ pub fn resolved_program(cfg: &BackendConfig) -> String {
 }
 
 /// For the Settings status line:
-/// `(installed_and_usable, version_string, resolved_program)`.
+/// `(installed_and_usable, version_string, resolved_program, resolved_python)`.
 /// `version_string` is `Some` whenever *any* instaloader answers `--version`,
-/// even one too old for `--load-cookies`.
-pub async fn instaloader_status(cfg: &BackendConfig) -> (bool, Option<String>, String) {
+/// even one too old for `--cookiefile`.
+pub async fn instaloader_status(cfg: &BackendConfig) -> (bool, Option<String>, String, String) {
     let (prog, mut args) = program(cfg);
     args.push("--version".into());
     let resolved = resolved_program(cfg);
+    let python = resolved_python(cfg).display().to_string();
     match probe_version(&prog, &args).await {
-        Some(v) => (v >= MIN_VERSION, Some(format!("{}.{}", v.0, v.1)), resolved),
-        None => (false, None, resolved),
+        Some(v) => (v >= MIN_VERSION, Some(format!("{}.{}", v.0, v.1)), resolved, python),
+        None => (false, None, resolved, python),
+    }
+}
+
+/// `<python> -m pip install -U instaloader`. Returns `(ok, message)` — the last
+/// non-empty output line. Uses `cfg.python_path` else `python`.
+pub async fn instaloader_update(cfg: &BackendConfig) -> (bool, String) {
+    let py = resolved_python(cfg);
+    let mut cmd = tokio::process::Command::new(&py);
+    cmd.args(["-m", "pip", "install", "-U", "instaloader"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    match tokio::time::timeout(Duration::from_secs(180), cmd.output()).await {
+        Ok(Ok(o)) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+            *avail_cache().lock().await = None; // force a re-probe of the version
+            (o.status.success(), if last.is_empty() { "done".into() } else { last })
+        }
+        Ok(Err(e)) => (false, format!("could not run {}: {e}", py.display())),
+        Err(_) => (false, "pip install timed out".into()),
     }
 }
 
@@ -173,7 +212,7 @@ pub(crate) async fn run(
     if !usable(cfg).await {
         bail!(
             "instaloader is not installed or too old (need >= {}.{}) - run \
-             `pip install \"instaloader>=4.11\"` or set its path in Settings",
+             `pip install \"instaloader>=4.14\"` or set its path in Settings",
             MIN_VERSION.0,
             MIN_VERSION.1
         );
@@ -215,7 +254,9 @@ fn build_args(target: &Target, dest_dir: &Path, cookie_file: Option<&Path>, lead
         "{date_utc}_UTC".to_string(),
     ]);
     if let Some(cf) = cookie_file {
-        args.push("--load-cookies".to_string());
+        // `-B/--cookiefile` loads a Netscape cookie file (instaloader >= 4.14).
+        // NOT `--load-cookies`, which takes a *browser name* and needs browser_cookie3.
+        args.push("--cookiefile".to_string());
         args.push(cf.to_string_lossy().into_owned());
     }
     match target {
@@ -297,7 +338,7 @@ impl Drop for CookieFile {
 }
 
 /// Turn a captured `k=v; k2=v2` Cookie header into a temp Netscape cookie file
-/// for `instaloader --load-cookies`, keeping only the Instagram auth cookies.
+/// for `instaloader --cookiefile`, keeping only the Instagram auth cookies.
 fn write_ig_cookie_file(cookie: &str) -> Option<CookieFile> {
     const KEEP: &[&str] = &["sessionid", "csrftoken", "ds_user_id", "mid", "ig_did"];
     let cookie = cookie.trim();
@@ -450,7 +491,7 @@ mod tests {
         let s = build_args(&Target::Stories("quynhingx".into()), dir, Some(Path::new("/tmp/c.txt")), &[]);
         assert!(s.contains(&"--stories".to_string()));
         assert!(s.contains(&"--no-posts".to_string()));
-        assert!(s.windows(2).any(|w| w[0] == "--load-cookies" && w[1] == "/tmp/c.txt"));
+        assert!(s.windows(2).any(|w| w[0] == "--cookiefile" && w[1] == "/tmp/c.txt"));
 
         let py = build_args(&Target::Profile("x".into()), dir, None, &["-m".into(), "instaloader".into()]);
         assert_eq!(&py[..2], &["-m".to_string(), "instaloader".to_string()]);

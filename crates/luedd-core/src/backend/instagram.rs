@@ -32,10 +32,12 @@ const PROFILE_INFO: &str = "https://www.instagram.com/api/v1/users/web_profile_i
 const REELS_MEDIA: &str = "https://www.instagram.com/api/v1/feed/reels_media/";
 
 /// insta-graphql.md §5: "Sleep 1-3 s between pages. A tight cursor loop is the
-/// fastest way to a temporary block on the session."
-const PAGE_PACE: Duration = Duration::from_secs(2);
+/// fastest way to a temporary block on the session." Delays and page cap are now
+/// configurable via `InstagramConfig` (pace preset + overrides); this is the
+/// fallback ceiling on a whole-profile crawl when `max_posts` is unset.
 const MAX_PAGES: usize = 40;
-const PER_ITEM_PACE: Duration = Duration::from_millis(300);
+/// Permit pool for the `slots` semaphore (see `InstagramBackend::new`).
+const SLOT_POOL: usize = 6;
 
 /// Fallback persisted-query ids (insta-graphql.md §4), used when the user hasn't
 /// set one in Settings. Instagram rotates these; when they 404, the fix is a
@@ -121,7 +123,9 @@ impl InstagramBackend {
     pub fn new(client: HttpClient) -> Self {
         Self {
             client,
-            slots: Semaphore::new(2),
+            // Permit pool: a download acquires `SLOT_POOL / concurrency` permits,
+            // so concurrency 1/2/3 -> 6/3/2 permits -> 1/2/3 simultaneous runs.
+            slots: Semaphore::new(SLOT_POOL),
             thumb_cache: tokio::sync::Mutex::new(HashMap::new()),
             meta_cache: tokio::sync::Mutex::new(HashMap::new()),
             owner_cache: tokio::sync::Mutex::new(HashMap::new()),
@@ -234,7 +238,7 @@ impl DownloadBackend for InstagramBackend {
                 // Prefer the account's profile picture (web_profile_info, §4.1);
                 // if that endpoint is rate-limited, fall back to the newest
                 // post's image from the timeline query.
-                let pic = self.web_profile_info(user, cookie, &cfg.app_id).await.and_then(|u| {
+                let pic = self.web_profile_info(user, cookie, cfg).await.and_then(|u| {
                     u.get("profile_pic_url")
                         .or_else(|| u.get("profile_pic_url_hd"))
                         .and_then(Value::as_str)
@@ -259,7 +263,7 @@ impl DownloadBackend for InstagramBackend {
             // Stories / highlights need a session cookie; use the same
             // reels_media REST endpoint the download does.
             Target::Stories(user) if cookie.is_some() => {
-                match self.resolve_user_id(user, cookie, &cfg.app_id).await {
+                match self.resolve_user_id(user, cookie, cfg).await {
                     Ok(uid) => self.reels_media(&format!("{uid}"), cookie, &cfg.app_id).await,
                     Err(_) => None,
                 }
@@ -276,7 +280,11 @@ impl DownloadBackend for InstagramBackend {
     }
 
     async fn run(&self, req: &DownloadReq, progress: Option<&ProgressTx>) -> Result<Outcome> {
-        let _permit = self.slots.acquire().await.expect("semaphore closed");
+        // Concurrency: acquire SLOT_POOL/concurrency permits so 1/2/3 configured
+        // concurrency -> 6/3/2 permits -> 1/2/3 runs at once.
+        let (_pg, _it, concurrency) = req.config.instagram.pace_values();
+        let want = (SLOT_POOL / concurrency).max(1) as u32;
+        let _permit = self.slots.acquire_many(want).await.expect("semaphore closed");
         let target = classify(&req.url)
             .ok_or_else(|| anyhow!("not an Instagram post / reel / story / profile URL"))?;
 
@@ -372,6 +380,8 @@ impl InstagramBackend {
     ) -> Result<Outcome> {
         let cfg = &req.config.instagram;
         let cookie = req.ctx.cookie.as_deref().filter(|c| !c.trim().is_empty()).or(cfg.session_cookie.as_deref());
+        let (page_pace, item_pace, _cc) = cfg.pace_values();
+        let max_pages = cfg.max_posts.map(|n| n.div_ceil(12).max(1)).unwrap_or(MAX_PAGES);
         let mut items: Vec<MediaItem> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
@@ -414,7 +424,7 @@ impl InstagramBackend {
                 if cookie.is_none() {
                     bail!("Instagram: stories need a logged-in session - open the story in your browser (so the extension captures the cookie) or paste a session cookie in Settings");
                 }
-                let uid = self.resolve_user_id(user, cookie, &cfg.app_id).await?;
+                let uid = self.resolve_user_id(user, cookie, cfg).await?;
                 let referer = format!("https://www.instagram.com/stories/{user}/");
                 let url = format!("{REELS_MEDIA}?reel_ids={uid}");
                 let text = self
@@ -429,9 +439,9 @@ impl InstagramBackend {
                 let doc_id = cfg.doc_id_timeline.as_deref().unwrap_or(DEFAULT_DOC_TIMELINE);
                 let referer = format!("https://www.instagram.com/{user}/");
                 let mut after: Option<String> = None;
-                for page in 0..MAX_PAGES {
+                for page in 0..max_pages {
                     if page > 0 {
-                        tokio::time::sleep(PAGE_PACE).await;
+                        tokio::time::sleep(page_pace).await;
                     }
                     let mut vars = json!({
                         "data": {
@@ -516,7 +526,7 @@ impl InstagramBackend {
                     tracker.add_unit(0);
                 }
             }
-            tokio::time::sleep(PER_ITEM_PACE).await;
+            tokio::time::sleep(item_pace).await;
         }
         tracker.finish();
 
@@ -568,7 +578,13 @@ impl InstagramBackend {
     }
 
     /// insta-graphql.md §4.1: the `data.user` object for a username.
-    async fn web_profile_info(&self, user: &str, cookie: Option<&str>, app_id: &str) -> Option<Value> {
+    async fn web_profile_info(
+        &self,
+        user: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Option<Value> {
+        let app_id = cfg.app_id.as_str();
         let debug = std::env::var("IG_DEBUG").is_ok();
         {
             let g = self.profile_info_rl_until.lock().await;
@@ -611,14 +627,20 @@ impl InstagramBackend {
     }
 
     /// username -> numeric user id (needed for stories).
-    async fn resolve_user_id(&self, user: &str, cookie: Option<&str>, app_id: &str) -> Result<String> {
+    async fn resolve_user_id(
+        &self,
+        user: &str,
+        cookie: Option<&str>,
+        cfg: &super::InstagramConfig,
+    ) -> Result<String> {
+        let app_id = cfg.app_id.as_str();
         let ckey = format!("uid:{user}");
         if let Some(hit) = self.cache_get::<String>(&ckey).await {
             return Ok(hit);
         }
         // 1. web_profile_info - cheapest, but IG rate-limits it hard (429).
         if let Some(id) = self
-            .web_profile_info(user, cookie, app_id)
+            .web_profile_info(user, cookie, cfg)
             .await
             .as_ref()
             .and_then(|u| u.get("id").or_else(|| u.get("pk")))
@@ -666,7 +688,7 @@ impl InstagramBackend {
         }
         let cookie = Self::ig_cookie(cfg, cookie);
         let count = |u: &Value, k: &str| u.get(k).and_then(|x| x.get("count")).and_then(Value::as_u64).unwrap_or(0);
-        let hdr = match self.web_profile_info(user, cookie, &cfg.app_id).await {
+        let hdr = match self.web_profile_info(user, cookie, cfg).await {
             Some(u) => ProfileHeader {
                 username: u.get("username").and_then(Value::as_str).unwrap_or(user).to_string(),
                 full_name: u.get("full_name").and_then(Value::as_str).unwrap_or_default().to_string(),
@@ -812,7 +834,7 @@ impl InstagramBackend {
             return Ok(hit);
         }
         let cookie = Self::ig_cookie(cfg, cookie);
-        let uid = self.resolve_user_id(user, cookie, &cfg.app_id).await?;
+        let uid = self.resolve_user_id(user, cookie, cfg).await?;
         let resp = self
             .reels_media(&uid, cookie, &cfg.app_id)
             .await
@@ -856,7 +878,7 @@ impl InstagramBackend {
             return hit;
         }
         let cookie = Self::ig_cookie(cfg, cookie);
-        let Ok(uid) = self.resolve_user_id(user, cookie, &cfg.app_id).await else {
+        let Ok(uid) = self.resolve_user_id(user, cookie, cfg).await else {
             return Vec::new();
         };
         let url = format!("https://www.instagram.com/api/v1/highlights/{uid}/highlights_tray/");
@@ -1541,6 +1563,7 @@ mod tests {
             filename_hint: None,
             ctx: RequestContext { headers: HashMap::new(), cookie },
             quality: None,
+            extras: Default::default(),
             concurrency: 1,
             config: crate::backend::BackendConfig::default(),
         };

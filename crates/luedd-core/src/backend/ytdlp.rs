@@ -263,6 +263,26 @@ impl DownloadBackend for YtdlpBackend {
             out_tmpl.to_string_lossy().into_owned(),
         ];
         args.extend(RESILIENCE_ARGS.iter().map(|s| s.to_string()));
+        if let Some(rate) = req.config.ytdlp_limit_rate.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            args.push("--limit-rate".into());
+            args.push(rate.to_string());
+        }
+        if let Some(n) = req.config.ytdlp_concurrent_fragments.filter(|n| *n >= 1) {
+            args.push("-N".into());
+            args.push(n.to_string());
+        }
+        // per-download extras from the yt-dlp viewer
+        if let Some(langs) = req.extras.get("subs").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            args.push("--embed-subs".into());
+            args.push("--sub-langs".into());
+            args.push(langs.to_string());
+        }
+        if req.extras.get("thumbnail").is_some_and(|v| v == "1") {
+            args.push("--embed-thumbnail".into());
+        }
+        if req.extras.get("chapters").is_some_and(|v| v == "1") {
+            args.push("--embed-chapters".into());
+        }
         if let Some(browser) = &req.config.cookies_from_browser {
             args.push("--cookies-from-browser".into());
             args.push(browser.clone());
@@ -332,6 +352,94 @@ impl YtdlpBackend {
             out_dir: None,
         }
     }
+
+    /// Full `yt-dlp -J` metadata for the yt-dlp viewer. Forks `yt-dlp -J` (or
+    /// serves it from `info_cache`).
+    pub async fn probe_meta(
+        &self,
+        url: &str,
+        cfg: &BackendConfig,
+        cookie: Option<&str>,
+    ) -> Result<YtVideoMeta> {
+        let info = self.extract(url, cfg, cookie).await?;
+        let s = |k: &str| info.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+        let n = |k: &str| info.get(k).and_then(Value::as_u64);
+        let thumbnail = s("thumbnail").or_else(|| {
+            info.get("thumbnails")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|t| {
+                    let u = t.get("url").and_then(Value::as_str)?;
+                    let a = t.get("width").and_then(Value::as_u64).unwrap_or(0)
+                        * t.get("height").and_then(Value::as_u64).unwrap_or(1);
+                    Some((a, u.to_string()))
+                })
+                .max_by_key(|(a, _)| *a)
+                .map(|(_, u)| u)
+        });
+        Ok(YtVideoMeta {
+            id: s("id").unwrap_or_default(),
+            title: s("title").unwrap_or_default(),
+            webpage_url: s("webpage_url").unwrap_or_else(|| url.to_string()),
+            channel: s("channel").or_else(|| s("uploader")),
+            channel_url: s("channel_url").or_else(|| s("uploader_url")),
+            channel_id: s("channel_id").or_else(|| s("uploader_id")),
+            channel_follower_count: n("channel_follower_count"),
+            uploader: s("uploader"),
+            thumbnail,
+            duration: n("duration"),
+            view_count: n("view_count"),
+            upload_date: s("upload_date"),
+            description: s("description").map(|d| d.chars().take(400).collect()),
+            extractor: s("extractor_key").or_else(|| s("extractor")),
+        })
+    }
+
+    /// A channel's avatar URL. Forks `yt-dlp -J --playlist-items 0 <channel_url>`
+    /// (~1.5 s) and returns the first thumbnail (the avatar). Cheap enough to run
+    /// once per newly-caught channel.
+    pub async fn channel_avatar(&self, channel_url: &str, cfg: &BackendConfig) -> Option<String> {
+        let _permit = self.slots.acquire().await.ok()?;
+        let bin = ytdlp_bin(cfg);
+        let args: Vec<String> = vec![
+            "--no-warnings".into(),
+            "-q".into(),
+            "--playlist-items".into(),
+            "0".into(),
+            "-J".into(),
+            channel_url.to_string(),
+        ];
+        let json = spawn_json(&bin, &args, Duration::from_secs(30)).await.ok()?;
+        let thumbs = json.get("thumbnails").and_then(Value::as_array)?;
+        thumbs
+            .iter()
+            .find(|t| {
+                t.get("id").and_then(Value::as_str).is_some_and(|i| i.contains("avatar"))
+            })
+            .or_else(|| thumbs.first())
+            .and_then(|t| t.get("url").and_then(Value::as_str))
+            .map(str::to_string)
+    }
+}
+
+/// Full `yt-dlp -J` metadata for one video, for the yt-dlp viewer.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct YtVideoMeta {
+    pub id: String,
+    pub title: String,
+    pub webpage_url: String,
+    pub channel: Option<String>,
+    pub channel_url: Option<String>,
+    pub channel_id: Option<String>,
+    pub channel_follower_count: Option<u64>,
+    pub uploader: Option<String>,
+    pub thumbnail: Option<String>,
+    pub duration: Option<u64>,
+    pub view_count: Option<u64>,
+    pub upload_date: Option<String>,
+    pub description: Option<String>,
+    pub extractor: Option<String>,
 }
 
 // --- format helpers (probe_qualities) -------------------------------------
@@ -405,7 +513,47 @@ fn ytdlp_bin(cfg: &BackendConfig) -> PathBuf {
             }
         }
     }
-    PathBuf::from("yt-dlp")
+    super::which_on_path("yt-dlp").unwrap_or_else(|| PathBuf::from("yt-dlp"))
+}
+
+/// For the Settings status line: `(installed, version, resolved_program)`.
+pub async fn ytdlp_status(cfg: &BackendConfig) -> (bool, Option<String>, String) {
+    let bin = ytdlp_bin(cfg);
+    let resolved = bin.display().to_string();
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    match tokio::time::timeout(Duration::from_secs(5), cmd.output()).await {
+        Ok(Ok(o)) if o.status.success() => {
+            let v = String::from_utf8_lossy(&o.stdout).trim().lines().next().unwrap_or("").trim().to_string();
+            (true, (!v.is_empty()).then_some(v), resolved)
+        }
+        _ => (false, None, resolved),
+    }
+}
+
+/// Run `<yt-dlp> -U` (self-update; only works for a standalone binary).
+/// Returns `(ok, message)` — `message` is the last non-empty output line.
+pub async fn ytdlp_update(cfg: &BackendConfig) -> (bool, String) {
+    let bin = ytdlp_bin(cfg);
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.arg("-U").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    match tokio::time::timeout(Duration::from_secs(120), cmd.output()).await {
+        Ok(Ok(o)) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+            (o.status.success(), if last.is_empty() { "done".into() } else { last })
+        }
+        Ok(Err(e)) => (false, format!("could not run yt-dlp: {e}")),
+        Err(_) => (false, "yt-dlp -U timed out".into()),
+    }
 }
 
 /// A temp Netscape cookie file, deleted when dropped.

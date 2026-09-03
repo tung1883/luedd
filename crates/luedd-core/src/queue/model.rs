@@ -61,6 +61,10 @@ pub struct DownloadEntry {
     pub next_retry_at: Option<i64>,
     #[serde(default)]
     pub quality: Option<String>,
+    /// Backend-defined per-download flags (yt-dlp: `subs` / `thumbnail` /
+    /// `chapters`). Empty for most downloads.
+    #[serde(default)]
+    pub extras: std::collections::BTreeMap<String, String>,
     /// Inline thumbnail (data URL) carried over from the browser detection
     /// panel, so the list can show a preview before a single byte is on disk.
     #[serde(default)]
@@ -116,6 +120,8 @@ struct DownloadEntryRepr {
     #[serde(default)]
     quality: Option<String>,
     #[serde(default)]
+    extras: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     preview: Option<String>,
     #[serde(default)]
     preview_kind: Option<String>,
@@ -154,6 +160,7 @@ impl From<DownloadEntryRepr> for DownloadEntry {
             retry_count: r.retry_count,
             next_retry_at: r.next_retry_at,
             quality: r.quality,
+            extras: r.extras,
             preview: r.preview,
             preview_kind: r.preview_kind,
             extra_files: r.extra_files,
@@ -182,6 +189,7 @@ impl DownloadEntry {
             retry_count: 0,
             next_retry_at: None,
             quality: None,
+            extras: std::collections::BTreeMap::new(),
             preview: None,
             preview_kind: None,
             extra_files: Vec::new(),
@@ -210,6 +218,11 @@ impl DownloadEntry {
 
     pub fn with_quality(mut self, quality: Option<String>) -> Self {
         self.quality = quality;
+        self
+    }
+
+    pub fn with_extras(mut self, extras: std::collections::BTreeMap<String, String>) -> Self {
+        self.extras = extras;
         self
     }
 

@@ -161,7 +161,16 @@ async fn run_single(
     registry: &BackendRegistry,
     config: &BackendConfig,
 ) {
-    store.update_entry(&entry.id, |e| e.status = DownloadStatus::Downloading).await.ok();
+    // Starting (or re-starting) a run: drop any error from a previous attempt so
+    // the row doesn't show a stale failure while it downloads.
+    store
+        .update_entry(&entry.id, |e| {
+            e.status = DownloadStatus::Downloading;
+            e.error = None;
+            e.next_retry_at = None;
+        })
+        .await
+        .ok();
 
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
     let progress_store = store.clone();
@@ -208,6 +217,7 @@ async fn run_single(
         filename_hint: entry.dest.file_name().map(|s| s.to_string_lossy().into_owned()),
         ctx,
         quality: entry.quality.clone(),
+        extras: entry.extras.clone(),
         concurrency,
         config: config.clone(),
     };
@@ -223,6 +233,8 @@ async fn run_single(
             store
                 .update_entry(&entry.id, |e| {
                     e.status = DownloadStatus::Finished;
+                    e.error = None;
+                    e.next_retry_at = None;
                     e.dest = final_dest.clone();
                     e.extra_files = files.clone();
                     if meta.author.is_some() {

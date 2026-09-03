@@ -32,7 +32,7 @@ cargo +stable-x86_64-pc-windows-gnu test --workspace
 ## Instagram
 
 Lüdd-Insta hat zwei Download-Engines: die eingebaute Engine („Lüdd-Insta Standard")
-und [instaloader](https://instaloader.github.io/) (`pip install "instaloader>=4.11"`).
+und [instaloader](https://instaloader.github.io/) (`pip install "instaloader>=4.14"`).
 Unter Einstellungen → Lüdd-Insta wählt man eine **Haupt-Engine** und optional eine
 **Ausweich-Engine** (wird genutzt, wenn die Haupt-Engine fehlschlägt). Beide
 verwenden das vom Add-on erfasste `sessionid`-Cookie des Browsers oder das in den

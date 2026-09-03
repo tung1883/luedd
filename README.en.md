@@ -32,7 +32,7 @@ cargo +stable-x86_64-pc-windows-gnu test --workspace
 ## Instagram
 
 Lüdd-Insta has two download engines: the built-in engine (“Lüdd-Insta Default”) and
-[instaloader](https://instaloader.github.io/) (`pip install "instaloader>=4.11"`).
+[instaloader](https://instaloader.github.io/) (`pip install "instaloader>=4.14"`).
 Under Settings → Lüdd-Insta you pick a **main** engine and an optional
 **fallback** engine (tried when the main one fails). Both reuse the browser
 `sessionid` cookie captured by the extension, or the session cookie set in
