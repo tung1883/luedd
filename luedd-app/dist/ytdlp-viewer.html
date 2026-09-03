@@ -44,6 +44,8 @@
   .sb.vm, .sb.vimeo { background: var(--vm); }
   .sb.other { background: var(--surface-2); color: var(--dim); border: 1px solid var(--line); }
   .sb.sm { width: 15px; height: 15px; border-radius: 4px; font-size: 8px; }
+  .sb.ico { background: transparent; border: 0; }
+  .sb.ico svg { width: 100%; height: 100%; display: block; }
 
   .filt { display: flex; gap: 6px; padding: 12px 16px 4px; flex-wrap: wrap; }
   .chip { font-size: 11px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim);
@@ -58,7 +60,6 @@
     position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center;
     color: var(--dim); font-weight: 700; }
   .ccard .av img { width: 100%; height: 100%; object-fit: cover; }
-  .ccard .av .sb { position: absolute; right: -3px; bottom: -3px; }
   .ccard .nm { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ccard .sub { color: var(--dim); font-size: 10px; margin-top: 3px; }
 
@@ -67,7 +68,6 @@
   .chead .cav { width: 62px; height: 62px; border-radius: 50%; background: var(--surface-2); flex-shrink: 0;
     position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--dim); font-weight: 700; }
   .chead .cav img { width: 100%; height: 100%; object-fit: cover; }
-  .chead .cav .sb { position: absolute; right: -3px; bottom: 0; }
   .chead .cn { font-size: 16px; font-weight: 700; }
   .chead .cmeta { color: var(--dim); font-size: 12px; margin-top: 2px; }
   .chead .cdl { margin-top: 9px; }
@@ -192,6 +192,11 @@
     if (s.includes("vimeo")) return "vimeo"; return "other"; }
   function siteLetter(s) { const c = siteClass(s); return c === "other" ? (s || "?")[0] : c[0]; }
   function siteName(s) { const c = siteClass(s); return c === "youtube" ? "YouTube" : c === "twitch" ? "Twitch" : c === "vimeo" ? "Vimeo" : (s || "other"); }
+  const YT_SVG = `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill="red" d="M14.712 4.633a1.754 1.754 0 00-1.234-1.234C12.382 3.11 8 3.11 8 3.11s-4.382 0-5.478.289c-.6.161-1.072.634-1.234 1.234C1 5.728 1 8 1 8s0 2.283.288 3.367c.162.6.635 1.073 1.234 1.234C3.618 12.89 8 12.89 8 12.89s4.382 0 5.478-.289a1.754 1.754 0 001.234-1.234C15 10.272 15 8 15 8s0-2.272-.288-3.367z"/><path fill="#fff" d="M6.593 10.11l3.644-2.098-3.644-2.11v4.208z"/></svg>`;
+  // small site badge: real logo for YouTube, coloured letter tile otherwise
+  function sbHtml(site, small) { const c = siteClass(site);
+    if (c === "youtube") return `<span class="sb ico${small ? " sm" : ""}">${YT_SVG}</span>`;
+    return `<span class="sb ${small ? "sm " : ""}${c}">${esc(siteLetter(site))}</span>`; }
   function fmtNum(n) { n = Number(n) || 0; if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
     if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K"; return String(n); }
   function fmtDur(sec) { sec = Number(sec) || 0; if (!sec) return "";
@@ -224,7 +229,7 @@
     const mk = (val, label, cls) => {
       const ch = document.createElement("span");
       ch.className = "chip" + (siteFilter === val ? " on" : "");
-      ch.innerHTML = (cls ? `<span class="sb sm ${cls}">${esc(siteLetter(val))}</span>` : "") + esc(label);
+      ch.innerHTML = (cls ? sbHtml(val, true) : "") + esc(label);
       ch.addEventListener("click", () => { siteFilter = val; renderChannels(); });
       return ch;
     };
@@ -236,9 +241,8 @@
     for (const c of chans) {
       if (siteFilter !== "all" && siteClass(c.site) !== siteFilter) continue;
       const card = document.createElement("div"); card.className = "ccard";
-      const cls = siteClass(c.site);
       card.innerHTML =
-        `<div class="av">${c.avatar ? `<img src="${esc(c.avatar)}">` : esc((c.name || "?")[0])}<span class="sb ${cls}">${esc(siteLetter(c.site))}</span></div>`
+        `<div class="av">${c.avatar ? `<img src="${esc(c.avatar)}">` : esc((c.name || "?")[0])}</div>`
         + `<div style="min-width:0"><div class="nm">${esc(c.name)}</div><div class="sub">${c.caught_count} ${esc(L("viewer_caught"))} · ${esc(siteName(c.site))}</div></div>`;
       card.addEventListener("click", () => openChannel(c.key));
       grid.appendChild(card);
@@ -260,10 +264,9 @@
     if (!r || r.error) { channelEl.innerHTML = `<div class="empty">${esc((r && r.error) || L("cant_reach"))}</div>`; return; }
     const ch = r.channel, vids = r.videos || [];
     headTitle.textContent = ch.name;
-    const cls = siteClass(ch.site);
     let html =
       `<div class="chead">`
-      + `<div class="cav">${ch.avatar ? `<img src="${esc(ch.avatar)}">` : esc((ch.name || "?")[0])}<span class="sb ${cls}">${esc(siteLetter(ch.site))}</span></div>`
+      + `<div class="cav">${ch.avatar ? `<img src="${esc(ch.avatar)}">` : esc((ch.name || "?")[0])}</div>`
       + `<div><div class="cn">${esc(ch.name)}</div>`
       + `<div class="cmeta">${esc(ch.channel_url || siteName(ch.site))}</div>`
       + `<div class="cdl"><button id="dl-all">${esc(L("ytv_dl_all", { n: vids.length }))}</button></div></div></div>`
@@ -342,7 +345,7 @@
     ovScroll.innerHTML =
       `<div class="ovhero">${m.thumbnail ? `<img src="${esc(m.thumbnail)}">` : ""}${m.duration ? `<span class="dur">${esc(fmtDur(m.duration))}</span>` : ""}</div>`
       + `<div class="ovm"><div class="t">${esc(m.title)}</div>`
-      + `<div class="by"><span class="sb sm ${siteClass(m.extractor || "")}">${esc(siteLetter(m.extractor || m.channel_url || ""))}</span>`
+      + `<div class="by">${sbHtml(m.extractor || m.channel_url || "", true)}`
       + `${esc(m.channel || m.uploader || "")}${m.view_count ? " · " + fmtNum(m.view_count) + " views" : ""}${m.upload_date ? " · " + fmtDate(m.upload_date) : ""}</div>`
       + `${m.description ? `<div class="desc">${esc(m.description)}</div>` : ""}</div>`
       + `<div class="fmt">${section(L("ytv_progressive"), groups.prog)}${section(L("ytv_muxed"), groups.mux)}${section(L("ytv_audio_only"), groups.audio)}</div>`

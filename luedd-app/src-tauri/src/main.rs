@@ -470,6 +470,7 @@ fn main() {
                     build_id: format!("{} ({})", env!("CARGO_PKG_VERSION"), env!("LUEDD_ASSET_VER")),
                     on_new_detection: Some(detection_tx),
                     on_focus_request: Some(focus_tx),
+                    ig_cookie_cache: Some(default_data_dir().join("ig_session")),
                 };
                 if let Err(e) = luedd_ipc::server::serve(
                     server_store,

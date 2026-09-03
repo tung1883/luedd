@@ -123,7 +123,7 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
             .with_backends(registry.clone(), settings.get().await.backends),
     );
     let listener = std::net::TcpListener::bind(("127.0.0.1", port)).with_context(|| format!("binding 127.0.0.1:{port}"))?;
-    luedd_ipc::server::serve(store, manager, registry, instagram, ig_library, ytdlp, yt_library, luedd_ipc::server::ServerConfig { settings, build_id: "cli".into(), on_new_detection: None, on_focus_request: None }, listener).await
+    luedd_ipc::server::serve(store, manager, registry, instagram, ig_library, ytdlp, yt_library, luedd_ipc::server::ServerConfig { settings, build_id: "cli".into(), on_new_detection: None, on_focus_request: None, ig_cookie_cache: Some(data_dir.join("ig_session")) }, listener).await
 }
 
 async fn run_job(kind: DownloadKind, url: &str, output: &PathBuf, concurrency: usize) -> Result<()> {

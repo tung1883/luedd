@@ -30,6 +30,10 @@ pub struct ServerConfig {
     /// Fired when a second app instance pings `/focus-main` asking the running
     /// instance to surface its main window.
     pub on_focus_request: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    /// Where to cache the last Instagram `sessionid` cookie so it survives a
+    /// restart (the extension only re-pushes it once it reconnects). `None`
+    /// disables the on-disk cache.
+    pub ig_cookie_cache: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,9 +77,11 @@ struct AppState {
     /// Set while the background `-J` resolver is walking the unresolved bucket,
     /// so overlapping `/yt/channels` calls don't double-spawn it.
     yt_resolving: AtomicBool,
-    /// The most recent non-empty cookie seen on an Instagram detection — the
-    /// `/ig/*` endpoints have no per-request cookie of their own.
-    last_ig_cookie: Mutex<Option<String>>,
+    /// Instagram `sessionid` cookies seen this run (or restored from the cache),
+    /// newest first. The `/ig/*` endpoints have no per-request cookie of their
+    /// own — they try these in order and promote whichever one works, so any
+    /// number of signed-in browsers can contribute a session.
+    ig_cookies: Mutex<Vec<String>>,
     config: ServerConfig,
     detected: Mutex<Vec<DetectedMedia>>,
     next_id: AtomicU64,
@@ -268,6 +274,24 @@ pub async fn serve(
     config: ServerConfig,
     listener: std::net::TcpListener,
 ) -> anyhow::Result<()> {
+    // Restore the cookie pool from last run's cache, if any (JSON array; a bare
+    // single-line cookie from the old format is still accepted).
+    let seeded_cookies: Vec<String> = match &config.ig_cookie_cache {
+        Some(p) => tokio::fs::read_to_string(p)
+            .await
+            .ok()
+            .map(|s| {
+                serde_json::from_str::<Vec<String>>(&s)
+                    .unwrap_or_else(|_| s.lines().map(str::to_string).collect())
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.trim().to_string())
+            .filter(|c| c.contains("sessionid="))
+            .collect(),
+        None => Vec::new(),
+    };
+
     let state = Arc::new(AppState {
         store,
         manager,
@@ -277,7 +301,7 @@ pub async fn serve(
         ytdlp,
         yt_library,
         yt_resolving: AtomicBool::new(false),
-        last_ig_cookie: Mutex::new(None),
+        ig_cookies: Mutex::new(seeded_cookies),
         config,
         detected: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
@@ -531,17 +555,120 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// How many browser sessions to keep in the fallback pool.
+const IG_COOKIE_MAX: usize = 6;
+
+/// The `sessionid=` value inside a cookie header, if present.
+fn sessionid_of(cookie: &str) -> Option<&str> {
+    cookie.split(';').map(str::trim).find_map(|kv| kv.strip_prefix("sessionid="))
+}
+
+fn push_uniq(out: &mut Vec<String>, c: &str) {
+    let c = c.trim();
+    if !c.is_empty() && !out.iter().any(|x| x == c) {
+        out.push(c.to_string());
+    }
+}
+
 impl AppState {
-    /// Cookie for an `/ig/*` call: the per-request one, else the last cookie any
-    /// Instagram detection carried this session, else the Settings fallback.
+    /// Remember an Instagram cookie at the front of the fallback pool (newest
+    /// first), deduped by its `sessionid` value, and mirror the pool to the
+    /// on-disk cache so it survives a restart. Logged-out cookies (no
+    /// `sessionid=`) are ignored.
+    async fn remember_ig_cookie(&self, cookie: &str) {
+        let cookie = cookie.trim();
+        let Some(sid) = sessionid_of(cookie).map(str::to_string) else { return };
+        let snapshot = {
+            let mut pool = self.ig_cookies.lock().await;
+            if pool.first().map(String::as_str) == Some(cookie) {
+                return; // already the active one
+            }
+            pool.retain(|c| sessionid_of(c) != Some(sid.as_str()));
+            pool.insert(0, cookie.to_string());
+            pool.truncate(IG_COOKIE_MAX);
+            pool.clone()
+        };
+        self.persist_ig_cookies(&snapshot).await;
+    }
+
+    /// Move a cookie that just worked to the front of the pool and persist, so a
+    /// fallback that succeeded becomes the default for the next call.
+    async fn promote_ig_cookie(&self, cookie: &str) {
+        let snapshot = {
+            let mut pool = self.ig_cookies.lock().await;
+            if pool.first().map(String::as_str) == Some(cookie) {
+                return;
+            }
+            pool.retain(|c| c != cookie);
+            pool.insert(0, cookie.to_string());
+            pool.clone()
+        };
+        self.persist_ig_cookies(&snapshot).await;
+    }
+
+    async fn persist_ig_cookies(&self, pool: &[String]) {
+        let Some(path) = &self.config.ig_cookie_cache else { return };
+        if let Some(parent) = path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let json = serde_json::to_vec_pretty(pool).unwrap_or_default();
+        if let Err(e) = tokio::fs::write(path, json).await {
+            tracing::warn!(error = %e, "failed to cache Instagram cookies");
+        }
+    }
+
+    /// Ordered cookie candidates for an `/ig/*` call: the per-request one first,
+    /// then every remembered browser session (newest first), then the Settings
+    /// fallback.
+    async fn ig_candidates(&self, per_req: Option<&str>) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(c) = per_req {
+            push_uniq(&mut out, c);
+        }
+        for c in self.ig_cookies.lock().await.iter() {
+            push_uniq(&mut out, c);
+        }
+        if let Some(c) = self.config.settings.get().await.backends.instagram.session_cookie.clone() {
+            push_uniq(&mut out, &c);
+        }
+        out
+    }
+
+    /// Best single cookie for callers that don't need fallback.
     async fn ig_cookie(&self, per_req: Option<&str>) -> Option<String> {
-        if let Some(c) = per_req.filter(|c| !c.trim().is_empty()) {
-            return Some(c.to_string());
+        self.ig_candidates(per_req).await.into_iter().next()
+    }
+
+    /// Run `f` with each cookie candidate until one returns `Ok`; the winning
+    /// cookie is promoted to the front of the pool. With no candidates, `f` runs
+    /// once with `None`. Returns `(winning_cookie, result)` — `result` is the
+    /// last error when every candidate failed.
+    async fn ig_try<T, F, Fut>(
+        &self,
+        per_req: Option<&str>,
+        mut f: F,
+    ) -> (Option<String>, anyhow::Result<T>)
+    where
+        F: FnMut(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        let cands = self.ig_candidates(per_req).await;
+        if cands.is_empty() {
+            return (None, f(None).await);
         }
-        if let Some(c) = self.last_ig_cookie.lock().await.clone() {
-            return Some(c);
+        let mut last_err = None;
+        for (i, ck) in cands.iter().enumerate() {
+            match f(Some(ck.clone())).await {
+                Ok(v) => {
+                    if i > 0 {
+                        self.promote_ig_cookie(ck).await;
+                    }
+                    return (Some(ck.clone()), Ok(v));
+                }
+                Err(e) => last_err = Some(e),
+            }
         }
-        self.config.settings.get().await.backends.instagram.session_cookie.clone()
+        (None, Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all Instagram sessions failed"))))
     }
 }
 
@@ -621,8 +748,8 @@ async fn ensure_page_detection(
 /// Record an Instagram detection into the persistent library + remember its
 /// cookie; kick off a background owner resolve for account-less URLs.
 async fn record_ig_catch(state: &Arc<AppState>, url: &str, cookie: Option<&str>) {
-    if let Some(c) = cookie.filter(|c| !c.trim().is_empty()) {
-        *state.last_ig_cookie.lock().await = Some(c.to_string());
+    if let Some(c) = cookie {
+        state.remember_ig_cookie(c).await;
     }
     let Some((account, caught)) = ig_caught_of(url) else { return };
     let _ = state.ig_library.record(account.as_deref(), caught).await;
@@ -997,8 +1124,29 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
-    let cookie = state.ig_cookie(None).await;
-    let header = state.instagram.profile_header(&req.username, cookie.as_deref(), &cfg.instagram).await;
+    let (cookie, header) = {
+        let inst = state.instagram.clone();
+        let igc = cfg.instagram.clone();
+        let user = req.username.clone();
+        let (ck, res) = state
+            .ig_try(None, move |ck| {
+                let (inst, igc, user) = (inst.clone(), igc.clone(), user.clone());
+                async move {
+                    let h = inst.profile_header(&user, ck.as_deref(), &igc).await;
+                    if h.complete || !h.profile_pic_url.is_empty() {
+                        Ok(h)
+                    } else {
+                        anyhow::bail!("web_profile_info blocked for this session")
+                    }
+                }
+            })
+            .await;
+        match res {
+            Ok(h) => (ck, h),
+            // every session was blocked — still return the username-only header
+            Err(_) => (None, state.instagram.profile_header(&req.username, None, &cfg.instagram).await),
+        }
+    };
     if !header.profile_pic_url.is_empty() {
         let (st, user, pic) = (state.clone(), req.username.clone(), header.profile_pic_url.clone());
         tokio::spawn(async move { st.ig_library.set_avatar(&user, &pic).await.ok(); });
@@ -1020,7 +1168,8 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
 
 /// The extension pushes the current instagram.com cookie here (on connect and
 /// periodically), so `/ig/*` calls have a session even before any IG page
-/// detection this run. In-memory only, like `last_ig_cookie` from `/page`.
+/// detection this run. Kept in memory and mirrored to an on-disk cache so it
+/// also survives a restart.
 async fn ig_cookie(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
     #[derive(serde::Deserialize)]
     struct Req {
@@ -1028,7 +1177,7 @@ async fn ig_cookie(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serd
     }
     let ok = match serde_json::from_slice::<Req>(&body).ok().and_then(|r| r.cookie) {
         Some(c) if c.contains("sessionid=") => {
-            *state.last_ig_cookie.lock().await = Some(c);
+            state.remember_ig_cookie(&c).await;
             true
         }
         _ => false,
@@ -1041,8 +1190,16 @@ async fn ig_posts(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
-    let cookie = state.ig_cookie(None).await;
-    match state.instagram.profile_posts(&req.username, cookie.as_deref(), &cfg.instagram, req.after.as_deref()).await {
+    let inst = state.instagram.clone();
+    let igc = cfg.instagram.clone();
+    let (user, after) = (req.username.clone(), req.after.clone());
+    let (_ck, res) = state
+        .ig_try(None, move |ck| {
+            let (inst, igc, user, after) = (inst.clone(), igc.clone(), user.clone(), after.clone());
+            async move { inst.profile_posts(&user, ck.as_deref(), &igc, after.as_deref()).await }
+        })
+        .await;
+    match res {
         Ok((posts, next)) => Json(serde_json::json!({ "posts": posts, "next": next })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
@@ -1063,8 +1220,16 @@ async fn ig_story(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
-    let cookie = state.ig_cookie(None).await;
-    match state.instagram.story_items(&req.username, cookie.as_deref(), &cfg.instagram).await {
+    let inst = state.instagram.clone();
+    let igc = cfg.instagram.clone();
+    let user = req.username.clone();
+    let (_ck, res) = state
+        .ig_try(None, move |ck| {
+            let (inst, igc, user) = (inst.clone(), igc.clone(), user.clone());
+            async move { inst.story_items(&user, ck.as_deref(), &igc).await }
+        })
+        .await;
+    match res {
         Ok(items) => Json(serde_json::json!({ "items": items })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
@@ -1075,8 +1240,16 @@ async fn ig_highlight(State(state): State<Arc<AppState>>, body: Bytes) -> Json<s
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
-    let cookie = state.ig_cookie(None).await;
-    match state.instagram.highlight_items(&req.id, cookie.as_deref(), &cfg.instagram).await {
+    let inst = state.instagram.clone();
+    let igc = cfg.instagram.clone();
+    let id = req.id.clone();
+    let (_ck, res) = state
+        .ig_try(None, move |ck| {
+            let (inst, igc, id) = (inst.clone(), igc.clone(), id.clone());
+            async move { inst.highlight_items(&id, ck.as_deref(), &igc).await }
+        })
+        .await;
+    match res {
         Ok(items) => Json(serde_json::json!({ "items": items })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
@@ -1087,8 +1260,16 @@ async fn ig_post(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
-    let cookie = state.ig_cookie(None).await;
-    match state.instagram.post_media(&req.id, cookie.as_deref(), &cfg.instagram).await {
+    let inst = state.instagram.clone();
+    let igc = cfg.instagram.clone();
+    let id = req.id.clone();
+    let (cookie, res) = state
+        .ig_try(None, move |ck| {
+            let (inst, igc, id) = (inst.clone(), igc.clone(), id.clone());
+            async move { inst.post_media(&id, ck.as_deref(), &igc).await }
+        })
+        .await;
+    match res {
         Ok((items, caption)) => {
             // a post pulled up in the viewer is also a catch: record it in the
             // background so the response isn't held up by the library write / detection
