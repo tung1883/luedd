@@ -22,9 +22,16 @@ export default class Connector {
     }
 
     onTimer() {
-        fetch(APP_BASE_URL + "/sync")
+        this.syncNow();
+    }
+
+    // Poll /sync once, right now, and resolve when the response has been applied
+    // (or the fetch failed). Lets the popup force a fresh read on open instead of
+    // waiting for the next alarm tick.
+    syncNow() {
+        return fetch(APP_BASE_URL + "/sync")
             .then(this.onResponse.bind(this))
-            .catch(err => this.disconnect());
+            .catch(() => { this.disconnect(); return null; });
     }
 
     markConnected() {

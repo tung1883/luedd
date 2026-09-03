@@ -58,19 +58,35 @@ class VideoPopup {
             if (msg && msg.type === "refresh") this.fetchAndRender();
         });
 
+        document.getElementById("refresh").addEventListener("click", () => this.fetchAndRender());
+
         this.fetchAndRender();
     }
 
     fetchAndRender() {
-        chrome.runtime.sendMessage({ type: "stat" }, this.onMsg.bind(this));
+        const btn = document.getElementById("refresh");
+        if (btn) { btn.disabled = true; btn.style.opacity = ".5"; }
+        chrome.runtime.sendMessage({ type: "stat" }, resp => {
+            if (btn) { btn.disabled = false; btn.style.opacity = ""; }
+            this.onMsg(resp || {});
+        });
     }
 
     onMsg(response) {
-        document.getElementById("chk").checked = response.enabled;
-        if (response.list.length > 0) {
-            document.getElementById('content').style.display = 'block';
-        }
-        this.allItems = response.list;
+        const list = response.list || [];
+        const disconnected = response.connected === false;
+        // app monitoring off -> banner, but still show the caught links
+        const appOff = response.appEnabled === false && !disconnected;
+        document.getElementById("conn-banner").style.display = disconnected ? "block" : "none";
+        document.getElementById("mon-banner").style.display = appOff ? "block" : "none";
+        const chk = document.getElementById("chk");
+        chk.checked = response.enabled === true;
+        // the checkbox only governs this extension; when the app itself has
+        // monitoring off it can't do anything, so don't offer a dead toggle
+        chk.disabled = appOff || disconnected;
+        chk.closest("label").style.opacity = chk.disabled ? ".55" : "";
+        document.getElementById('content').style.display = 'block';
+        this.allItems = list;
         this.applyFilter(document.getElementById("search-input").value);
     }
 

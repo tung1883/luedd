@@ -109,13 +109,22 @@
   <div style="display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--line); padding: 12px 15px; background: linear-gradient(180deg, #212227, var(--surface)); box-shadow: 0 1px 0 rgba(255,255,255,.04);">
     <img src="icon128.png" alt="" style="width: 20px; height: 20px; border-radius: 5px;" />
     <span style="font-size: 15px; font-weight: 700;">L<span style="color: var(--accent);">ü</span>dd</span>
+    <button id="refresh" class="secondary" title="Refresh" aria-label="Refresh"
+      style="margin-left: auto; padding: 5px 7px; line-height: 0;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+  </div>
+
+  <div id="mon-banner" style="display:none; padding: 9px 15px; font-size: 12px; line-height: 1.45;
+    background: rgba(240,162,74,.12); border-bottom: 1px solid var(--line); color: #F0A24A;">
+    Browser monitoring is off. Turn it back on in Lüdd's detection panel.
+  </div>
+  <div id="conn-banner" style="display:none; padding: 9px 15px; font-size: 12px; line-height: 1.45;
+    background: rgba(242,106,99,.12); border-bottom: 1px solid var(--line); color: #F26A63;">
+    Can't reach Lüdd &mdash; start the desktop app. Showing the last known links.
   </div>
 
   <div id="content">
-    <div style="padding: 10px 15px 0 15px; font-size: 12px; color: var(--dim); line-height: 1.5;">
-      Detected on this page &mdash; click one to queue it. Manage running downloads,
-      the output folder and settings in the <b style="color: var(--text);">Lüdd app</b>.
-    </div>
     <div style="padding: 10px 15px;">
       <span class="srch">
         <input id="search-input" type="text" placeholder="Filter by name or site&hellip;">

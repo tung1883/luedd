@@ -458,14 +458,9 @@ export default class App {
             chrome.action.setPopup({ popup: hasDetections ? "./popup.html" : "./error.html" });
             return;
         }
-        if (!this.appEnabled) {
-            chrome.action.setPopup({ popup: "./disabled.html" });
-            return;
-        }
-        else {
-            chrome.action.setPopup({ popup: "./popup.html" });
-            return;
-        }
+        // Always the list popup - it shows already-caught links even when
+        // monitoring is off, with an in-popup banner explaining the off state.
+        chrome.action.setPopup({ popup: "./popup.html" });
     }
 
     getActionIconName(icon) {
@@ -521,11 +516,17 @@ export default class App {
     onPopupMessage(request, sender, sendResponse) {
         this.logger.log(request.type);
         if (request.type === "stat") {
-            let resp = {
-                enabled: this.isMonitoringEnabled(),
-                list: this.videoList
-            };
-            sendResponse(resp);
+            // Force a fresh /sync first so the popup reflects the current app
+            // monitoring state right away instead of waiting for the next alarm.
+            this.connector.syncNow().finally(() => {
+                sendResponse({
+                    enabled: this.isMonitoringEnabled(),
+                    appEnabled: this.appEnabled === true,
+                    connected: this.connector.isConnected() === true,
+                    list: this.videoList
+                });
+            });
+            return true;   // async sendResponse
         }
         else if (request.type === "cmd") {
             this.userDisabled = request.enabled === false;

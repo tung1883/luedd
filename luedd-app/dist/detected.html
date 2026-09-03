@@ -766,20 +766,23 @@
         const collapsed = collapsedProviders.has(p);
         const h = document.createElement("div");
         h.className = "ghdr";
-        const hasViewer = p === "Lüdd-Insta";
+        const viewerCmd = p === "Lüdd-Insta" ? "viewer_window_show"
+          : p === "yt-dlp" ? "ytdlp_viewer_window_show" : null;
+        const viewerLabel = p === "Lüdd-Insta" ? "Open the Instagram profile viewer"
+          : "Open the yt-dlp channel viewer";
         h.innerHTML = `<span class="gcaret${collapsed ? "" : " open"}">${CARET}</span>`
           + `<span class="gname"></span><span class="gcount">${groups.get(p).length}</span>`
-          + (hasViewer ? `<button class="ghdr-more" title="Open the Instagram profile viewer" aria-label="Open the Instagram profile viewer"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>` : "");
+          + (viewerCmd ? `<button class="ghdr-more" title="${viewerLabel}" aria-label="${viewerLabel}"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>` : "");
         h.querySelector(".gname").textContent = p;
         h.addEventListener("click", () => {
           if (collapsedProviders.has(p)) collapsedProviders.delete(p);
           else collapsedProviders.add(p);
           renderList(items);
         });
-        if (hasViewer) {
+        if (viewerCmd) {
           h.querySelector(".ghdr-more").addEventListener("click", e => {
             e.stopPropagation();
-            try { window.__TAURI__.core.invoke("viewer_window_show"); } catch (_) {}
+            try { window.__TAURI__.core.invoke(viewerCmd); } catch (_) {}
           });
         }
         list.appendChild(h);

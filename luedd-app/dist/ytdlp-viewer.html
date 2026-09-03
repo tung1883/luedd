@@ -24,7 +24,11 @@
 
   header { display: flex; align-items: center; gap: 10px; padding: 11px 16px;
     background: linear-gradient(180deg, #212227, var(--surface)); border-bottom: 1px solid var(--line); }
-  header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; flex: 1; }
+  header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+  .hsearch { flex: 1; min-width: 0; max-width: 340px; margin-left: auto; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 6px 10px; }
+  .hsearch:focus { outline: none; border-color: var(--accent); }
+  .hsearch::-webkit-search-cancel-button { -webkit-appearance: none; }
   button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
     border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
   button.ghost { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
@@ -140,6 +144,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
     <span class="htitle" id="head-title" data-i18n="ytv_title">yt-dlp</span>
+    <input id="search" type="search" class="hsearch" data-i18n-placeholder="ytv_search" placeholder="Search channels" />
     <button id="refresh-btn" class="ghost iconbtn" title="Refresh" aria-label="Refresh">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
     </button>
@@ -210,10 +215,17 @@
   const headTitle = document.getElementById("head-title");
   let currentKey = null;
   let siteFilter = "all";
+  let chanQuery = "";
+  let lastChanData = null;
 
   // ---- home: caught channels ----
   async function renderChannels() {
-    const data = await get("/yt/channels");
+    lastChanData = await get("/yt/channels");
+    paintChannels();
+  }
+
+  function paintChannels() {
+    const data = lastChanData;
     channelsEl.innerHTML = "";
     if (!data) { channelsEl.innerHTML = `<div class="empty">${esc(L("cant_reach"))}</div>`; return; }
     const chans = data.channels || [];
@@ -224,22 +236,29 @@
     }
     if (!chans.length) { channelsEl.insertAdjacentHTML("beforeend", `<div class="empty">${esc(L("ytv_empty"))}</div>`); return; }
 
+    const q = chanQuery;
+    const matchQ = c => !q || (c.name || "").toLowerCase().includes(q) || (c.key || "").toLowerCase().includes(q);
+
     const sites = [...new Set(chans.map(c => siteClass(c.site)))];
     const filt = document.createElement("div"); filt.className = "filt";
     const mk = (val, label, cls) => {
       const ch = document.createElement("span");
       ch.className = "chip" + (siteFilter === val ? " on" : "");
       ch.innerHTML = (cls ? sbHtml(val, true) : "") + esc(label);
-      ch.addEventListener("click", () => { siteFilter = val; renderChannels(); });
+      ch.addEventListener("click", () => { siteFilter = val; paintChannels(); });
       return ch;
     };
-    filt.appendChild(mk("all", `${L("ytv_all_sites")} ${chans.length}`, null));
-    for (const s of sites) filt.appendChild(mk(s, `${siteName(s)} ${chans.filter(c => siteClass(c.site) === s).length}`, s));
+    filt.appendChild(mk("all", `${L("ytv_all_sites")} ${chans.filter(matchQ).length}`, null));
+    for (const s of sites) {
+      filt.appendChild(mk(s, `${siteName(s)} ${chans.filter(c => siteClass(c.site) === s && matchQ(c)).length}`, s));
+    }
     channelsEl.appendChild(filt);
 
+    const shown = chans.filter(c => (siteFilter === "all" || siteClass(c.site) === siteFilter) && matchQ(c));
+    if (!shown.length) { channelsEl.insertAdjacentHTML("beforeend", `<div class="empty">${esc(L("ytv_no_match"))}</div>`); return; }
+
     const grid = document.createElement("div"); grid.className = "cgrid";
-    for (const c of chans) {
-      if (siteFilter !== "all" && siteClass(c.site) !== siteFilter) continue;
+    for (const c of shown) {
       const card = document.createElement("div"); card.className = "ccard";
       card.innerHTML =
         `<div class="av">${c.avatar ? `<img src="${esc(c.avatar)}">` : esc((c.name || "?")[0])}</div>`
@@ -250,12 +269,18 @@
     channelsEl.appendChild(grid);
   }
 
+  {
+    const se = document.getElementById("search");
+    se.addEventListener("input", () => { chanQuery = se.value.trim().toLowerCase(); paintChannels(); });
+  }
+
   // ---- channel page ----
   async function openChannel(key) {
     currentKey = key;
     channelsEl.style.display = "none";
     channelEl.style.display = "block";
     backBtn.style.display = "flex";
+    document.getElementById("search").style.display = "none";
     document.getElementById("scroll").scrollTop = 0;
     channelEl.innerHTML = `<div class="chead"><div class="cav sk"></div><div><div class="cn sk" style="width:160px;height:16px"></div></div></div>`;
 
@@ -390,6 +415,7 @@
     currentKey = null;
     channelEl.style.display = "none"; channelsEl.style.display = "block";
     backBtn.style.display = "none"; headTitle.textContent = L("ytv_title");
+    document.getElementById("search").style.display = "";
     renderChannels();
   }
   backBtn.addEventListener("click", goBack);

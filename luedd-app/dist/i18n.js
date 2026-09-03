@@ -138,6 +138,10 @@
       viewer_more: "more", viewer_copied: "Copied", viewer_all: "All",
       viewer_dl_all: "Download all {n}", viewer_dl_one: "Download all", viewer_this_frame: "This frame",
       viewer_caught: "caught",
+      viewer_search: "Search accounts",
+      viewer_no_match: "No accounts match your search.",
+      ytv_search: "Search channels",
+      ytv_no_match: "No channels match your search.",
 
       open_ig_viewer: "Lüdd-Insta viewer",
       open_yt_viewer: "yt-dlp viewer",
@@ -293,6 +297,10 @@
       viewer_more: "mehr", viewer_copied: "Kopiert", viewer_all: "Alle",
       viewer_dl_all: "Alle {n} herunterladen", viewer_dl_one: "Alle herunterladen", viewer_this_frame: "Dieses Bild",
       viewer_caught: "erfasst",
+      viewer_search: "Konten suchen",
+      viewer_no_match: "Keine Konten passen zur Suche.",
+      ytv_search: "Kanäle suchen",
+      ytv_no_match: "Keine Kanäle passen zur Suche.",
 
       open_ig_viewer: "Lüdd-Insta-Viewer",
       open_yt_viewer: "yt-dlp-Viewer",

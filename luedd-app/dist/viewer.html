@@ -23,7 +23,11 @@
 
   header { display: flex; align-items: center; gap: 10px; padding: 11px 16px;
     background: linear-gradient(180deg, #212227, var(--surface)); border-bottom: 1px solid var(--line); }
-  header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; flex: 1; }
+  header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+  .hsearch { flex: 1; min-width: 0; max-width: 340px; margin-left: auto; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 6px 10px; }
+  .hsearch:focus { outline: none; border-color: var(--accent); }
+  .hsearch::-webkit-search-cancel-button { -webkit-appearance: none; }
   button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
     border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
   button.ghost { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
@@ -175,6 +179,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
     <span class="htitle" id="head-title" data-i18n="viewer_title">Instagram</span>
+    <input id="search" type="search" class="hsearch" data-i18n-placeholder="viewer_search" placeholder="Search accounts" />
     <button id="refresh-btn" class="ghost iconbtn" title="Refresh" aria-label="Refresh">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
     </button>
@@ -249,17 +254,28 @@
   const avatarCache = new Map();
 
   // ---- accounts home ----
+  let acctQuery = "";
+  let lastAcctData = null;
+
   async function renderAccounts() {
-    const data = await get("/ig/profiles");
+    lastAcctData = await get("/ig/profiles");
+    paintAccounts();
+  }
+
+  function paintAccounts() {
+    const data = lastAcctData;
     accountsEl.innerHTML = "";
     if (!data) { accountsEl.innerHTML = `<div class="empty">${esc(L("cant_reach"))}</div>`; return; }
-    const accts = data.accounts || [];
+    const all = data.accounts || [];
     if (data.unresolved) {
       const r = document.createElement("div"); r.className = "resolving";
       r.textContent = L("viewer_resolving", { n: data.unresolved }); accountsEl.appendChild(r);
     }
     if (igIncomplete) accountsEl.insertAdjacentHTML("beforeend", `<div class="empty note" style="padding:10px 16px;text-align:left">${esc(L("viewer_need_login"))}</div>`);
-    if (!accts.length) { accountsEl.insertAdjacentHTML("beforeend", `<div class="empty">${esc(L("viewer_empty"))}</div>`); return; }
+    if (!all.length) { accountsEl.insertAdjacentHTML("beforeend", `<div class="empty">${esc(L("viewer_empty"))}</div>`); return; }
+    const q = acctQuery;
+    const accts = q ? all.filter(a => (a.username || "").toLowerCase().includes(q)) : all;
+    if (!accts.length) { accountsEl.insertAdjacentHTML("beforeend", `<div class="empty">${esc(L("viewer_no_match"))}</div>`); return; }
     const grid = document.createElement("div"); grid.className = "acct-grid";
     const avSlots = new Map();
     for (const a of accts) {
@@ -278,6 +294,11 @@
     }
     accountsEl.appendChild(grid);
     warmAvatars(avSlots);
+  }
+
+  {
+    const se = document.getElementById("search");
+    se.addEventListener("input", () => { acctQuery = se.value.trim().toLowerCase(); paintAccounts(); });
   }
   // Fetch missing avatars ONE AT A TIME with a gap - IG's web_profile_info is
   // heavily throttled, a burst of parallel calls trips a 10-min 429 backoff.
@@ -313,6 +334,7 @@
     currentUser = username;
     accountsEl.style.display = "none"; profileEl.style.display = "block";
     backBtn.style.display = "flex"; headTitle.textContent = "@" + username;
+    document.getElementById("search").style.display = "none";
     document.getElementById("scroll").scrollTop = 0;
     postsCursor = null; postsLoading = false; postsDone = false;
     if (postsObserver) { postsObserver.disconnect(); postsObserver = null; }
@@ -683,6 +705,7 @@
     if (postsObserver) { postsObserver.disconnect(); postsObserver = null; }
     profileEl.style.display = "none"; accountsEl.style.display = "block";
     backBtn.style.display = "none"; headTitle.textContent = L("viewer_title");
+    document.getElementById("search").style.display = "";
     renderAccounts();
   }
   backBtn.addEventListener("click", goBack);
