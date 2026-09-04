@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -69,7 +69,15 @@ impl IgLibraryStore {
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let data = match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).context("corrupt ig_library.json")?,
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    let bak = path.with_extension("json.corrupt");
+                    let _ = tokio::fs::rename(&path, &bak).await;
+                    tracing::error!(error = %e, backup = %bak.display(), "corrupt ig_library.json; starting fresh");
+                    IgLibrary::default()
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => IgLibrary::default(),
             Err(e) => return Err(e.into()),
         };
@@ -165,11 +173,7 @@ impl IgLibraryStore {
 
     async fn save(&self) -> Result<()> {
         let json = serde_json::to_vec_pretty(&*self.data.read().await)?;
-        if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&self.path, json).await?;
-        Ok(())
+        crate::atomicfile::write_atomic(&self.path, &json).await
     }
 }
 

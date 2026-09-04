@@ -10,6 +10,8 @@ use wreq_util::Emulation;
 
 pub use wreq;
 
+mod dns;
+
 pub const DEFAULT_RETRY_ATTEMPTS: usize = 6;
 pub const DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
@@ -287,6 +289,9 @@ impl HttpClient {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(180))
             .redirect(wreq::redirect::Policy::default())
+            // Fall back to DoH for hosts the OS resolver can't see (some stream
+            // CDNs only resolve through a browser's own Secure DNS).
+            .dns_resolver(std::sync::Arc::new(dns::SystemThenDoh::new()))
             // Reuse connections: media hosts (and Cloudflare-fronted ones
             // especially) charge a full TLS handshake per new connection, and a
             // download or a preview burst hits the same host dozens of times.

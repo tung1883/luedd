@@ -52,6 +52,10 @@ struct DetectedMedia {
     /// A page-URL detection (a yt-dlp watch page). Its URL has no media
     /// extension, so the panel's type filter must be told it's a video.
     is_page: bool,
+    /// Panel `kind` derived from the response Content-Type at detect time
+    /// (`hls` / `video` / `audio` / …). Lets an extensionless stream URL show
+    /// the right icon. `None` = let the panel guess from the URL.
+    kind_hint: Option<String>,
     /// Human provider name ("Lüdd", "yt-dlp", …) — a cheap guess made when the
     /// detection is recorded, for the panel's group-by / filter-by-provider.
     provider: String,
@@ -134,6 +138,10 @@ struct SyncResponse {
     preview_data_url: Option<String>,
     #[serde(rename = "previewKind", skip_serializing_if = "Option::is_none")]
     preview_kind: Option<String>,
+    /// Why a `/preview` produced nothing — surfaced in the panel so an
+    /// undecodable / blocked source isn't just a silent missing thumbnail.
+    #[serde(rename = "previewError", skip_serializing_if = "Option::is_none")]
+    preview_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -213,6 +221,7 @@ fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoList
         quality_variants: None,
         preview_data_url: None,
         preview_kind: None,
+        preview_error: None,
     }
 }
 
@@ -362,6 +371,7 @@ fn to_video_list_item(
     is_image: bool,
     is_page: bool,
     provider: &str,
+    kind: Option<&str>,
 ) -> VideoListItem {
     let text = if is_page {
         page_label(url, page_title, provider)
@@ -383,9 +393,29 @@ fn to_video_list_item(
         url: url.to_string(),
         page_url: page_url.map(str::to_string),
         is_image,
-        kind: is_page.then(|| "video".to_string()),
+        kind: kind
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .or_else(|| is_page.then(|| "video".to_string())),
         provider: provider.to_string(),
     }
+}
+
+/// Panel item `kind` ("video" / "hls" / "dash" / "audio" / "image" / "doc")
+/// from a response Content-Type — so a stream URL with no file extension
+/// (`…/api/stream?t=…` served as `application/vnd.apple.mpegurl`) still shows a
+/// video icon and sorts under the right type filter.
+fn kind_from_content_type(ct: Option<&str>) -> Option<&'static str> {
+    let ct = ct?.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    Some(match ct.as_str() {
+        _ if ct.starts_with("image/") => "image",
+        _ if ct.contains("mpegurl") => "hls",
+        _ if ct.contains("dash+xml") || ct.contains("ms-sstr+xml") => "dash",
+        _ if ct.starts_with("video/") => "video",
+        _ if ct.starts_with("audio/") => "audio",
+        _ if ct.contains("pdf") => "doc",
+        _ => return None,
+    })
 }
 
 /// A friendly one-line label for a *page* detection (a yt-dlp watch page, an
@@ -460,6 +490,7 @@ async fn video_list(state: &AppState) -> Vec<VideoListItem> {
                 m.is_image,
                 m.is_page,
                 &m.provider,
+                m.kind_hint.as_deref(),
             )
         })
         .collect()
@@ -715,7 +746,7 @@ async fn ensure_page_detection(
         if let Some(t) = update {
             existing.page_title = Some(t.to_string());
             let refreshed = to_video_list_item(
-                &existing.id, url, Some(url), Some(t), Some(url), false, true, &provider,
+                &existing.id, url, Some(url), Some(t), Some(url), false, true, &provider, None,
             );
             if let Some(tx) = &state.config.on_new_detection {
                 let _ = tx.send(refreshed.clone());
@@ -725,7 +756,8 @@ async fn ensure_page_detection(
         return None;
     }
     let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
-    let item = to_video_list_item(&id, url, Some(url), title.as_deref(), Some(url), false, true, &provider);
+    let item =
+        to_video_list_item(&id, url, Some(url), title.as_deref(), Some(url), false, true, &provider, None);
     if let Some(tx) = &state.config.on_new_detection {
         let _ = tx.send(item.clone());
     }
@@ -740,6 +772,7 @@ async fn ensure_page_detection(
         user_agent: None,
         is_image: false,
         is_page: true,
+        kind_hint: None,
         provider,
     });
     Some(item)
@@ -1423,7 +1456,9 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
             if !detected.iter().any(|m| m.url == req.url) {
                 let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
                 tracing::info!(url = %req.url, %id, "detected media from browser extension");
-                let is_image = looks_like_image(first_header(&req.response_headers, "content-type"), &req.url);
+                let ct = first_header(&req.response_headers, "content-type");
+                let is_image = looks_like_image(ct, &req.url);
+                let kind_hint = kind_from_content_type(ct).map(str::to_string);
                 new_item = Some(to_video_list_item(
                     &id,
                     &req.url,
@@ -1433,6 +1468,7 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
                     is_image,
                     false,
                     &provider,
+                    kind_hint.as_deref(),
                 ));
                 if let Some(item) = &new_item {
                     if let Some(tx) = &state.config.on_new_detection {
@@ -1450,6 +1486,7 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
                     user_agent: req.user_agent,
                     is_image,
                     is_page: false,
+                    kind_hint,
                     provider,
                 });
             }
@@ -1505,7 +1542,7 @@ async fn vid(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespon
                         tokio::spawn(async move {
                             let ctx = preview_ctx_for(&media);
                             let client = state.manager.http_client();
-                            if let Some((data_url, kind)) = build_preview(&state, &client, &media.url, &ctx).await {
+                            if let Ok((data_url, kind)) = build_preview(&state, &client, &media.url, &ctx).await {
                                 state
                                     .preview_cache
                                     .lock()
@@ -1592,6 +1629,11 @@ const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 /// atom + a keyframe; if the moov is at the tail, we fall back to letting ffmpeg
 /// fetch the URL itself. Kept small so the preview lands in a couple of seconds.
 const MAX_FFMPEG_INPUT_BYTES: usize = 3 * 1024 * 1024;
+/// When the small prefix can't be decoded (non-faststart mp4, or the host
+/// rejects ffmpeg's own fetch), pull up to this much of the file through the
+/// emulated client and decode from bytes. Bounded so a handful of concurrent
+/// previews can't blow memory.
+const MAX_PROGRESSIVE_FETCH_BYTES: usize = 64 * 1024 * 1024;
 /// Hard ceiling on a single ffmpeg thumbnail attempt.
 const FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 /// Sent to ffmpeg when the detection captured no User-Agent, so CDNs that reject
@@ -1647,12 +1689,19 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
         return Json(preview_response(video_list(&state).await, result));
     }
 
-    let result = build_preview(&state, &client, &media.url, &ctx).await;
-    if result.is_none() {
-        tracing::warn!(url = %media.url, "no preview available");
+    match build_preview(&state, &client, &media.url, &ctx).await {
+        Ok(p) => {
+            state.preview_cache.lock().await.insert(media.url.clone(), Some(p.clone()));
+            Json(preview_response(video_list(&state).await, Some(p)))
+        }
+        Err(reason) => {
+            tracing::warn!(url = %media.url, %reason, "no preview available");
+            // Don't cache the miss — a later scroll-into-view retries.
+            let mut resp = default_sync_response(video_list(&state).await);
+            resp.preview_error = Some(reason);
+            Json(resp)
+        }
     }
-    state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
-    Json(preview_response(video_list(&state).await, result))
 }
 
 fn is_page_host(url: &str, page_hosts: &[String]) -> bool {
@@ -1719,7 +1768,12 @@ async fn fetch_image_data_url(client: &HttpClient, url: &str) -> Option<Preview>
     Some((data_url(&ct, &bytes), "image"))
 }
 
-async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &RequestContext) -> Option<Preview> {
+async fn build_preview(
+    state: &AppState,
+    client: &HttpClient,
+    url: &str,
+    ctx: &RequestContext,
+) -> Result<Preview, String> {
     // One request through the Chrome-emulated client. Its headers classify the
     // target; its body feeds whichever path applies.
     let mut response = match client.get_response(url, &ctx.to_options(Some((0, MAX_PDF_BYTES)))).await {
@@ -1729,6 +1783,9 @@ async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &R
             None
         }
     };
+    let mut fetch_err = response
+        .is_none()
+        .then(|| "couldn't reach the media host".to_string());
     let mut content_type = String::new();
     if let Some(r) = response.as_ref() {
         let status = r.status();
@@ -1743,6 +1800,7 @@ async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &R
             content_type = ct;
         } else {
             tracing::warn!(%url, %status, "preview: non-success response");
+            fetch_err = Some(format!("media host returned HTTP {}", status.as_u16()));
             response = None;
         }
     }
@@ -1753,21 +1811,23 @@ async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &R
             return read_capped(resp, MAX_IMAGE_BYTES as usize)
                 .await
                 .filter(|b| !b.is_empty())
-                .map(|b| (data_url(&content_type, &b), "image"));
+                .map(|b| (data_url(&content_type, &b), "image"))
+                .ok_or_else(|| "image body was empty".to_string());
         }
         if is_pdf(&content_type, url) {
             return read_capped(resp, MAX_PDF_BYTES as usize)
                 .await
                 .filter(|b| !b.is_empty())
-                .map(|b| (data_url("application/pdf", &b), "pdf"));
+                .map(|b| (data_url("application/pdf", &b), "pdf"))
+                .ok_or_else(|| "PDF body was empty".to_string());
         }
     }
 
-    let _slot = state.ffmpeg_slots.acquire().await.ok()?;
+    let _slot = state.ffmpeg_slots.acquire().await.map_err(|_| "preview worker unavailable".to_string())?;
 
     // Progressive video/audio: pull a prefix ourselves (past the CDN) and decode
     // it. If that yields nothing (e.g. a non-faststart mp4 with a trailing moov),
-    // fall through to letting ffmpeg fetch the whole URL.
+    // fall through to a bounded full fetch, then to ffmpeg opening the URL.
     let progressive = content_type.starts_with("video/")
         || content_type.starts_with("audio/")
         || PROGRESSIVE_EXTS.iter().any(|e| url_ends_with(url, e));
@@ -1776,7 +1836,7 @@ async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &R
             match read_capped(resp, MAX_FFMPEG_INPUT_BYTES).await {
                 Some(head) if !head.is_empty() => {
                     if let Some(frame) = ffmpeg_frame_from_bytes(&head).await {
-                        return Some((data_url("image/jpeg", &frame), "video"));
+                        return Ok((data_url("image/jpeg", &frame), "video"));
                     }
                     tracing::warn!(%url, prefix_bytes = head.len(), "preview: ffmpeg could not decode the fetched prefix");
                 }
@@ -1788,21 +1848,60 @@ async fn build_preview(state: &AppState, client: &HttpClient, url: &str, ctx: &R
     }
     drop(response);
 
+    // Prefix decode failed (non-faststart mp4 with a tail moov) or the host
+    // rejects ffmpeg's own fetch (Cloudflare TLS fingerprint). Pull the file —
+    // bounded — through the emulated client and decode from bytes.
+    if progressive {
+        match client.get_response(url, &ctx.to_options(None)).await {
+            Ok(mut full) => {
+                let st = full.status();
+                if st.is_success() {
+                    match read_capped(&mut full, MAX_PROGRESSIVE_FETCH_BYTES).await {
+                        Some(bytes) if !bytes.is_empty() => {
+                            if let Some(frame) = ffmpeg_frame_from_bytes(&bytes).await {
+                                return Ok((data_url("image/jpeg", &frame), "video"));
+                            }
+                            tracing::warn!(%url, bytes = bytes.len(), "preview: ffmpeg could not decode the full fetch");
+                            fetch_err = Some(format!(
+                                "downloaded {} MB but ffmpeg found no decodable video",
+                                bytes.len() / 1_048_576
+                            ));
+                        }
+                        _ => fetch_err = Some("media body was empty".to_string()),
+                    }
+                } else {
+                    fetch_err = Some(format!("media host returned HTTP {}", st.as_u16()));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%url, error = %e, "preview: full fetch failed");
+                fetch_err = Some("couldn't download the media for a thumbnail".to_string());
+            }
+        }
+    }
+
     // HLS: fetch the playlist and one segment ourselves, through the
     // Chrome-emulated client, so Cloudflare-gated hosts (which reject ffmpeg's
-    // TLS fingerprint even with the cf_clearance cookie) still preview.
-    if url_ends_with(url, "m3u8") {
+    // TLS fingerprint even with the cf_clearance cookie) still preview. Match on
+    // the Content-Type too — a stream URL is often `…/api/stream?t=…` with no
+    // `.m3u8` suffix.
+    if url_ends_with(url, "m3u8") || content_type.contains("mpegurl") {
         if let Some(seg) = hls_first_segment_bytes(client, ctx, url).await {
             if let Some(frame) = ffmpeg_frame_from_bytes(&seg).await {
-                return Some((data_url("image/jpeg", &frame), "video"));
+                return Ok((data_url("image/jpeg", &frame), "video"));
             }
+            fetch_err = Some("could not decode the first HLS segment".to_string());
+        } else {
+            fetch_err = Some("could not fetch the HLS playlist / a segment".to_string());
         }
     }
 
     // Last resort (DASH, or HLS the above couldn't handle): ffmpeg opens the URL
     // directly with the detection's headers.
-    let frame = ffmpeg_frame_from_url(url, ctx).await?;
-    Some((data_url("image/jpeg", &frame), "video"))
+    match ffmpeg_frame_from_url(url, ctx).await {
+        Some(frame) => Ok((data_url("image/jpeg", &frame), "video")),
+        None => Err(fetch_err.unwrap_or_else(|| "no decodable video frame in this source".to_string())),
+    }
 }
 
 /// Pull an HLS playlist and its first segment (init segment prepended for fMP4,
@@ -2177,6 +2276,7 @@ mod tests {
             false,
             false,
             "Lüdd",
+            None,
         );
         assert_eq!(item.info, "My Cool Video.mp4");
         assert_eq!(item.url, "https://cdn.example/abc123.mp4?token=secret");
@@ -2185,9 +2285,22 @@ mod tests {
 
     #[test]
     fn video_list_item_falls_back_to_url_derived_name_without_a_title() {
-        let item = to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None, false, false, "Lüdd");
+        let item =
+            to_video_list_item("v1", "https://cdn.example/movie.mkv", None, None, None, false, false, "Lüdd", None);
         assert_eq!(item.info, "movie.mkv");
         assert_eq!(item.page_url, None);
+    }
+
+    #[test]
+    fn kind_from_content_type_recognises_extensionless_streams() {
+        assert_eq!(kind_from_content_type(Some("application/vnd.apple.mpegurl")), Some("hls"));
+        assert_eq!(kind_from_content_type(Some("application/x-mpegURL; charset=utf-8")), Some("hls"));
+        assert_eq!(kind_from_content_type(Some("application/dash+xml")), Some("dash"));
+        assert_eq!(kind_from_content_type(Some("video/mp4")), Some("video"));
+        assert_eq!(kind_from_content_type(Some("audio/mpeg")), Some("audio"));
+        assert_eq!(kind_from_content_type(Some("image/webp")), Some("image"));
+        assert_eq!(kind_from_content_type(Some("text/html")), None);
+        assert_eq!(kind_from_content_type(None), None);
     }
 
     #[test]

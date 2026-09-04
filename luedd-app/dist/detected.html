@@ -635,8 +635,8 @@
   }
 
   async function loadPreview(item, col) {
-    if (col.dataset.loaded) return;
-    col.dataset.loaded = "1";
+    if (col.dataset.loaded || col.dataset.loading) return;
+    col.dataset.loading = "1";
     if (isSquarePreview(item)) col.classList.add("preview-square");
     col.innerHTML = iconFor(item); // placeholder while /preview is in flight
 
@@ -644,9 +644,18 @@
     if (data === undefined) {
       const res = await post("/preview", { vid: item.id });
       data = (res && res.previewDataUrl) ? { url: res.previewDataUrl, kind: res.previewKind || "image" } : null;
-      previewCache.set(item.id, data);
+      // a miss isn't cached server-side (so scroll-away/back retries); mirror that
+      if (data) previewCache.set(item.id, data);
+      if (!data && res && res.previewError) {
+        col.title = "No preview: " + res.previewError;
+        col.classList.add("preview-failed");
+        console.warn("[preview]", item.url, "->", res.previewError);
+      }
     }
-    if (!data) return; // no preview available - keep the placeholder icon
+    delete col.dataset.loading;
+    if (!data) return; // no preview available - keep the placeholder icon (retries on scroll)
+    col.dataset.loaded = "1";
+    col.title = ""; col.classList.remove("preview-failed");
 
     let el;
     if (data.kind === "pdf") {

@@ -1,3 +1,4 @@
+pub mod atomicfile;
 pub mod backend;
 pub mod ig_library;
 pub mod jobs;

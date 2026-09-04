@@ -65,11 +65,7 @@ impl SettingsStore {
     pub async fn set(&self, settings: Settings) -> Result<()> {
         *self.data.write().await = settings;
         let json = serde_json::to_vec_pretty(&*self.data.read().await)?;
-        if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&self.path, json).await?;
-        Ok(())
+        crate::atomicfile::write_atomic(&self.path, &json).await
     }
 }
 

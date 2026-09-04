@@ -29,13 +29,8 @@ impl DownloadStore {
     }
 
     async fn save(&self) -> Result<()> {
-        let data = self.data.read().await;
-        let json = serde_json::to_vec_pretty(&*data)?;
-        if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&self.path, json).await?;
-        Ok(())
+        let json = serde_json::to_vec_pretty(&*self.data.read().await)?;
+        crate::atomicfile::write_atomic(&self.path, &json).await
     }
 
     pub async fn add_entry(&self, entry: DownloadEntry) -> Result<()> {
