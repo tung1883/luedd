@@ -145,6 +145,11 @@ async fn run_tracked(
     config: BackendConfig,
 ) {
     let id = entry.id.clone();
+    // Claim it atomically. Loses the race (already Downloading, or two sweeps
+    // hit it at once) -> don't start a second transfer for the same entry.
+    if !store.try_claim(&id).await.unwrap_or(false) {
+        return;
+    }
     let handle = tokio::spawn(async move {
         run_single(&store, &client, entry, concurrency, &registry, &config).await;
     });
@@ -179,18 +184,14 @@ async fn run_single(
         while let Some(event) = progress_rx.recv().await {
             match event {
                 luedd_net::JobEvent::Progress { downloaded_bytes, total_bytes, done_units, total_units, speed_bps } => {
+                    // In-memory only; the scheduler flushes it to disk on a
+                    // timer. Avoids a full downloads.json rewrite per tick.
                     progress_store
-                        .update_entry(&progress_id, |e| {
-                            e.progress = Some(DownloadProgress {
-                                downloaded_bytes,
-                                total_bytes,
-                                done_units,
-                                total_units,
-                                speed_bps,
-                            })
-                        })
-                        .await
-                        .ok();
+                        .set_progress(
+                            &progress_id,
+                            DownloadProgress { downloaded_bytes, total_bytes, done_units, total_units, speed_bps },
+                        )
+                        .await;
                 }
                 luedd_net::JobEvent::Converting => {
                     progress_store
@@ -230,6 +231,7 @@ async fn run_single(
             let mut files = outcome.files;
             let final_dest = if files.is_empty() { entry.dest.clone() } else { files.remove(0) };
             let meta = outcome.meta;
+            let expected = outcome.expected_units.map(|n| n as u32);
             store
                 .update_entry(&entry.id, |e| {
                     e.status = DownloadStatus::Finished;
@@ -237,6 +239,7 @@ async fn run_single(
                     e.next_retry_at = None;
                     e.dest = final_dest.clone();
                     e.extra_files = files.clone();
+                    e.expected_files = expected;
                     if meta.author.is_some() {
                         e.author = meta.author.clone();
                     }

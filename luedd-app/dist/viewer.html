@@ -66,7 +66,67 @@
   .phead .plink { font-size: 12px; margin-top: 4px; }
   .phead .pstats { display: flex; gap: 16px; margin-top: 10px; font-size: 12px; color: var(--dim); }
   .phead .pstats b { color: var(--text); }
-  .phead .pdl { margin-top: 12px; }
+  .phead .pdl { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .dlbtn { display: inline-flex; align-items: center; gap: 7px; position: relative; overflow: hidden;
+    background: var(--accent); color: var(--bg); border: 0; border-radius: 7px; cursor: pointer;
+    font: 600 12.5px/1 inherit; padding: 9px 15px; font-variant-numeric: tabular-nums; }
+  .dlbtn svg { width: 13px; height: 13px; flex-shrink: 0; position: relative; }
+  .dlbtn.ghost2 { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+  .dlbtn.st-run { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); min-width: 132px; }
+  .dlbtn.st-done { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 500; }
+  .dlbtn .fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(79,208,138,.18); }
+  .pdl .dldone { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--good); font-weight: 600; margin-left: auto; }
+  .pdl .dldone svg { width: 13px; height: 13px; }
+
+  .pfilt { display: inline-flex; gap: 5px; margin-left: auto; }
+  .pfilt[hidden] { display: none; }
+  .pfc { font: 500 10px/1 var(--sans); text-transform: none; letter-spacing: 0; padding: 4px 9px;
+    border-radius: 999px; border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); cursor: pointer; }
+  .pfc:hover { color: var(--text); }
+  .pfc.on { border-color: var(--accent); color: var(--text); background: rgba(79,163,216,.12); }
+  .pfc.sel-t.on { border-color: var(--good); background: rgba(79,208,138,.14); }
+
+  /* multi-select */
+  .selbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 18px 0;
+    padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2);
+    font-size: 11px; color: var(--dim); }
+  .selbar[hidden] { display: none; }
+  .selbar b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .selbar .sp { flex: 1; }
+  .selbar button { font: 600 10.5px/1 inherit; padding: 6px 10px; border-radius: 5px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text); cursor: pointer; }
+  .selbar button.pri { background: var(--accent); color: var(--bg); border: 0; }
+  .selbar button:disabled { opacity: .45; cursor: default; }
+  .grid.selmode { user-select: none; -webkit-user-select: none; }
+  .grid.selmode .cell { cursor: pointer; }
+  .grid.selmode img { -webkit-user-drag: none; }
+  .grid.selmode .cell .grab { display: none !important; }
+  .grid.selmode .cell.sel { outline: 2px solid var(--good); outline-offset: -2px; }
+  .grid.selmode .cell.sel::before { content: "✓"; position: absolute; z-index: 4; right: 3px; top: 3px;
+    width: 15px; height: 15px; border-radius: 50%; background: var(--good); color: #06301c;
+    font-size: 10px; font-weight: 900; display: grid; place-items: center; }
+  .grid.selmode .cell.cur { box-shadow: inset 0 0 0 2px var(--accent); }
+  .marquee { position: absolute; z-index: 20; border: 1px solid var(--accent);
+    background: rgba(79,163,216,.14); pointer-events: none; }
+
+  .cell .grab { position: absolute; right: 4px; bottom: 4px; z-index: 3; width: 18px; height: 18px; padding: 0;
+    border-radius: 5px; border: 0; background: rgba(0,0,0,.6); color: #fff; display: none;
+    place-items: center; cursor: pointer; }
+  .cell .grab svg { width: 11px; height: 11px; display: block; }
+  .cell:hover .grab { display: grid; }
+  .cell[hidden] { display: none; }
+
+  .cell .cst { position: absolute; left: 4px; top: 4px; width: 15px; height: 15px; border-radius: 50%;
+    display: grid; place-items: center; box-shadow: 0 0 0 2px rgba(0,0,0,.3); z-index: 2; }
+  .cell .cst svg { width: 9px; height: 9px; }
+  .cst.done { background: var(--good); color: #06301c; }
+  .cst.failed { background: var(--bad); color: #3a0f0d; cursor: pointer; }
+  .cst.partial { background: var(--warn); color: #3a2504; cursor: pointer; }
+  .cst.ring { background: conic-gradient(var(--warn) var(--p,40%), rgba(255,255,255,.16) 0); }
+  .cst.ring::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--surface-2); }
+  .cell.qd::after { content: ""; position: absolute; inset: 0; z-index: 1;
+    background: repeating-linear-gradient(-45deg, transparent 0 6px, rgba(255,255,255,.035) 6px 12px); }
+  .btn2.ok { background: transparent; border: 1px solid #2f6f4f; color: var(--good); cursor: default; }
 
   .sec { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); padding: 12px 18px 5px;
     display: flex; align-items: center; gap: 10px; }
@@ -82,9 +142,11 @@
   .ring .rd img { width: 100%; height: 100%; object-fit: cover; }
   .ring .rl { font-size: 9px; color: var(--dim); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 3px; padding: 3px 18px 14px; }
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 3px; padding: 3px 18px 14px; position: relative; }
   .cell { position: relative; aspect-ratio: 1; background: var(--surface-2); border-radius: 3px; overflow: hidden; cursor: pointer;
-    display: flex; align-items: center; justify-content: center; color: var(--dim); }
+    display: flex; align-items: center; justify-content: center; color: var(--dim);
+    /* let the engine skip layout+paint for off-screen tiles */
+    content-visibility: auto; contain-intrinsic-size: 90px 90px; }
   .cell img { width: 100%; height: 100%; object-fit: cover; }
   .cell.ph { aspect-ratio: auto; height: 0; padding-bottom: 100%; }
   .morewrap { display: flex; justify-content: center; padding: 8px 18px 18px; }
@@ -330,7 +392,7 @@
   let igIncomplete = false;
 
   // ---- profile detail ----
-  let postsCursor = null, postsLoading = false, postsDone = false, postsObserver = null;
+  let postsCursor = null, postsLoading = false, postsDone = false, postsErr = false, postsObserver = null;
 
   async function openProfile(username) {
     currentUser = username;
@@ -338,7 +400,10 @@
     backBtn.style.display = "flex"; headTitle.textContent = "@" + username;
     document.getElementById("search").style.display = "none";
     document.getElementById("scroll").scrollTop = 0;
-    postsCursor = null; postsLoading = false; postsDone = false;
+    postsCursor = null; postsLoading = false; postsDone = false; postsErr = false;
+    archState = null; clearTimeout(archTimer);
+    localShown = new Set();
+    tileMarks = {}; lastDoneKey = "";
     if (postsObserver) { postsObserver.disconnect(); postsObserver = null; }
 
     // fixed section order via placeholders + first-load skeletons
@@ -352,43 +417,81 @@
       +   `</div></div>`
       + `<div id="p-story" class="sec-block" hidden></div>`
       + `<div id="p-hl" class="sec-block" hidden></div>`
-      + `<div id="p-posts"><div class="sec"><span>${esc(L("viewer_posts"))}</span></div><div class="grid" id="posts-grid">`
+      + `<div id="p-posts"><div class="sec"><span>${esc(L("viewer_posts"))}</span>`
+      +   `<span class="pfilt" id="pfilt" hidden>`
+      +     `<button class="pfc on" data-f="all">${esc(L("archv_f_all"))}</button>`
+      +     `<button class="pfc" data-f="disk">${esc(L("archv_f_disk"))}</button>`
+      +     `<button class="pfc" data-f="missing">${esc(L("archv_f_missing"))}</button>`
+      +     `<button class="pfc sel-t" id="seltoggle">${esc(L("archv_select"))}</button>`
+      +   `</span></div>`
+      +   `<div id="selbar" class="selbar" hidden></div>`
+      +   `<div id="posts-grid" class="grid" style="padding:3px 18px 14px">`
       +   Array.from({ length: 9 }, () => `<div class="cell ph sk"></div>`).join("")
       +   `</div><div class="morewrap"><button id="posts-more" class="ghost" hidden></button></div></div>`;
 
-    const p = await post("/ig/profile", { username });
-    if (username !== currentUser) return;
-    if (!p) { profileEl.innerHTML = `<div class="empty">${esc(L("cant_reach"))}</div>`; return; }
-    const h = p.header || { username };
-
-    // header
     const stat = (n, lbl) => `<span><b>${fmtNum(n)}</b> ${esc(lbl)}</span>`;
     const hd = document.getElementById("p-head");
-    hd.className = "phead";
-    hd.innerHTML = `<div class="pav"><span>${esc((username[0] || "?").toUpperCase())}</span></div>`
-      + `<div class="pmeta"><div class="prow1"><span class="puser">@${esc(h.username || username)}</span>`
-      +   (h.is_verified ? `<span class="pverif" title="verified">✔</span>` : "")
-      +   (h.is_private ? `<span class="pbadge">${esc(L("viewer_private"))}</span>` : "") + `</div>`
-      +   (h.full_name ? `<div class="pname">${esc(h.full_name)}</div>` : "")
-      +   (h.biography ? `<div class="pbio">${esc(h.biography)}</div>` : "")
-      +   (h.external_url ? `<div class="plink"><a href="#" id="p-ext">${esc(h.external_url)}</a></div>` : "")
-      +   (h.complete ? `<div class="pstats">${stat(h.post_count, L("viewer_posts_n"))}${stat(h.follower_count, L("viewer_followers"))}${stat(h.following_count, L("viewer_following"))}</div>` : "")
-      +   `<div class="pdl"><button id="dl-profile">${esc(L("viewer_dl_profile"))}</button></div></div>`;
-    if (h.profile_pic_url) {
-      avatarCache.set(username, h.profile_pic_url);
-      const pav = hd.querySelector(".pav");
-      pav.innerHTML = `<img src="${esc(img(h.profile_pic_url))}" alt="">`;
-      pav.classList.add("clickable");
-      pav.addEventListener("click", () => {
-        openOverlay([{ media_url: h.profile_pic_url, thumb_url: h.profile_pic_url, is_video: false }],
-          `https://www.instagram.com/${username}/`, h.full_name || "@" + username, "@" + username);
-      });
+
+    // Paint what we can with ZERO network first: a bare header + the on-disk
+    // grid. The live /ig/profile call only enriches this; it never blocks or
+    // replaces it (IG rate-limits web_profile_info hard).
+    function paintHeader(h, opts) {
+      opts = opts || {};
+      hd.className = "phead";
+      hd.innerHTML = `<div class="pav"><span>${esc((username[0] || "?").toUpperCase())}</span></div>`
+        + `<div class="pmeta"><div class="prow1"><span class="puser">@${esc(h.username || username)}</span>`
+        +   (h.is_verified ? `<span class="pverif" title="verified">✔</span>` : "")
+        +   (h.is_private ? `<span class="pbadge">${esc(L("viewer_private"))}</span>` : "") + `</div>`
+        +   (h.full_name ? `<div class="pname">${esc(h.full_name)}</div>` : "")
+        +   (h.biography ? `<div class="pbio">${esc(h.biography)}</div>` : "")
+        +   (h.external_url ? `<div class="plink"><a href="#" id="p-ext">${esc(h.external_url)}</a></div>` : "")
+        +   (h.complete ? `<div class="pstats">${stat(h.post_count, L("viewer_posts_n"))}${stat(h.follower_count, L("viewer_followers"))}${stat(h.following_count, L("viewer_following"))}</div>` : "")
+        +   `<div class="pdl" id="pdl"></div></div>`;
+      if (h.profile_pic_url) {
+        avatarCache.set(username, h.profile_pic_url);
+        const pav = hd.querySelector(".pav");
+        pav.innerHTML = `<img src="${esc(img(h.profile_pic_url))}" alt="">`;
+        pav.classList.add("clickable");
+        pav.addEventListener("click", () => {
+          openOverlay([{ media_url: h.profile_pic_url, thumb_url: h.profile_pic_url, is_video: false }],
+            `https://www.instagram.com/${username}/`, h.full_name || "@" + username, "@" + username);
+        });
+      } else if (avatarCache.get(username)) {
+        const pav = hd.querySelector(".pav");
+        pav.innerHTML = `<img src="${esc(img(avatarCache.get(username)))}" alt="">`;
+      }
+      const ext = hd.querySelector("#p-ext");
+      if (ext) ext.addEventListener("click", e => { e.preventDefault(); try { window.__TAURI__.core.invoke("open_external_url", { url: h.external_url }); } catch (_) {} });
+      document.getElementById("p-note")?.remove();
+      const note = opts.offline ? L("viewer_offline_disk_only")
+        : opts.needLogin ? L("viewer_need_login")
+        : opts.rateLimited ? L("viewer_rate_limited") : null;
+      if (note) hd.insertAdjacentHTML("afterend", `<div class="empty note" id="p-note" style="padding:8px 18px">${esc(note)}</div>`);
+      paintArch(username);
     }
-    hd.querySelector("#dl-profile").addEventListener("click", () => queue(`https://www.instagram.com/${username}/`));
-    const ext = hd.querySelector("#p-ext");
-    if (ext) ext.addEventListener("click", e => { e.preventDefault(); try { window.__TAURI__.core.invoke("open_external_url", { url: h.external_url }); } catch (_) {} });
-    if (p.cookie === false) hd.insertAdjacentHTML("afterend", `<div class="empty note" style="padding:8px 18px">${esc(L("viewer_need_login"))}</div>`);
-    else if (!h.complete) hd.insertAdjacentHTML("afterend", `<div class="empty note" style="padding:8px 18px">${esc(L("viewer_rate_limited"))}</div>`);
+
+    paintHeader({ username });
+    refreshArch(username);
+
+    // posts UI + on-disk grid — no /ig/profile dependency
+    document.getElementById("posts-more").addEventListener("click", () => loadMorePosts(username));
+    document.getElementById("pfilt").addEventListener("click", e => {
+      const b = e.target.closest(".pfc"); if (!b) return;
+      if (b.id === "seltoggle") { toggleSelMode(username); return; }
+      pfilt = b.dataset.f;
+      document.querySelectorAll("#pfilt .pfc[data-f]").forEach(x => x.classList.toggle("on", x === b));
+      applyPfilt();
+    });
+    initSelDrag(username);
+    loadDownloadedPosts(username).finally(() => loadMorePosts(username));
+
+    // enrich with the live profile in the background
+    post("/ig/profile", { username }).then(p => {
+      if (username !== currentUser) return;
+      if (!p) { paintHeader({ username }, { offline: true }); return; }
+      const h = p.header || { username };
+      paintHeader(h, { needLogin: p.cookie === false, rateLimited: p.cookie !== false && !h.complete });
+    });
 
     // story - stays hidden until /ig/story confirms an active story
     {
@@ -427,18 +530,75 @@
       }
     });
 
-    // posts - first page auto, then an explicit "load more" button
-    const moreBtn = document.getElementById("posts-more");
-    moreBtn.addEventListener("click", () => loadMorePosts(username));
-    loadMorePosts(username);
+  }
+
+  let localShown = new Set();
+  let dlMap = {};            // shortcode -> { files:[...], is_video }
+  let pfilt = "all";
+
+  const IC_GRAB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>';
+
+  // one grid cell, with a hover "grab this post" button
+  function mkCell(username, sc, thumbHtml, badgeHtml, onOpen) {
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    cell.dataset.sc = sc;
+    cell.innerHTML = thumbHtml + badgeHtml
+      + `<button class="grab" title="${esc(L("archv_grab"))}">${IC_GRAB}</button>`;
+    cell.querySelector(".grab").addEventListener("click", e => { e.stopPropagation(); grabPost(username, sc); });
+    cell.addEventListener("click", e => {
+      if (selMode) { e.preventDefault(); e.stopPropagation(); toggleSel(cell, e.shiftKey); return; }
+      onOpen(e);
+    });
+    return cell;
+  }
+
+  async function loadDownloadedPosts(username) {
+    const d = await get("/ig/downloaded?username=" + encodeURIComponent(username));
+    if (username !== currentUser || !d || !(d.posts || []).length) return;
+    const grid = document.getElementById("posts-grid");
+    if (!grid) return;
+    if (!grid.dataset.filled) { grid.innerHTML = ""; grid.dataset.filled = "1"; }
+    for (const pm of d.posts) {
+      localShown.add(pm.shortcode);
+      dlMap[pm.shortcode] = { files: pm.files || [], is_video: pm.is_video };
+      const src = pm.thumb ? `${APP}/ig/file?path=${encodeURIComponent(pm.thumb)}` : null;
+      const thumb = src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : `<span>${IC_REEL}</span>`;
+      const badge = pm.is_video ? `<span class="badge">${IC_REEL}</span>`
+        : (pm.files || []).length > 1 ? `<span class="badge">${IC_CAROUSEL}</span>` : "";
+      grid.appendChild(mkCell(username, pm.shortcode, thumb, badge, () => openLocalPost(username, pm)));
+    }
+    document.getElementById("pfilt").hidden = false;
+    paintArch(username);
+    applyPfilt();
+  }
+
+  function openLocalPost(username, pm) {
+    const frames = (pm.files || []).map(f => {
+      const u = `${APP}/ig/file?path=${encodeURIComponent(f)}`;
+      return { media_url: u, thumb_url: u, is_video: /\.(mp4|m4v|webm|mov|mkv)$/i.test(f) };
+    });
+    if (frames.length) openOverlay(frames, pm.url || "", "", L("viewer_posts"), false,
+      { shortcode: pm.shortcode, downloaded: true, files: pm.files || [] });
+  }
+
+  function applyPfilt() {
+    const s = archState || {};
+    const done = new Set(s.done || []);
+    document.querySelectorAll("#posts-grid .cell[data-sc]").forEach(c => {
+      const on = pfilt === "all"
+        || (pfilt === "disk" && done.has(c.dataset.sc))
+        || (pfilt === "missing" && !done.has(c.dataset.sc));
+      c.hidden = !on;
+    });
   }
 
   function updateMoreBtn() {
     const b = document.getElementById("posts-more");
     if (!b) return;
     b.disabled = postsLoading;
-    b.textContent = postsLoading ? "…" : L("viewer_load_more");
-    b.hidden = postsDone || (!postsCursor && !postsLoading);
+    b.textContent = postsLoading ? "…" : postsErr ? L("viewer_retry") : L("viewer_load_more");
+    b.hidden = postsLoading ? false : (postsDone && !postsErr);
   }
 
   function fillRings(wrap, items, onClick) {
@@ -453,33 +613,321 @@
 
   async function loadMorePosts(username) {
     if (postsLoading || postsDone || username !== currentUser) return;
-    postsLoading = true; updateMoreBtn();
-    const r = await post("/ig/posts", { username, after: postsCursor || undefined });
-    postsLoading = false;
-    if (username !== currentUser) return;
+    postsLoading = true; postsErr = false; updateMoreBtn();
     const grid = document.getElementById("posts-grid");
-    if (!grid) { return; }
-    if (!r || r.error) {
-      if (!grid.dataset.filled) { grid.innerHTML = ""; grid.dataset.filled = "1"; }
-      if (r && r.error && !grid.children.length) grid.insertAdjacentHTML("afterend", `<div class="empty note">${esc(r.error)}</div>`);
-      postsDone = true; updateMoreBtn(); return;
-    }
+    if (!grid) { postsLoading = false; return; }
     if (!grid.dataset.filled) { grid.innerHTML = ""; grid.dataset.filled = "1"; }
-    for (const pm of r.posts || []) {
-      const cell = document.createElement("div"); cell.className = "cell";
-      cell.innerHTML = (pm.thumb_url ? `<img src="${esc(img(pm.thumb_url))}" alt="" loading="lazy">` : "")
-        + (pm.is_video ? `<span class="badge">${IC_REEL}</span>` : pm.is_carousel ? `<span class="badge">${IC_CAROUSEL}</span>` : "");
-      cell.addEventListener("click", () => openPost(pm));
-      grid.appendChild(cell);
+
+    // One click should yield visible posts even when a whole page is already
+    // on disk (dedup-skipped) — keep pulling pages until something new lands
+    // or we run out. Capped so a click never walks the whole profile.
+    let addedNew = 0;
+    for (let hop = 0; hop < 2 && !postsDone; hop++) {
+      let r = null;
+      try {
+        const ctl = new AbortController();
+        const to = setTimeout(() => ctl.abort(), 45000);
+        r = await (await fetch(APP + "/ig/posts", {
+          method: "POST", body: JSON.stringify({ username, after: postsCursor || undefined }), signal: ctl.signal,
+        })).json();
+        clearTimeout(to);
+      } catch (_) { r = { error: L("viewer_rate_limited") }; }
+      if (username !== currentUser) { postsLoading = false; return; }
+      if (!r || r.error) { postsErr = true; break; }
+
+      for (const pm of (r.posts || [])) {
+        if (localShown.has(pm.shortcode)) continue;
+        localShown.add(pm.shortcode);
+        addedNew++;
+        const thumb = pm.thumb_url ? `<img src="${esc(img(pm.thumb_url))}" alt="" loading="lazy">` : "";
+        const badge = pm.is_video ? `<span class="badge">${IC_REEL}</span>`
+          : pm.is_carousel ? `<span class="badge">${IC_CAROUSEL}</span>` : "";
+        grid.appendChild(mkCell(username, pm.shortcode, thumb, badge, () => openPost(pm)));
+      }
+      postsCursor = r.next || null;
+      if (!postsCursor) postsDone = true;
+      if (addedNew > 0) break;
     }
-    postsCursor = r.next || null;
-    if (!postsCursor) postsDone = true;
-    if (postsDone && !grid.children.length && !grid.dataset.noposts) {
+
+    postsLoading = false;
+    document.getElementById("pfilt").hidden = !grid.querySelector(".cell[data-sc]");
+    if (postsDone && !postsErr && !grid.querySelector(".cell[data-sc]") && !grid.dataset.noposts) {
       grid.dataset.noposts = "1";
-      grid.insertAdjacentHTML("afterend", `<div class="empty note">${esc(L("viewer_no_posts"))}</div>`);
+      grid.insertAdjacentHTML("afterend", `<div class="empty note" style="padding:10px 18px">${esc(L("viewer_no_posts"))}</div>`);
     }
+    if (postsErr && !grid.dataset.errnote) {
+      grid.dataset.errnote = "1";
+      grid.insertAdjacentHTML("afterend", `<div class="empty note" id="posts-errnote" style="padding:10px 18px">${esc(L("viewer_rate_limited"))}</div>`);
+    } else if (!postsErr) {
+      document.getElementById("posts-errnote")?.remove();
+      delete grid.dataset.errnote;
+    }
+    paintArch(username);
+    applyPfilt();
     updateMoreBtn();
   }
+
+  // ---- profile archive ----
+  let archState = null, archTimer = null;
+
+  async function archiveAction(username, action) {
+    // optimistic: flip the button now, and clear the stale entry lists that
+    // paintArch used to (mis)read, so the change shows before the POST returns.
+    archState = archState || {};
+    if (action === "all" || action === "recent" || action === "resume") {
+      archState.job = { state: "running", total: (archState.job && archState.job.total) || 0 };
+      archState.paused = [];
+    } else if (action === "stop") {
+      if (archState.job) archState.job.state = "paused";
+      archState.active = [];
+    } else if (action === "discard") {
+      archState.job = null;
+      archState.active = []; archState.paused = []; archState.failed = []; archState.partial = [];
+    }
+    paintButton(username);
+    await post("/ig/archive", { username, action });
+    for (let i = 0; i < 4; i++) {
+      await new Promise(r => setTimeout(r, 700));
+      if (username !== currentUser) return;
+      await refreshArch(username);
+    }
+  }
+  async function grabPost(username, sc) {
+    await post("/ig/archive", { username, action: "post", shortcode: sc });
+    setTimeout(() => refreshArch(username), 500);
+  }
+  async function refreshArch(username) {
+    if (username !== currentUser) return;
+    clearTimeout(archTimer);
+    const s = await get("/ig/archive-state?username=" + encodeURIComponent(username));
+    if (!s || username !== currentUser) return;
+    archState = s;
+    paintArch(username);
+    const busy = (s.job && s.job.state === "running")
+      || (s.active || []).length > 0 || (s.partial || []).length > 0;
+    if (busy) archTimer = setTimeout(() => refreshArch(username), 4000);
+  }
+
+  const IC_CHK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
+  const IC_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+  const IC_DL2 = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>';
+  const IC_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+  const IC_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+
+  // sc -> currently-rendered mark ("done"|"failed"|"ring"|"partial"|"") so a
+  // poll only touches the handful of tiles whose state actually changed.
+  let tileMarks = {};
+  let lastDoneKey = "";
+
+  function markOf(s, sc) {
+    if ((s.done || []).includes(sc)) return "done";
+    if ((s.partial || []).includes(sc)) return "partial";
+    if ((s.failed || []).includes(sc)) return "failed";
+    if ((s.active || []).includes(sc)) return "ring";
+    return "";
+  }
+
+  function paintTile(cell, username, mark) {
+    const sc = cell.dataset.sc;
+    cell.querySelector(".cst")?.remove();
+    cell.classList.toggle("qd", mark === "ring");
+    if (!mark) { tileMarks[sc] = ""; return; }
+    const ic = mark === "done" ? IC_CHK : mark === "failed" ? IC_X : mark === "partial" ? IC_X : "";
+    cell.insertAdjacentHTML("beforeend",
+      `<span class="cst ${mark}"${mark === "ring" ? ' style="--p:40%"' : ""}>${ic}</span>`);
+    if (mark === "failed" || mark === "partial") {
+      cell.querySelector(".cst").addEventListener("click", e => { e.stopPropagation(); grabPost(username, sc); });
+    }
+    tileMarks[sc] = mark;
+  }
+
+  function paintTiles(username) {
+    if (username !== currentUser) return;
+    const s = archState || {};
+    document.querySelectorAll("#posts-grid .cell[data-sc]").forEach(cell => {
+      const sc = cell.dataset.sc;
+      const want = markOf(s, sc);
+      if (tileMarks[sc] !== want) paintTile(cell, username, want);
+    });
+    // re-apply the filter only when the on-disk set actually shifted
+    const dk = (s.done || []).join(",");
+    if (dk !== lastDoneKey) { lastDoneKey = dk; applyPfilt(); }
+  }
+
+  function paintButton(username) {
+    if (username !== currentUser) return;
+    const s = archState || {};
+    const pdl = document.getElementById("pdl");
+    if (pdl && !selMode) {
+      const j = s.job;
+      const dn = (s.done || []).length;
+      // Button state follows the JOB only — never the stray entry lists — so a
+      // pause flips it instantly and a discard clears it cleanly.
+      const st = j ? j.state : null;
+      const total = (j && j.total) || null;
+      const fill = total ? Math.min(100, Math.round(100 * dn / total)) : 0;
+      pdl.className = "pdl";
+      const frac = dn + " / " + (total || "…");
+      if (st === "running") {
+        pdl.innerHTML = `<button class="dlbtn st-run" id="dl-pause"><span class="fill" style="width:${fill}%"></span>${IC_PAUSE}${esc(L("archv_pause"))} ${frac}</button>`;
+        pdl.querySelector("#dl-pause").onclick = () => archiveAction(username, "stop");
+      } else if (st === "paused") {
+        pdl.innerHTML = `<button class="dlbtn st-run" id="dl-resume"><span class="fill" style="width:${fill}%"></span>${IC_PLAY}${esc(L("archv_resume"))} ${frac}</button>`
+          + `<button class="dlbtn ghost2" id="dl-cancel">${esc(L("archv_discard"))}</button>`;
+        pdl.querySelector("#dl-resume").onclick = () => archiveAction(username, "resume");
+        pdl.querySelector("#dl-cancel").onclick = () => archiveAction(username, "discard");
+      } else {
+        // Idle / done. "Newest 24" only queues posts not already on disk, so it
+        // doubles as "check for new". No auto "download all".
+        pdl.innerHTML = `<button class="dlbtn" id="dl-recent">${IC_DL2}${esc(L("archv_recent"))}</button>`
+          + `<button class="dlbtn ghost2" id="dl-all">${IC_DL2}${esc(L("archv_everything"))}</button>`
+          + (dn ? `<span class="dldone">${IC_CHK}${dn} ${esc(L("archv_on_disk"))}</span>` : "");
+        pdl.querySelector("#dl-recent").onclick = () => archiveAction(username, "recent");
+        pdl.querySelector("#dl-all").onclick = () => archiveAction(username, "all");
+      }
+    }
+    if (selMode) updateSelBar();
+  }
+
+  function paintArch(username) {
+    paintButton(username);
+    paintTiles(username);
+  }
+
+  // ---- multi-select ----
+  let selMode = false, selSet = new Set(), selCur = null, selUser = null;
+
+  function visCells() {
+    return [...document.querySelectorAll("#posts-grid .cell[data-sc]")].filter(c => !c.hidden);
+  }
+  function toggleSelMode(username) {
+    selMode = !selMode;
+    selUser = username;
+    const grid = document.getElementById("posts-grid");
+    grid.classList.toggle("selmode", selMode);
+    document.getElementById("seltoggle").classList.toggle("on", selMode);
+    document.getElementById("selbar").hidden = !selMode;
+    if (!selMode) {
+      selSet.clear(); selCur = null;
+      grid.querySelectorAll(".cell.sel,.cell.cur").forEach(c => c.classList.remove("sel", "cur"));
+      document.removeEventListener("keydown", selKeydown);
+      paintArch(username);
+    } else {
+      document.addEventListener("keydown", selKeydown);
+      updateSelBar();
+    }
+  }
+  function toggleSel(cell, range) {
+    const cells = visCells();
+    if (range && selCur) {
+      const a = cells.indexOf(selCur), b = cells.indexOf(cell);
+      if (a >= 0 && b >= 0) for (let i = Math.min(a, b); i <= Math.max(a, b); i++) {
+        cells[i].classList.add("sel"); selSet.add(cells[i].dataset.sc);
+      }
+    } else {
+      const on = cell.classList.toggle("sel");
+      if (on) selSet.add(cell.dataset.sc); else selSet.delete(cell.dataset.sc);
+    }
+    setCur(cell);
+    updateSelBar();
+  }
+  function setCur(cell) {
+    document.querySelectorAll("#posts-grid .cell.cur").forEach(c => c.classList.remove("cur"));
+    selCur = cell;
+    if (cell) cell.classList.add("cur");
+  }
+  function selKeydown(e) {
+    if (!selMode) return;
+    if (e.key === "Escape") { toggleSelMode(selUser); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") { e.preventDefault(); selectAll(); return; }
+    if (e.key === "Enter") { e.preventDefault(); downloadSelected(); return; }
+    const cells = visCells();
+    if (!cells.length) return;
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -12, ArrowDown: 12 }[e.key];
+    if (step === undefined) {
+      if (e.key === " " && selCur) { e.preventDefault(); toggleSel(selCur, false); }
+      return;
+    }
+    e.preventDefault();
+    let i = selCur ? cells.indexOf(selCur) : 0;
+    i = Math.max(0, Math.min(cells.length - 1, (i < 0 ? 0 : i) + step));
+    const next = cells[i];
+    setCur(next);
+    next.scrollIntoView({ block: "nearest" });
+    if (e.shiftKey) { next.classList.add("sel"); selSet.add(next.dataset.sc); updateSelBar(); }
+  }
+  function selectAll() {
+    visCells().forEach(c => { c.classList.add("sel"); selSet.add(c.dataset.sc); });
+    updateSelBar();
+  }
+  function clearSel() {
+    document.querySelectorAll("#posts-grid .cell.sel").forEach(c => c.classList.remove("sel"));
+    selSet.clear(); updateSelBar();
+  }
+  function updateSelBar() {
+    const bar = document.getElementById("selbar");
+    if (!bar) return;
+    const n = selSet.size;
+    bar.innerHTML = `<b>${n}</b> ${esc(L("archv_selected"))}<span class="sp"></span>`
+      + `<button id="sel-all">${esc(L("archv_select_all"))}</button>`
+      + `<button id="sel-clear"${n ? "" : " disabled"}>${esc(L("archv_clear"))}</button>`
+      + `<button class="pri" id="sel-dl"${n ? "" : " disabled"}>${esc(L("archv_dl_selected"))}</button>`;
+    bar.querySelector("#sel-all").onclick = selectAll;
+    bar.querySelector("#sel-clear").onclick = clearSel;
+    bar.querySelector("#sel-dl").onclick = downloadSelected;
+  }
+  async function downloadSelected() {
+    if (!selSet.size) return;
+    const scs = [...selSet], u = selUser;
+    toggleSelMode(u);
+    for (const sc of scs) await post("/ig/archive", { username: u, action: "post", shortcode: sc });
+    setTimeout(() => refreshArch(u), 400);
+  }
+
+  // marquee rubber-band select
+  function initSelDrag() {
+    const grid = document.getElementById("posts-grid");
+    let box = null, start = null, moved = false;
+    grid.addEventListener("mousedown", e => {
+      if (!selMode || e.button !== 0) return;
+      start = { x: e.clientX, y: e.clientY };
+      moved = false;
+      e.preventDefault();
+    });
+    window.addEventListener("mousemove", e => {
+      if (!start) return;
+      if (!moved && Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) < 5) return;
+      if (!moved) {
+        moved = true;
+        box = document.createElement("div");
+        box.className = "marquee";
+        box._gr = grid.getBoundingClientRect();
+        grid.appendChild(box);
+      }
+      const gr = box._gr;
+      const x1 = Math.min(start.x, e.clientX), y1 = Math.min(start.y, e.clientY);
+      const x2 = Math.max(start.x, e.clientX), y2 = Math.max(start.y, e.clientY);
+      box.style.left = (x1 - gr.left) + "px";
+      box.style.top = (y1 - gr.top) + "px";
+      box.style.width = (x2 - x1) + "px";
+      box.style.height = (y2 - y1) + "px";
+      visCells().forEach(c => {
+        const r = c.getBoundingClientRect();
+        const hit = r.left < x2 && r.right > x1 && r.top < y2 && r.bottom > y1;
+        c.classList.toggle("sel", hit || selSet.has(c.dataset.sc));
+      });
+    });
+    window.addEventListener("mouseup", () => {
+      if (box) {
+        visCells().forEach(c => { if (c.classList.contains("sel")) selSet.add(c.dataset.sc); });
+        box.remove(); updateSelBar();
+      }
+      box = null; start = null;
+    });
+    // swallow the click that ends a real drag so it doesn't toggle a cell
+    grid.addEventListener("click", e => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+  }
+
 
   async function openPost(pm) {
     const src = `https://www.instagram.com/p/${pm.shortcode}/`;
@@ -490,7 +938,7 @@
     const n = pm.is_carousel ? (pm.carousel_count >= 1 ? pm.carousel_count : 2) : 1;
     const provisional = [{ media_url: pm.thumb_url, thumb_url: pm.thumb_url, is_video: false }];
     for (let i = 1; i < n; i++) provisional.push({ ph: true });
-    openOverlay(provisional, src, pm.caption || "", L("viewer_posts"));
+    openOverlay(provisional, src, pm.caption || "", L("viewer_posts"), false, { shortcode: pm.shortcode });
     ov.classList.add("loading");
     const r = await post("/ig/post", { id: pm.shortcode });
     if (token !== ovPending || !ov.classList.contains("open")) return;
@@ -505,17 +953,18 @@
 
   // ---- full-window media overlay ----
   const ov = document.getElementById("ov");
-  let ovFrames = [], ovIdx = 0, ovSource = "", ovCaption = "", ovZoom = 1, ovSlideTimer = null, ovVertical = false;
+  let ovFrames = [], ovIdx = 0, ovSource = "", ovCaption = "", ovZoom = 1, ovSlideTimer = null, ovVertical = false, ovOpts = {};
   let ovPan = { x: 0, y: 0 }, ovDrag = null, ovPending = 0;
 
   const mapFrame = f => f.ph
     ? { ph: true, media_url: "", thumb_url: "", is_video: false }
     : { media_url: f.media_url || f.thumb_url, thumb_url: f.thumb_url || f.media_url, is_video: !!f.is_video };
 
-  function openOverlay(frames, sourceUrl, caption, title, vertical) {
+  function openOverlay(frames, sourceUrl, caption, title, vertical, opts) {
     ovFrames = (frames || []).filter(f => f && (f.ph || f.media_url || f.thumb_url)).map(mapFrame);
     if (!ovFrames.length) { toast(L("cant_reach")); return; }
     ovVertical = !!vertical;
+    ovOpts = opts || {};
     ovSource = sourceUrl; ovCaption = caption || ""; ovIdx = 0; ovZoom = 1;
     ov.classList.remove("allmode");
     ov.classList.add("open");
@@ -620,11 +1069,25 @@
     centerStrip();
     const pill = document.getElementById("ov-pill");
     const multi = ovFrames.length > 1;
-    pill.innerHTML = `<button class="btn2" id="ov-dlall">${esc(multi ? L("viewer_dl_all", { n: ovFrames.length }) : L("viewer_dl_one"))}</button>`
-      + (multi ? `<button class="btn2 g" id="ov-dlone">${esc(L("viewer_this_frame"))}</button>` : "");
-    pill.querySelector("#ov-dlall").addEventListener("click", () => queue(ovSource));
-    const one = pill.querySelector("#ov-dlone");
-    if (one) { one.disabled = !!f.ph; one.addEventListener("click", () => { if (!f.ph) queue(f.media_url); }); }
+    const sc = ovOpts.shortcode || (ovSource.match(/instagram\.com\/(?:p|reel|reels|tv)\/([^/?#]+)/) || [])[1];
+    const isDone = ovOpts.downloaded || (sc && archState && (archState.done || []).includes(sc));
+    if (isDone) {
+      pill.innerHTML = `<button class="btn2 g" id="ov-open">${esc(L("archv_open_folder"))}</button>`
+        + `<span class="btn2 ok">${esc(L("archv_downloaded_1"))}</span>`;
+      pill.querySelector("#ov-open").addEventListener("click", () => {
+        const p = (ovOpts.files || [])[0];
+        try { window.__TAURI__.core.invoke(p ? "open_containing_folder" : "viewer_window_show", p ? { path: p } : {}); } catch (_) {}
+      });
+    } else {
+      const itemLabel = f.is_video ? L("archv_this_video") : L("archv_this_photo");
+      pill.innerHTML = `<button class="btn2" id="ov-dlall">${esc(L("archv_dl_post"))}</button>`
+        + (multi ? `<button class="btn2 g" id="ov-dlone">${esc(itemLabel)}</button>` : "");
+      pill.querySelector("#ov-dlall").addEventListener("click", () => {
+        if (sc && currentUser) grabPost(currentUser, sc); else queue(ovSource);
+      });
+      const one = pill.querySelector("#ov-dlone");
+      if (one) { one.disabled = !!f.ph; one.addEventListener("click", () => { if (!f.ph) queue(f.media_url); }); }
+    }
   }
   function centerStrip() {
     const strip = document.getElementById("ov-strip");
@@ -721,6 +1184,7 @@
     profileEl.style.display = "none"; accountsEl.style.display = "block";
     backBtn.style.display = "none"; headTitle.textContent = L("viewer_title");
     document.getElementById("search").style.display = "";
+    clearTimeout(archTimer); archState = null;
     renderAccounts();
   }
   backBtn.addEventListener("click", goBack);

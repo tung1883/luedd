@@ -15,7 +15,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use luedd_core::backend::instagram::{InstagramBackend, ProfileHeader};
 use luedd_core::backend::{DownloadBackend, YtdlpBackend};
-use luedd_core::ig_library::{IgCaught, IgLibraryStore, UNRESOLVED};
+use luedd_core::ig_library::{ArchiveJob, ArchiveState, IgCaught, IgLibraryStore, UNRESOLVED};
 use luedd_core::jobs::DownloadKind;
 use luedd_core::yt_library::{YtCaught, YtLibraryStore, YtResolve};
 use luedd_core::queue::{DownloadEntry, DownloadManager, DownloadStore, SettingsStore};
@@ -81,6 +81,15 @@ struct AppState {
     /// Set while the background `-J` resolver is walking the unresolved bucket,
     /// so overlapping `/yt/channels` calls don't double-spawn it.
     yt_resolving: AtomicBool,
+    /// Lowercase usernames whose profile-archive walker is currently running,
+    /// so a second kick doesn't spawn a duplicate walk.
+    /// Lowercase username -> the epoch of the walker that currently owns it.
+    /// A newer kick's walker takes ownership; the older one sees the changed
+    /// epoch and bails without touching the job.
+    ig_archiving: Mutex<std::collections::HashMap<String, u64>>,
+    /// Bumped by every archive kick. A walker captures the value at spawn and
+    /// bails when it changes, so a stale walker can't touch a restarted job.
+    ig_archive_epoch: AtomicU64,
     /// Instagram `sessionid` cookies seen this run (or restored from the cache),
     /// newest first. The `/ig/*` endpoints have no per-request cookie of their
     /// own — they try these in order and promote whichever one works, so any
@@ -99,6 +108,10 @@ struct AppState {
     /// Caps concurrent ffmpeg thumbnail jobs so a page full of video detections
     /// can't fork-bomb the machine.
     ffmpeg_slots: Arc<tokio::sync::Semaphore>,
+    /// IG CDN image bytes, keyed by source URL. IG CDN URLs are content-addressed
+    /// (immutable), so scrolling a grid re-uses these instead of re-fetching
+    /// through the (busy) download client. Bounded ~256 entries.
+    ig_img_cache: Mutex<HashMap<String, (Bytes, String)>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -310,6 +323,8 @@ pub async fn serve(
         ytdlp,
         yt_library,
         yt_resolving: AtomicBool::new(false),
+        ig_archiving: Mutex::new(std::collections::HashMap::new()),
+        ig_archive_epoch: AtomicU64::new(1),
         ig_cookies: Mutex::new(seeded_cookies),
         config,
         detected: Mutex::new(Vec::new()),
@@ -317,6 +332,7 @@ pub async fn serve(
         preview_cache: Mutex::new(HashMap::new()),
         quality_cache: Mutex::new(HashMap::new()),
         ffmpeg_slots: Arc::new(tokio::sync::Semaphore::new(6)),
+        ig_img_cache: Mutex::new(HashMap::new()),
     });
 
     let cors = CorsLayer::new()
@@ -344,6 +360,10 @@ pub async fn serve(
         .route("/ig/highlight", post(ig_highlight))
         .route("/ig/post", post(ig_post))
         .route("/ig/queue", post(ig_queue))
+        .route("/ig/archive", post(ig_archive))
+        .route("/ig/archive-state", get(ig_archive_state))
+        .route("/ig/downloaded", get(ig_downloaded))
+        .route("/ig/file", get(ig_file))
         .route("/ig/cookie", post(ig_cookie))
         .route("/ig/img", get(ig_img))
         .route("/yt/channels", get(yt_channels))
@@ -1097,7 +1117,7 @@ async fn yt_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
         tokio::spawn(async move { record_yt_catch(&st, &u, None).await });
     }
     let id =
-        queue_url(&state, req.url, None, None, HashMap::new(), None, req.quality, extras, None).await;
+        queue_url(&state, req.url, None, None, HashMap::new(), None, req.quality, extras, None, None, None, false).await;
     Json(serde_json::json!({ "queued": id.is_some() }))
 }
 
@@ -1370,8 +1390,721 @@ async fn ig_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
             ensure_page_detection(&st, &canon, None, ck).await;
         });
     }
-    let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, Default::default(), None).await;
+    let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, Default::default(), None, None, None, false).await;
     Json(serde_json::json!({ "queued": id.is_some() }))
+}
+
+// ------------------------------------------------------------------------
+// Profile archive — download a whole account page-by-page, resumably
+// ------------------------------------------------------------------------
+
+/// The shortcode in an `instagram.com/p/<code>/` or `/reel/<code>/` URL.
+fn ig_shortcode_of(url: &str) -> Option<&str> {
+    let rest = url.split("instagram.com/").nth(1)?;
+    let mut segs = rest.split(['/', '?', '#']).filter(|s| !s.is_empty());
+    match segs.next()? {
+        "p" | "reel" | "reels" | "tv" => segs.next().filter(|s| !s.is_empty()),
+        _ => None,
+    }
+}
+
+/// Does this download entry belong to `user_lc` (already lowercased, no `@`)?
+/// Matches the archive-tagged author, or — for posts grabbed one-by-one before
+/// the archive feature, or with a drifted author — a `<user>` path segment in
+/// the output, or `/<user>/` in the source URL.
+fn ig_entry_belongs_to(e: &DownloadEntry, user_lc: &str) -> bool {
+    if e.author.as_deref().map(|a| a.trim_start_matches('@').eq_ignore_ascii_case(user_lc)) == Some(true) {
+        return true;
+    }
+    let seg_hit = |p: &std::path::Path| {
+        p.components()
+            .any(|c| c.as_os_str().to_str().map(|s| s.eq_ignore_ascii_case(user_lc)) == Some(true))
+    };
+    if seg_hit(&e.dest)
+        || e.extra_files.iter().any(|p| seg_hit(p))
+        || e.out_dir.as_deref().map(seg_hit) == Some(true)
+    {
+        return true;
+    }
+    ig_shortcode_of(&e.url).is_some() && e.url.to_ascii_lowercase().contains(&format!("/{user_lc}/"))
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum OnDisk {
+    /// Every file the run produced is present.
+    Full,
+    /// Some files present, some missing (a carousel item failed, or was deleted).
+    Partial,
+    /// Nothing on disk.
+    None,
+}
+
+/// How much of a finished entry's output survives on disk.
+fn entry_on_disk(e: &DownloadEntry) -> OnDisk {
+    // Count named files first.
+    let named_present = std::iter::once(&e.dest)
+        .chain(&e.extra_files)
+        .filter(|p| p.is_file())
+        .count();
+    let named_total = 1 + e.extra_files.len();
+
+    // A dedicated folder (legacy per-post layout): fall back to "anything here".
+    let dir_has_files = e
+        .out_dir
+        .as_ref()
+        .map(|d| std::fs::read_dir(d).map(|mut r| r.any(|x| x.is_ok())).unwrap_or(false))
+        .unwrap_or(false);
+
+    let present = named_present + usize::from(dir_has_files && named_present == 0);
+    if present == 0 {
+        return OnDisk::None;
+    }
+    // Expected count: the recorded item count, else infer from what was stored.
+    let want = e.expected_files.map(|n| n as usize).unwrap_or(named_total).max(1);
+    if named_present >= want || (dir_has_files && e.expected_files.is_none()) {
+        OnDisk::Full
+    } else {
+        OnDisk::Partial
+    }
+}
+
+
+/// Where a post's download sits: `done` (fully on disk) / `partial` (some media
+/// missing or deleted) / `active` / `paused` / `failed`. A `Finished` entry with
+/// nothing left on disk falls through to `None` so the viewer stops calling it
+/// done and the walker re-queues it.
+fn ig_post_status(entries: &[DownloadEntry], shortcode: &str) -> Option<&'static str> {
+    use luedd_core::queue::DownloadStatus as S;
+    entries
+        .iter()
+        .filter(|e| ig_shortcode_of(&e.url) == Some(shortcode))
+        .filter_map(|e| match e.status {
+            S::Finished => match entry_on_disk(e) {
+                OnDisk::Full => Some("done"),
+                OnDisk::Partial => Some("partial"),
+                OnDisk::None => None,
+            },
+            S::Failed | S::Cancelled => Some("failed"),
+            S::Paused => Some("paused"),
+            _ => Some("active"),
+        })
+        // done > partial > active > paused > failed
+        .min_by_key(|s| match *s {
+            "done" => 0,
+            "partial" => 1,
+            "active" => 2,
+            "paused" => 3,
+            _ => 4,
+        })
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchiveReq {
+    username: String,
+    /// `all` | `recent` | `resume` | `stop` | `discard` | `post`
+    action: String,
+    /// For `post`: the shortcode of the single post to grab.
+    #[serde(default)]
+    shortcode: Option<String>,
+}
+
+/// Start / resume / stop a profile archive, or queue a single page of it.
+async fn ig_archive(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<ArchiveReq>(&body) else {
+        return Json(serde_json::json!({ "error": "bad request" }));
+    };
+    let user = req.username.trim().trim_start_matches('@').to_string();
+    if user.is_empty() {
+        return Json(serde_json::json!({ "error": "no username" }));
+    }
+    let now = unix_now();
+
+    match req.action.as_str() {
+        "stop" => {
+            // Flip the job (walker bails within a post), then park the queued
+            // downloads. Synchronous but cheap: abort ≤2 running + one bulk
+            // write. Doing it inline avoids racing a quick resume.
+            if let Some(mut job) = state.ig_library.archive_of(&user).await {
+                job.state = ArchiveState::Paused;
+                job.updated = now;
+                let _ = state.ig_library.set_archive(&user, Some(job)).await;
+            }
+            set_profile_entries_paused(&state, &user, true).await;
+            Json(serde_json::json!({ "ok": true }))
+        }
+        "discard" => {
+            // Drop the job and every not-finished post of this profile. Files
+            // already on disk stay. Done SYNCHRONOUSLY (it's ~3 writes: abort
+            // ≤2 running + one bulk remove) so a "Newest 24" right after starts
+            // from a clean slate — no leftover Paused rows to be mistaken for
+            // "already downloaded".
+            use luedd_core::queue::DownloadStatus as S;
+            state.ig_archive_epoch.fetch_add(1, Ordering::Relaxed);
+            let _ = state.ig_library.set_archive(&user, None).await;
+            let author = format!("@{}", user.to_ascii_lowercase());
+            let ours = |e: &DownloadEntry| {
+                e.author.as_deref().map(|a| a.eq_ignore_ascii_case(&author)) == Some(true)
+                    && !matches!(e.status, S::Finished)
+            };
+            let running: Vec<String> = state
+                .store
+                .list_entries()
+                .await
+                .into_iter()
+                .filter(|e| ours(e) && e.status == S::Downloading)
+                .map(|e| e.id)
+                .collect();
+            for id in running {
+                let _ = state.manager.pause_entry(&id).await;
+            }
+            let _ = state.store.remove_where(|e| ours(e)).await;
+            Json(serde_json::json!({ "ok": true }))
+        }
+        "post" => {
+            // Grab a single post (hover-tile "download this one").
+            let Some(sc) = req.shortcode.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+                return Json(serde_json::json!({ "error": "no shortcode" }));
+            };
+            let url = format!("https://www.instagram.com/p/{sc}/");
+            let cookie = state.ig_cookie(None).await;
+            let id = queue_url(
+                &state,
+                url,
+                None,
+                None,
+                HashMap::new(),
+                cookie,
+                None,
+                Default::default(),
+                None,
+                Some(format!("@{user}")),
+                Some(user.clone()),
+                true,
+            )
+            .await;
+            let mgr = state.manager.clone();
+            tokio::spawn(async move { let _ = mgr.run_queued().await; });
+            Json(serde_json::json!({ "queued": id.is_some() }))
+        }
+        "resume" => {
+            // Resume only makes sense for a paused job. Un-park its downloads.
+            // Keep walking pages only for an "all" scope — a "recent" grab is
+            // one page and done, so its saved cursor must NOT be followed.
+            let existing = state.ig_library.archive_of(&user).await;
+            set_profile_entries_paused(&state, &user, false).await;
+            let walk_more = existing.as_ref().map(|j| j.scope == "all").unwrap_or(false)
+                && existing.as_ref().and_then(|j| j.cursor.clone()).is_some();
+            let epoch = state.ig_archive_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+            let job = match existing {
+                Some(mut j) => {
+                    j.state = if walk_more { ArchiveState::Running } else { ArchiveState::Done };
+                    if !walk_more {
+                        j.cursor = None;
+                    }
+                    j.epoch = epoch;
+                    j.updated = now;
+                    j
+                }
+                None => return Json(serde_json::json!({ "ok": true })),
+            };
+            let _ = state.ig_library.set_archive(&user, Some(job)).await;
+            if walk_more {
+                spawn_ig_archiver(state.clone(), user.clone(), epoch);
+            }
+            Json(serde_json::json!({ "ok": true }))
+        }
+        "all" | "recent" => {
+            let scope: String = if req.action == "recent" { "recent".into() } else { "all".into() };
+            let total = if scope == "recent" { 24 } else { 0 };
+            let epoch = state.ig_archive_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+            let job = ArchiveJob {
+                state: ArchiveState::Running,
+                page: 0,
+                cursor: None,
+                total,
+                queued: 0,
+                scope: scope.clone(),
+                epoch,
+                updated: now,
+            };
+            let _ = state.ig_library.set_archive(&user, Some(job)).await;
+            spawn_ig_archiver(state.clone(), user.clone(), epoch);
+            // Fill in the real post count for an "all" walk in the background.
+            if scope == "all" {
+                let st = state.clone();
+                let u = user.clone();
+                tokio::spawn(async move {
+                    let cfg = st.config.settings.get().await.backends;
+                    let ck = st.ig_cookie(None).await;
+                    let n = st.instagram.profile_header(&u, ck.as_deref(), &cfg.instagram).await.post_count;
+                    if n > 0 {
+                        if let Some(mut j) = st.ig_library.archive_of(&u).await {
+                            if j.epoch == epoch {
+                                j.total = n;
+                                let _ = st.ig_library.set_archive(&u, Some(j)).await;
+                            }
+                        }
+                    }
+                });
+            }
+            Json(serde_json::json!({ "ok": true }))
+        }
+        other => Json(serde_json::json!({ "error": format!("unknown action {other}") })),
+    }
+}
+
+/// Fetch one `/ig/posts` page and queue every post on it that isn't already
+/// downloaded. Only the walker calls this; `epoch` is the walker's, so a stale
+/// walker whose job was replaced queues nothing.
+async fn archive_one_page(
+    state: &Arc<AppState>,
+    user: &str,
+    cursor: Option<&str>,
+    epoch: u64,
+) -> Option<String> {
+    let cfg = state.config.settings.get().await.backends;
+    let cookie = state.ig_cookie(None).await;
+    let (posts, next) = match state
+        .instagram
+        .profile_posts(user, cookie.as_deref(), &cfg.instagram, cursor)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(%user, error = %e, "archive: /ig/posts page failed");
+            return None;
+        }
+    };
+    // Don't re-queue a post that's already downloaded (still on disk) or in
+    // flight. A Finished entry whose file was deleted is fair game again.
+    let done: std::collections::HashSet<String> = {
+        use luedd_core::queue::DownloadStatus as S;
+        state
+            .store
+            .list_entries()
+            .await
+            .iter()
+            .filter(|e| !matches!(e.status, S::Failed | S::Cancelled))
+            // A Finished post counts as done only if EVERY item is on disk;
+            // a partial (some carousel items missing) gets re-queued.
+            .filter(|e| e.status != S::Finished || matches!(entry_on_disk(e), OnDisk::Full))
+            .filter_map(|e| ig_shortcode_of(&e.url).map(str::to_string))
+            .collect()
+    };
+    async fn still_running(state: &Arc<AppState>, user: &str, epoch: u64) -> bool {
+        matches!(
+            state.ig_library.archive_of(user).await,
+            Some(j) if j.state == ArchiveState::Running && j.epoch == epoch
+        )
+    }
+    // Paused/discarded while this page was in flight, or mid-page: stop and
+    // report the SAME cursor we came in on, so a resume re-fetches this page
+    // (the `done` set then skips whatever we already queued).
+    let interrupted_cursor = || cursor.map(str::to_string);
+
+    let author = format!("@{user}");
+    let mut added = 0u64;
+    let mut interrupted = !still_running(state, user, epoch).await;
+    for pm in &posts {
+        if interrupted {
+            break;
+        }
+        if done.contains(&pm.shortcode) {
+            continue;
+        }
+        if !still_running(state, user, epoch).await {
+            interrupted = true;
+            break;
+        }
+        let url = format!("https://www.instagram.com/p/{}/", pm.shortcode);
+        if queue_url(
+            state,
+            url,
+            None,
+            None,
+            HashMap::new(),
+            cookie.clone(),
+            None,
+            Default::default(),
+            None,
+            Some(author.clone()),
+            Some(user.to_string()),
+            true,
+        )
+        .await
+        .is_some()
+        {
+            added += 1;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    }
+    // roll the count forward — but only if this is still our job
+    if let Some(mut job) = state.ig_library.archive_of(user).await {
+        if job.epoch == epoch {
+            job.queued += added;
+            job.updated = unix_now();
+            let _ = state.ig_library.set_archive(user, Some(job)).await;
+        }
+    }
+    if added > 0 {
+        // Kick the semaphore-capped drain for the posts just queued.
+        let mgr = state.manager.clone();
+        tokio::spawn(async move { let _ = mgr.run_queued().await; });
+    }
+    if interrupted { interrupted_cursor() } else { next }
+}
+
+/// Pause (or un-pause) every not-yet-finished download that belongs to this
+/// profile. `pause` aborts running transfers and parks queued ones; `!pause`
+/// re-queues the parked ones and kicks each off again.
+async fn set_profile_entries_paused(state: &AppState, user: &str, pause: bool) {
+    use luedd_core::queue::DownloadStatus as S;
+    let author = format!("@{}", user.to_ascii_lowercase());
+    let ours = |e: &DownloadEntry| {
+        e.author.as_deref().map(|a| a.eq_ignore_ascii_case(&author)) == Some(true)
+    };
+
+    if pause {
+        // Abort the handful actually transferring (each is one write, but
+        // there are at most `max_concurrent` of them)...
+        let running: Vec<String> = state
+            .store
+            .list_entries()
+            .await
+            .into_iter()
+            .filter(|e| ours(e) && e.status == S::Downloading)
+            .map(|e| e.id)
+            .collect();
+        for id in running {
+            let _ = state.manager.pause_entry(&id).await;
+        }
+        // ...and park everything still queued in a SINGLE file write.
+        let _ = state
+            .store
+            .update_where(
+                |e| ours(e) && matches!(e.status, S::Queued | S::Downloading),
+                |e| e.status = S::Paused,
+            )
+            .await;
+    } else {
+        // Un-park in one write, then one semaphore-capped drain.
+        let woke = state
+            .store
+            .update_where(
+                |e| ours(e) && e.status == S::Paused,
+                |e| {
+                    e.status = S::Queued;
+                    e.error = None;
+                    e.progress = None;
+                    e.retry_count = 0;
+                    e.next_retry_at = None;
+                },
+            )
+            .await
+            .unwrap_or_default();
+        if !woke.is_empty() {
+            let mgr = state.manager.clone();
+            tokio::spawn(async move { let _ = mgr.run_queued().await; });
+        }
+    }
+}
+
+/// Walk every remaining page of a profile, one every ~2 s, until the cursor runs
+/// out or the job is paused/replaced.
+fn spawn_ig_archiver(state: Arc<AppState>, user: String, epoch: u64) {
+    tokio::spawn(async move {
+        let key = user.to_ascii_lowercase();
+        {
+            let mut owners = state.ig_archiving.lock().await;
+            match owners.get(&key) {
+                Some(&e) if e >= epoch => return, // a same-or-newer walker owns it
+                _ => {
+                    owners.insert(key.clone(), epoch);
+                }
+            }
+        }
+        // True while this walker still owns the slot and the job is ours+running.
+        let mine = |state: &Arc<AppState>, key: &str| {
+            let (state, key) = (state.clone(), key.to_string());
+            async move { state.ig_archiving.lock().await.get(&key) == Some(&epoch) }
+        };
+        loop {
+            if !mine(&state, &key).await {
+                return; // superseded by a newer kick — don't touch anything
+            }
+            let Some(job) = state.ig_library.archive_of(&user).await else { break };
+            if job.state != ArchiveState::Running || job.epoch != epoch {
+                break; // paused / replaced
+            }
+            let cursor = job.cursor.clone();
+            let next = archive_one_page(&state, &user, cursor.as_deref(), epoch).await;
+
+            let Some(mut job) = state.ig_library.archive_of(&user).await else { break };
+            if job.epoch != epoch {
+                return; // replaced during the page — leave the new job alone
+            }
+            job.page += 1;
+            job.cursor = next.clone();
+            job.updated = unix_now();
+            if job.state == ArchiveState::Running && (next.is_none() || job.scope == "recent") {
+                job.state = ArchiveState::Done;
+                job.cursor = None;
+            }
+            let stop = job.state != ArchiveState::Running;
+            let _ = state.ig_library.set_archive(&user, Some(job)).await;
+            if stop {
+                break;
+            }
+            // Slow cadence: IG rate-limits the timeline query hard, and the
+            // viewer shares it. The page cache (300 s) covers Load-more anyway.
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        }
+        // release the slot only if we still hold it
+        let mut owners = state.ig_archiving.lock().await;
+        if owners.get(&key) == Some(&epoch) {
+            owners.remove(&key);
+        }
+    });
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchiveStateReq {
+    username: String,
+}
+
+/// The archive roll-up the viewer and the main window render from: job progress
+/// plus each caught post's download status.
+async fn ig_archive_state(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<ArchiveStateReq>,
+) -> Json<serde_json::Value> {
+    let user = q.username.trim().trim_start_matches('@').to_string();
+    let job = state.ig_library.archive_of(&user).await;
+
+    let entries = state.store.list_entries().await;
+    let (mut done, mut active, mut failed, mut paused, mut partial) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut seen = std::collections::HashSet::new();
+    let user_lc = user.to_ascii_lowercase();
+    for e in &entries {
+        if !ig_entry_belongs_to(e, &user_lc) {
+            continue;
+        }
+        let Some(sc) = ig_shortcode_of(&e.url).map(str::to_string) else { continue };
+        if !seen.insert(sc.clone()) {
+            continue;
+        }
+        match ig_post_status(&entries, &sc) {
+            Some("done") => done.push(sc),
+            Some("partial") => partial.push(sc),
+            Some("failed") => failed.push(sc),
+            Some("paused") => paused.push(sc),
+            Some(_) => active.push(sc),
+            None => {}
+        }
+    }
+
+    let job_json = job.map(|j| {
+        serde_json::json!({
+            "state": match j.state {
+                ArchiveState::Running => "running",
+                ArchiveState::Paused => "paused",
+                ArchiveState::Done => "done",
+            },
+            "page": j.page,
+            "total": j.total,
+            "queued": j.queued,
+            "has_more": j.cursor.is_some(),
+        })
+    });
+
+    Json(serde_json::json!({
+        "job": job_json,
+        "done": done,
+        "active": active,
+        "failed": failed,
+        "paused": paused,
+        "partial": partial,
+    }))
+}
+
+/// Posts of this account that are already on disk — so the viewer can show them
+/// straight from local files without waiting on (a possibly throttled)
+/// `/ig/posts`.
+async fn ig_downloaded(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<ArchiveStateReq>,
+) -> Json<serde_json::Value> {
+    let user = q.username.trim().trim_start_matches('@').to_ascii_lowercase();
+    let author = format!("@{user}");
+    let img_ext = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+    let vid_ext = ["mp4", "mov", "mkv", "webm", "m4v"];
+
+    let mut posts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut backfill: Vec<String> = Vec::new();
+    for e in state.store.list_entries().await {
+        use luedd_core::queue::DownloadStatus as S;
+        if e.status != S::Finished {
+            continue;
+        }
+        if !ig_entry_belongs_to(&e, &user) {
+            continue;
+        }
+        // Attributed by path/URL but the author tag is missing/stale — fix it so
+        // the archive view counts it and future reads are cheap.
+        if e.author.as_deref().map(|a| a.eq_ignore_ascii_case(&author)) != Some(true) {
+            backfill.push(e.id.clone());
+        }
+        let Some(sc) = ig_shortcode_of(&e.url).map(str::to_string) else { continue };
+        if !seen.insert(sc.clone()) {
+            continue;
+        }
+
+        // Prefer whatever is actually in the entry's own folder (carousels,
+        // profile dumps), else the single dest + any extra files.
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(dir) = &e.out_dir {
+            if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+                while let Ok(Some(ent)) = rd.next_entry().await {
+                    if ent.path().is_file() {
+                        files.push(ent.path());
+                    }
+                }
+            }
+        }
+        if files.is_empty() {
+            files.push(e.dest.clone());
+            files.extend(e.extra_files.iter().cloned());
+        }
+        files.retain(|p| p.is_file());
+        if files.is_empty() {
+            continue;
+        }
+        files.sort();
+        let ext_of = |p: &std::path::Path| {
+            p.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase()
+        };
+        let is_video = files.iter().any(|p| vid_ext.contains(&ext_of(p).as_str()));
+        let files: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let thumb = files
+            .iter()
+            .find(|f| {
+                img_ext.contains(
+                    &std::path::Path::new(f)
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .as_str(),
+                )
+            })
+            .cloned();
+        posts.push(serde_json::json!({
+            "shortcode": sc,
+            "url": e.url,
+            "is_video": is_video,
+            "files": files,
+            "thumb": thumb,
+        }));
+    }
+    if !backfill.is_empty() {
+        let _ = state
+            .store
+            .update_where(|e| backfill.contains(&e.id), |e| e.author = Some(author.clone()))
+            .await;
+    }
+    Json(serde_json::json!({ "posts": posts }))
+}
+
+/// Stream a local downloaded file to the viewer webview — only files that live
+/// under the configured download directory. Supports a single `Range` so a
+/// `<video>` can seek without pulling the whole file.
+async fn ig_file(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    // Per-response cap for a ranged (video-seek) request; a whole small file is
+    // sent in one 200 so an <img> isn't truncated.
+    const CHUNK: u64 = 8 * 1024 * 1024;
+    const WHOLE_MAX: u64 = 32 * 1024 * 1024;
+
+    let Some(raw) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    let dl_dir = state.config.settings.get().await.download_dir;
+    let (Ok(want), Ok(root)) = (std::path::Path::new(raw).canonicalize(), dl_dir.canonicalize())
+    else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    if !want.starts_with(&root) {
+        return (StatusCode::FORBIDDEN, "outside the download folder").into_response();
+    }
+    let total = match tokio::fs::metadata(&want).await {
+        Ok(m) if m.is_file() => m.len(),
+        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+
+    // `Range: bytes=<start>-<end?>`
+    let req_range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="))
+        .and_then(|v| {
+            let (a, b) = v.split_once('-')?;
+            let start: u64 = a.trim().parse().ok()?;
+            let end = b.trim();
+            let end = if end.is_empty() { None } else { Some(end.parse::<u64>().ok()?) };
+            Some((start, end))
+        });
+    let last = total.saturating_sub(1);
+    let (start, end) = match req_range {
+        Some((s, e)) => (s, e.unwrap_or(last).min(s + CHUNK - 1).min(last)),
+        None if total <= WHOLE_MAX => (0, last),
+        None => (0, (CHUNK - 1).min(last)),
+    };
+    if start >= total {
+        return (StatusCode::RANGE_NOT_SATISFIABLE, "").into_response();
+    }
+    let len = end + 1 - start;
+
+    let Ok(mut f) = tokio::fs::File::open(&want).await else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    if f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "seek").into_response();
+    }
+    let mut buf = Vec::with_capacity(len as usize);
+    if f.take(len).read_to_end(&mut buf).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "read").into_response();
+    }
+
+    let ct = match want.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        _ => "application/octet-stream",
+    };
+    let partial = req_range.is_some() || len < total;
+    let status = if partial { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK };
+    let mut resp = axum::response::Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, ct)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, len.to_string());
+    if partial {
+        resp = resp.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"));
+    }
+    resp.body(axum::body::Body::from(buf)).unwrap().into_response()
 }
 
 /// Proxy an Instagram CDN image through the server so the viewer webview gets it
@@ -1387,6 +2120,16 @@ async fn ig_img(
     if !url.contains("cdninstagram.com") && !url.contains("fbcdn.net") {
         return (axum::http::StatusCode::FORBIDDEN, "not an IG CDN url").into_response();
     }
+    const LONG_CACHE: &str = "public, max-age=604800, immutable";
+
+    if let Some((b, ct)) = state.ig_img_cache.lock().await.get(url).cloned() {
+        return (
+            [(axum::http::header::CONTENT_TYPE, ct), (axum::http::header::CACHE_CONTROL, LONG_CACHE.to_string())],
+            b,
+        )
+            .into_response();
+    }
+
     let cookie = state.ig_cookie(None).await;
     let opts = luedd_net::RequestOptions {
         headers: HashMap::from([
@@ -1405,7 +2148,24 @@ async fn ig_img(
                 .unwrap_or("image/jpeg")
                 .to_string();
             match resp.bytes().await {
-                Ok(b) => ([(axum::http::header::CONTENT_TYPE, ct), (axum::http::header::CACHE_CONTROL, "public, max-age=3600".to_string())], b).into_response(),
+                Ok(b) => {
+                    // memoise (bounded — crude evict when full)
+                    if b.len() < 4 * 1024 * 1024 {
+                        let mut c = state.ig_img_cache.lock().await;
+                        if c.len() >= 256 {
+                            let drop: Vec<String> = c.keys().take(64).cloned().collect();
+                            for k in drop {
+                                c.remove(&k);
+                            }
+                        }
+                        c.insert(url.clone(), (b.clone(), ct.clone()));
+                    }
+                    (
+                        [(axum::http::header::CONTENT_TYPE, ct), (axum::http::header::CACHE_CONTROL, LONG_CACHE.to_string())],
+                        b,
+                    )
+                        .into_response()
+                }
                 Err(_) => (axum::http::StatusCode::BAD_GATEWAY, "read failed").into_response(),
             }
         }
@@ -1432,7 +2192,7 @@ async fn download(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncR
             return Json(default_sync_response(video_list(&state).await));
         }
     };
-    let _ = queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None, Default::default(), None).await;
+    let _ = queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None, Default::default(), None, None, None, false).await;
     Json(default_sync_response(video_list(&state).await))
 }
 
@@ -1529,6 +2289,9 @@ async fn vid(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespon
                     req.quality,
                     Default::default(),
                     cached,
+                    None,
+                    None,
+                    false,
                 )
                 .await;
 
@@ -2155,6 +2918,18 @@ async fn queue_url(
     quality: Option<String>,
     extras: std::collections::BTreeMap<String, String>,
     preview: Option<(String, String)>,
+    // Force the plugin-view grouping key instead of letting the backend resolve
+    // it (the profile-archive walker already knows the `@account`).
+    author_hint: Option<String>,
+    // Put the file in `<download_dir>/<dir_hint>/` (a shared per-profile folder,
+    // instaloader-style) instead of the backend's per-item folder. Deleting one
+    // such entry only removes its own file(s), never the shared folder.
+    dir_hint: Option<String>,
+    // Don't start the transfer inline. Add it as `Queued` and let the caller
+    // kick `run_queued` so the concurrency semaphore actually caps parallelism
+    // (bulk profile archives would otherwise fire ~24 transfers per page at
+    // once and choke the app).
+    defer: bool,
 ) -> Option<String> {
     let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
 
@@ -2178,7 +2953,19 @@ async fn queue_url(
     let filename = filename_hint.filter(|f| !f.is_empty()).unwrap_or_else(|| {
         luedd_core::naming::suggest_filename(title_hint.as_deref(), &url, detected_ext.as_deref())
     });
-    let dest = luedd_core::naming::dest_path(&settings.download_dir, &url, &filename);
+    // A shared per-profile folder wins over the default flat layout.
+    let shared_dir = dir_hint.as_deref().filter(|s| !s.is_empty()).map(|d| {
+        let safe: String = d
+            .trim_start_matches('@')
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' { c } else { '_' })
+            .collect();
+        settings.download_dir.join(safe)
+    });
+    let dest = match &shared_dir {
+        Some(dir) => dir.join(&filename),
+        None => luedd_core::naming::dest_path(&settings.download_dir, &url, &filename),
+    };
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
@@ -2201,14 +2988,16 @@ async fn queue_url(
 
     // A backend that wants its own output folder (Instagram): re-root the dest
     // into it and remember it on the entry so a delete removes the whole folder.
-    let dest = if let Some(dir) = &meta.out_dir {
-        tokio::fs::create_dir_all(dir).await.ok();
-        match dest.file_name() {
-            Some(name) => dir.join(name),
-            None => dest,
+    // Skipped when the caller pinned a shared per-profile folder.
+    let dest = match (&shared_dir, &meta.out_dir) {
+        (None, Some(dir)) => {
+            tokio::fs::create_dir_all(dir).await.ok();
+            match dest.file_name() {
+                Some(name) => dir.join(name),
+                None => dest,
+            }
         }
-    } else {
-        dest
+        _ => dest,
     };
 
     tracing::info!(%url, dest = %dest.display(), backend = %backend_id, "queued download from browser extension");
@@ -2218,21 +3007,27 @@ async fn queue_url(
         .with_quality(quality)
         .with_extras(extras)
         .with_preview(preview);
-    entry.author = meta.author;
+    entry.author = author_hint.or(meta.author);
     entry.title = meta.title.or(title_hint);
     entry.media_class = meta.media_class;
-    entry.out_dir = meta.out_dir;
+    // A shared folder must NOT be wiped when one entry in it is deleted.
+    entry.out_dir = if shared_dir.is_some() { None } else { meta.out_dir };
     let id = entry.id.clone();
     if let Err(e) = state.store.add_entry(entry).await {
         tracing::warn!(error = %e, "failed to persist download entry from extension");
         return None;
     }
 
+    if defer {
+        // Left as `Queued`. The caller kicks `run_queued` once it has queued
+        // the whole batch, so the concurrency semaphore caps parallelism.
+        return Some(id);
+    }
     let manager = state.manager.clone();
     let spawn_id = id.clone();
     tokio::spawn(async move {
         if let Err(e) = manager.run_entry_now(&spawn_id).await {
-            tracing::warn!(error = %e, id = %spawn_id, "immediate run of extension-queued download failed to start");
+            tracing::warn!(error = %e, id = %spawn_id, "immediate run of queued download failed to start");
         }
     });
     Some(id)

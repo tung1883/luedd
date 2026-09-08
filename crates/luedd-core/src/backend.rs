@@ -64,11 +64,15 @@ pub struct Outcome {
     /// Grouping metadata for the per-plugin views, discovered during the run
     /// (yt-dlp channel, Instagram account…). Written onto the entry on success.
     pub meta: EntryMeta,
+    /// How many media items this download *should* have produced (an Instagram
+    /// carousel's item count). `files.len() < expected_units` => a partial
+    /// success — some items failed but not all. `None` = not applicable.
+    pub expected_units: Option<u64>,
 }
 
 impl Outcome {
     pub fn single(path: PathBuf) -> Self {
-        Self { files: vec![path], meta: EntryMeta::default() }
+        Self { files: vec![path], meta: EntryMeta::default(), expected_units: None }
     }
 }
 

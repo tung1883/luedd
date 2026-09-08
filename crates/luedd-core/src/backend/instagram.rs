@@ -37,8 +37,12 @@ const TOPSEARCH: &str = "https://www.instagram.com/web/search/topsearch/?context
 /// configurable via `InstagramConfig` (pace preset + overrides); this is the
 /// fallback ceiling on a whole-profile crawl when `max_posts` is unset.
 const MAX_PAGES: usize = 40;
-/// Permit pool for the `slots` semaphore (see `InstagramBackend::new`).
-const SLOT_POOL: usize = 6;
+/// Permit pool for byte transfers (`run`). A download acquires
+/// `DL_POOL / concurrency` permits, so concurrency 1/2/3 -> 6/3/2 -> 1/2/3 runs.
+const DL_POOL: usize = 6;
+/// Separate pool for viewer metadata reads (`profile_posts`, `post_media`,
+/// `resolve_account`) so a busy archive download can never block the grid.
+const READ_POOL: usize = 4;
 
 /// Fallback persisted-query ids (insta-graphql.md §4), used when the user hasn't
 /// set one in Settings. Instagram rotates these; when they 404, the fix is a
@@ -105,8 +109,11 @@ const META_TTL: Duration = Duration::from_secs(300);
 
 pub struct InstagramBackend {
     client: HttpClient,
-    /// Instagram soft-blocks a session that bursts; keep concurrency low.
-    slots: Semaphore,
+    /// Byte-transfer concurrency (`run`). Instagram soft-blocks a bursting
+    /// session, so keep it low.
+    dl_slots: Semaphore,
+    /// Viewer-read concurrency — its own pool so downloads can't starve it.
+    read_slots: Semaphore,
     /// Panel-preview thumbnail (url, square) per page URL - the panel calls
     /// `thumbnail()` on every visible row; `None` = looked, found nothing.
     thumb_cache: tokio::sync::Mutex<HashMap<String, Option<(String, bool)>>>,
@@ -124,9 +131,8 @@ impl InstagramBackend {
     pub fn new(client: HttpClient) -> Self {
         Self {
             client,
-            // Permit pool: a download acquires `SLOT_POOL / concurrency` permits,
-            // so concurrency 1/2/3 -> 6/3/2 permits -> 1/2/3 simultaneous runs.
-            slots: Semaphore::new(SLOT_POOL),
+            dl_slots: Semaphore::new(DL_POOL),
+            read_slots: Semaphore::new(READ_POOL),
             thumb_cache: tokio::sync::Mutex::new(HashMap::new()),
             meta_cache: tokio::sync::Mutex::new(HashMap::new()),
             owner_cache: tokio::sync::Mutex::new(HashMap::new()),
@@ -284,8 +290,8 @@ impl DownloadBackend for InstagramBackend {
         // Concurrency: acquire SLOT_POOL/concurrency permits so 1/2/3 configured
         // concurrency -> 6/3/2 permits -> 1/2/3 runs at once.
         let (_pg, _it, concurrency) = req.config.instagram.pace_values();
-        let want = (SLOT_POOL / concurrency).max(1) as u32;
-        let _permit = self.slots.acquire_many(want).await.expect("semaphore closed");
+        let want = (DL_POOL / concurrency).max(1) as u32;
+        let _permit = self.dl_slots.acquire_many(want).await.expect("semaphore closed");
         let target = classify(&req.url)
             .ok_or_else(|| anyhow!("not an Instagram post / reel / story / profile URL"))?;
 
@@ -317,7 +323,7 @@ impl DownloadBackend for InstagramBackend {
                 }
                 super::instaloader::Engine::Instaloader => super::instaloader::run(req, &target, progress)
                     .await
-                    .map(|files| Outcome { files, meta: meta.clone() }),
+                    .map(|files| Outcome { files, meta: meta.clone(), ..Default::default() }),
             };
             match result {
                 Ok(outcome) => return Ok(outcome),
@@ -382,7 +388,7 @@ impl InstagramBackend {
         let cfg = &req.config.instagram;
         let cookie = req.ctx.cookie.as_deref().filter(|c| !c.trim().is_empty()).or(cfg.session_cookie.as_deref());
         let (page_pace, item_pace, _cc) = cfg.pace_values();
-        let max_pages = cfg.max_posts.map(|n| n.div_ceil(12).max(1)).unwrap_or(MAX_PAGES);
+        let max_pages = cfg.max_posts.map(|n| n.div_ceil(24).max(1)).unwrap_or(MAX_PAGES);
         let mut items: Vec<MediaItem> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
@@ -446,7 +452,9 @@ impl InstagramBackend {
                     }
                     let mut vars = json!({
                         "data": {
-                            "count": 12,
+                            // 24 — same page as the viewer's `/ig/posts` grid, so
+                            // "one page" means the same thing in both places.
+                            "count": 24,
                             "include_relationship_info": true,
                             "latest_besties_reel_media": true,
                             "latest_reel_media": true,
@@ -457,7 +465,7 @@ impl InstagramBackend {
                     });
                     if let Some(cur) = &after {
                         vars["after"] = json!(cur);
-                        vars["first"] = json!(12);
+                        vars["first"] = json!(24);
                     }
                     let resp = self.gql(("doc_id", doc_id), &vars, cookie, &referer, &cfg.app_id).await?;
                     let before = items.len();
@@ -537,7 +545,7 @@ impl InstagramBackend {
                 last_err.map(|e| format!(" - last error: {e}")).unwrap_or_default()
             );
         }
-        Ok(Outcome { files, meta })
+        Ok(Outcome { files, meta, expected_units: Some(items.len() as u64) })
     }
 
     /// One GraphQL read. `doc_key` is `("doc_id", <id>)` or `("query_hash", <hash>)`.
@@ -825,7 +833,7 @@ impl InstagramBackend {
         if let Some(hit) = self.cache_get::<(Vec<PostMeta>, Option<String>)>(&ckey).await {
             return Ok(hit);
         }
-        let _permit = self.slots.acquire().await.expect("semaphore closed");
+        let _permit = self.read_slots.acquire().await.expect("semaphore closed");
         let cookie = Self::ig_cookie(cfg, cookie);
         let doc_id = cfg.doc_id_timeline.as_deref().unwrap_or(DEFAULT_DOC_TIMELINE);
         let mut vars = json!({
@@ -862,7 +870,7 @@ impl InstagramBackend {
         if let Some(hit) = self.cache_get::<(Vec<ReelItem>, String)>(&ckey).await {
             return Ok(hit);
         }
-        let _permit = self.slots.acquire().await.expect("semaphore closed");
+        let _permit = self.read_slots.acquire().await.expect("semaphore closed");
         let cookie = Self::ig_cookie(cfg, cookie);
         let doc_id = cfg.doc_id_shortcode.as_deref().unwrap_or(DEFAULT_DOC_SHORTCODE);
         let vars = json!({ "shortcode": shortcode, "fetch_tagged_user_count": null,
@@ -957,7 +965,7 @@ impl InstagramBackend {
         if let Some(hit) = self.owner_cache.lock().await.get(url).cloned() {
             return Some(hit);
         }
-        let _permit = self.slots.acquire().await.expect("semaphore closed");
+        let _permit = self.read_slots.acquire().await.expect("semaphore closed");
         let cookie = Self::ig_cookie(cfg, cookie);
         let resp = match classify(url)? {
             Target::Shortcode(code, _) => {

@@ -40,6 +40,48 @@ pub struct IgAccount {
     /// When `avatar_url` was last refreshed (unix seconds).
     #[serde(default)]
     pub avatar_at: i64,
+    /// A running / paused / finished "download the whole profile" job. Kept
+    /// here so a restart can offer to resume it.
+    #[serde(default)]
+    pub archive: Option<ArchiveJob>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArchiveState {
+    /// The walker is (or should be) adding more pages.
+    Running,
+    /// Stopped by the user or a restart; `cursor` says where to pick up.
+    Paused,
+    /// Walked to the end — every page has been queued at least once.
+    Done,
+}
+
+/// Progress of a profile-archive walk. One per account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveJob {
+    pub state: ArchiveState,
+    /// `/ig/posts` pages walked so far.
+    #[serde(default)]
+    pub page: u32,
+    /// Cursor to resume from (`None` = start at the newest page).
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// `post_count` from the profile header when the job started — an estimate,
+    /// the profile may change under us.
+    #[serde(default)]
+    pub total: u64,
+    /// How many post URLs this job has handed to the queue.
+    #[serde(default)]
+    pub queued: u64,
+    /// `all` | `recent` — what the last kick asked for.
+    #[serde(default)]
+    pub scope: String,
+    /// Bumped every time a new kick (`all` / `recent` / `resume`) creates the
+    /// job. A walker captures this at spawn and stops the moment it changes, so
+    /// a stale walker can never write bookkeeping onto a freshly-started job.
+    #[serde(default)]
+    pub epoch: u64,
+    pub updated: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +143,7 @@ impl IgLibraryStore {
                 caught: Vec::new(),
                 avatar_url: None,
                 avatar_at: 0,
+                archive: None,
             });
             acct.last_seen = now();
             if !acct.caught.iter().any(|x| x.kind == c.kind && x.key == c.key && x.url == c.url) {
@@ -140,6 +183,7 @@ impl IgLibraryStore {
                 caught: Vec::new(),
                 avatar_url: None,
                 avatar_at: 0,
+                archive: None,
             });
             if acct.username.is_empty() {
                 acct.username = account.to_string();
@@ -167,6 +211,34 @@ impl IgLibraryStore {
             }
             acct.avatar_url = Some(url.to_string());
             acct.avatar_at = now();
+        }
+        self.save().await
+    }
+
+    /// The archive job for an account, if any.
+    pub async fn archive_of(&self, account: &str) -> Option<ArchiveJob> {
+        self.data.read().await.accounts.get(&account.to_ascii_lowercase()).and_then(|a| a.archive.clone())
+    }
+
+    /// Store (or clear, with `None`) an account's archive job. Creates the
+    /// account row if the profile was never caught before.
+    pub async fn set_archive(&self, account: &str, job: Option<ArchiveJob>) -> Result<()> {
+        {
+            let mut lib = self.data.write().await;
+            let key = account.to_ascii_lowercase();
+            let acct = lib.accounts.entry(key).or_insert_with(|| IgAccount {
+                username: account.to_string(),
+                first_seen: now(),
+                last_seen: now(),
+                caught: Vec::new(),
+                avatar_url: None,
+                avatar_at: 0,
+                archive: None,
+            });
+            if acct.username.is_empty() {
+                acct.username = account.to_string();
+            }
+            acct.archive = job;
         }
         self.save().await
     }

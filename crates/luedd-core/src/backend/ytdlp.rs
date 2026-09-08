@@ -333,7 +333,7 @@ impl DownloadBackend for YtdlpBackend {
             }
         };
         let meta = self.cached_meta(&req.url).await;
-        Ok(Outcome { files: vec![path], meta })
+        Ok(Outcome { files: vec![path], meta, ..Default::default() })
     }
 }
 

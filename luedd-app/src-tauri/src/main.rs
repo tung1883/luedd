@@ -266,9 +266,45 @@ async fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 async fn open_containing_folder(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let dest = std::path::PathBuf::from(&path);
+
     if tokio::fs::metadata(&dest).await.is_ok() {
-        return app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string());
+        // On Windows, reveal the file via `explorer /select,` in a blocking
+        // task. The plugin's `reveal_item_in_dir` drives shell COM
+        // (`SHOpenFolderAndSelectItems`) directly on the async runtime's
+        // worker thread, which is not COM-initialised as an STA and can take
+        // the process down with a shell-side fault.
+        #[cfg(windows)]
+        {
+            let dest2 = dest.clone();
+            let selected = tokio::task::spawn_blocking(move || {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                std::process::Command::new("explorer.exe")
+                    .raw_arg(format!("/select,\"{}\"", dest2.display()))
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()
+                    .map(|_| ())
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            if selected.is_ok() {
+                return Ok(());
+            }
+            // fall through to just opening the parent folder
+        }
+        #[cfg(not(windows))]
+        {
+            return app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string());
+        }
+        #[cfg(windows)]
+        if let Some(parent) = dest.parent() {
+            return app
+                .opener()
+                .open_path(parent.to_string_lossy().to_string(), None::<&str>)
+                .map_err(|e| e.to_string());
+        }
     }
+
     let cache_dir = luedd_core::naming::cache_dir_for(&dest);
     let target = if tokio::fs::metadata(&cache_dir).await.is_ok() {
         cache_dir

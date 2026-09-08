@@ -316,6 +316,12 @@
   .pv-gsub { color: var(--dim); font-size: 11px; }
   .pv-sp { flex: 1; }
   .pv-gopen { font-size: 11px; color: var(--disc); background: none; border: 0; cursor: pointer; padding: 2px 4px; }
+  .pv-arch { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; color: var(--dim); margin-right: 4px; }
+  .pv-arch[hidden] { display: none; }
+  .pv-arch .pva-frac { font-variant-numeric: tabular-nums; color: var(--text); }
+  .pv-arch .pva-mtr { width: 60px; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+  .pv-arch .pva-mtr > i { display: block; height: 100%; background: var(--good); }
+  .pv-arch .pva-b { color: var(--warn); border: 1px solid rgba(240,162,74,.35); border-radius: 4px; padding: 2px 7px; cursor: pointer; }
   .pv-sec { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); padding: 8px 4px 3px; }
   .pv-vrow { display: grid; grid-template-columns: 104px 1fr 150px; gap: 12px; align-items: center;
     padding: 8px 4px; border-top: 1px solid var(--line); }
@@ -1450,10 +1456,12 @@ function renderPluginView(provider, entries) {
 
     const hdr = document.createElement("div");
     hdr.className = "pv-ghdr";
+    const igUser = isIG ? author.replace(/^@/, "") : "";
     hdr.innerHTML = `<span class="pv-gcaret${collapsed ? "" : " open"}">${CARET}</span>`
       + `<span class="pv-gav">${esc(initial)}</span>`
       + `<span><span class="pv-gname">${esc(author)}</span> <span class="pv-gsub">· ${esc(sub)}</span></span>`
       + `<span class="pv-sp"></span>`
+      + (isIG ? `<span class="pv-arch" data-user="${esc(igUser)}" hidden></span>` : "")
       + `<button class="pv-gopen" data-path="${esc(es[0].dest)}">${esc(t("pv_open_folder"))}</button>`;
     hdr.addEventListener("click", ev => {
       if (ev.target.closest(".pv-gopen")) return;
@@ -1471,6 +1479,45 @@ function renderPluginView(provider, entries) {
     }
     pv.appendChild(g);
   }
+  paintPvArch();
+}
+
+// Show a compact archive strip on any Lüdd-Insta group whose profile has a
+// running / paused archive job.
+let pvArchTimer = null;
+async function paintPvArch() {
+  const slots = [...document.querySelectorAll(".pv-arch[data-user]")];
+  if (!slots.length) { clearTimeout(pvArchTimer); return; }
+  let anyRunning = false;
+  for (const slot of slots) {
+    const user = slot.dataset.user;
+    if (!user) continue;
+    let s;
+    try {
+      s = await (await fetch("http://127.0.0.1:8597/ig/archive-state?username=" + encodeURIComponent(user))).json();
+    } catch (_) { continue; }
+    const job = s && s.job;
+    if (!job) { slot.hidden = true; slot.innerHTML = ""; continue; }
+    const total = job.total || ((s.done || []).length + (s.active || []).length) || 1;
+    const dn = (s.done || []).length;
+    slot.hidden = false;
+    slot.innerHTML = `<span class="pva-frac">${dn}/${total}</span>`
+      + `<span class="pva-mtr"><i style="width:${Math.min(100, 100 * dn / total)}%"></i></span>`
+      + (job.state === "running"
+          ? `<span class="pva-b" data-a="stop">${esc(t("archv_pause"))}</span>`
+          : job.state === "paused"
+            ? `<span class="pva-b" data-a="resume">${esc(t("archv_resume"))}</span>`
+            : "");
+    slot.querySelector("[data-a]")?.addEventListener("click", async ev => {
+      ev.stopPropagation();
+      const a = ev.target.dataset.a;
+      try { await fetch("http://127.0.0.1:8597/ig/archive", { method: "POST", body: JSON.stringify({ username: user, action: a }) }); } catch (_) {}
+      setTimeout(paintPvArch, 500);
+    });
+    if (job.state === "running") anyRunning = true;
+  }
+  clearTimeout(pvArchTimer);
+  if (anyRunning) pvArchTimer = setTimeout(paintPvArch, 3000);
 }
 
 function renderYtGroup(g, entries) {

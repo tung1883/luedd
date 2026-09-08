@@ -90,6 +90,11 @@ pub struct DownloadEntry {
     /// set, deleting the entry removes this whole folder, partial files and all.
     #[serde(default)]
     pub out_dir: Option<PathBuf>,
+    /// How many media files a successful run should have produced (an Instagram
+    /// carousel's item count). Lets a reader tell "fully on disk" from "some
+    /// items missing / deleted". `None` = single-file / unknown.
+    #[serde(default)]
+    pub expected_files: Option<u32>,
 }
 
 /// Deserialization shim. Files written before the backend registry have
@@ -135,6 +140,8 @@ struct DownloadEntryRepr {
     media_class: Option<String>,
     #[serde(default)]
     out_dir: Option<PathBuf>,
+    #[serde(default)]
+    expected_files: Option<u32>,
 }
 
 impl From<DownloadEntryRepr> for DownloadEntry {
@@ -168,6 +175,7 @@ impl From<DownloadEntryRepr> for DownloadEntry {
             title: r.title,
             media_class: r.media_class,
             out_dir: r.out_dir,
+            expected_files: r.expected_files,
         }
     }
 }
@@ -197,6 +205,7 @@ impl DownloadEntry {
             title: None,
             media_class: None,
             out_dir: None,
+            expected_files: None,
         }
     }
 

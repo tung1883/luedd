@@ -53,6 +53,8 @@ async fn requeue_interrupted(store: &DownloadStore) {
 }
 
 async fn tick(store: &DownloadStore, manager: &DownloadManager) {
+    // Persist any coalesced in-memory progress.
+    store.flush().await.ok();
     auto_retry_due_entries(store, manager).await;
 
     let now = chrono::Local::now();

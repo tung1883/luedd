@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use super::model::{DownloadEntry, DownloadQueueDef, DownloadStatus};
+use super::model::{DownloadEntry, DownloadProgress, DownloadQueueDef, DownloadStatus};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StoreData {
@@ -15,22 +16,67 @@ struct StoreData {
 pub struct DownloadStore {
     path: PathBuf,
     data: RwLock<StoreData>,
+    /// Set by an in-memory-only change (download progress). A later `save()`
+    /// from any write, or `flush()` from the scheduler, persists it.
+    dirty: AtomicBool,
 }
 
 impl DownloadStore {
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let data = match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).context("corrupt download store file")?,
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(d) => d,
+                Err(e) => {
+                    // A torn write (or a hand-edit) left the file unparseable.
+                    // Don't refuse to start — move it aside and begin fresh, so
+                    // the app is usable again. The queue rebuilds as downloads
+                    // are re-added; finished files on disk are untouched.
+                    let bak = path.with_extension("json.corrupt");
+                    let _ = tokio::fs::rename(&path, &bak).await;
+                    tracing::error!(error = %e, backup = %bak.display(), "download store unparseable; started empty");
+                    StoreData::default()
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => StoreData::default(),
             Err(e) => return Err(e.into()),
         };
-        Ok(Self { path, data: RwLock::new(data) })
+        Ok(Self { path, data: RwLock::new(data), dirty: AtomicBool::new(false) })
     }
 
     async fn save(&self) -> Result<()> {
         let json = serde_json::to_vec_pretty(&*self.data.read().await)?;
-        crate::atomicfile::write_atomic(&self.path, &json).await
+        let r = crate::atomicfile::write_atomic(&self.path, &json).await;
+        if r.is_ok() {
+            self.dirty.store(false, Ordering::Relaxed);
+        }
+        r
+    }
+
+    /// Persist only if an in-memory-only change is pending. Called on a timer by
+    /// the scheduler so coalesced progress eventually lands on disk.
+    pub async fn flush(&self) -> Result<()> {
+        if self.dirty.swap(false, Ordering::Relaxed) {
+            self.save().await
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Update a download's progress in memory WITHOUT writing the file. Progress
+    /// is high-frequency and disposable (a crash re-queues `Downloading` rows),
+    /// so a full-store serialize per tick is pure overhead — this just marks the
+    /// store dirty for the next `flush()`.
+    pub async fn set_progress(&self, id: &str, progress: DownloadProgress) {
+        {
+            let mut data = self.data.write().await;
+            if let Some(e) = data.entries.iter_mut().find(|e| e.id == id) {
+                e.progress = Some(progress);
+            } else {
+                return;
+            }
+        }
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     pub async fn add_entry(&self, entry: DownloadEntry) -> Result<()> {
@@ -50,6 +96,73 @@ impl DownloadStore {
 
     pub async fn list_entries(&self) -> Vec<DownloadEntry> {
         self.data.read().await.entries.clone()
+    }
+
+    /// Apply `f` to every entry matching `pred`, then persist ONCE. Returns the
+    /// ids touched. Use instead of a loop of `update_entry` calls so a bulk
+    /// change (pause a whole profile's downloads) is a single file write.
+    pub async fn update_where(
+        &self,
+        pred: impl Fn(&DownloadEntry) -> bool,
+        f: impl Fn(&mut DownloadEntry),
+    ) -> Result<Vec<String>> {
+        let touched = {
+            let mut data = self.data.write().await;
+            let mut ids = Vec::new();
+            for e in data.entries.iter_mut() {
+                if pred(e) {
+                    f(e);
+                    ids.push(e.id.clone());
+                }
+            }
+            ids
+        };
+        if !touched.is_empty() {
+            self.save().await?;
+        }
+        Ok(touched)
+    }
+
+    /// Remove every entry matching `pred`, persisting ONCE. Returns the removed
+    /// entries so the caller can clean up their artifacts if it wants to.
+    pub async fn remove_where(
+        &self,
+        pred: impl Fn(&DownloadEntry) -> bool,
+    ) -> Result<Vec<DownloadEntry>> {
+        let removed = {
+            let mut data = self.data.write().await;
+            let (keep, removed): (Vec<_>, Vec<_>) =
+                data.entries.drain(..).partition(|e| !pred(e));
+            data.entries = keep;
+            removed
+        };
+        if !removed.is_empty() {
+            self.save().await?;
+        }
+        Ok(removed)
+    }
+
+    /// Atomically move a still-`Queued` entry to `Downloading`. Returns `false`
+    /// when it was already claimed by another runner or is gone — the caller
+    /// must then not run it. Guards against two overlapping `run_queued` sweeps
+    /// starting the same download twice.
+    pub async fn try_claim(&self, id: &str) -> Result<bool> {
+        let claimed = {
+            let mut data = self.data.write().await;
+            match data.entries.iter_mut().find(|e| e.id == id) {
+                Some(e) if e.status == DownloadStatus::Queued => {
+                    e.status = DownloadStatus::Downloading;
+                    e.error = None;
+                    e.next_retry_at = None;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if claimed {
+            self.save().await?;
+        }
+        Ok(claimed)
     }
 
     pub async fn get_entry(&self, id: &str) -> Option<DownloadEntry> {
@@ -234,6 +347,104 @@ mod tests {
         let remaining = store.list_entries().await;
         assert_eq!(remaining.len(), 2);
         assert!(remaining.iter().all(|e| matches!(e.status, DownloadStatus::Queued | DownloadStatus::Downloading)));
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn set_progress_is_in_memory_until_flush() {
+        let dir = std::env::temp_dir().join(format!("luedd-store-prog-{}", std::process::id()));
+        let store = DownloadStore::open(dir.join("downloads.json")).await.unwrap();
+        let entry = DownloadEntry::new("http://x/f".into(), "/tmp/f".into(), DownloadKind::Http);
+        let id = entry.id.clone();
+        store.add_entry(entry).await.unwrap();
+
+        let p = DownloadProgress {
+            downloaded_bytes: 10,
+            total_bytes: Some(100),
+            done_units: 1,
+            total_units: 5,
+            speed_bps: 1,
+        };
+        store.set_progress(&id, p).await;
+        // visible in memory immediately
+        assert_eq!(store.get_entry(&id).await.unwrap().progress.unwrap().downloaded_bytes, 10);
+        // not yet on disk
+        let cold = DownloadStore::open(dir.join("downloads.json")).await.unwrap();
+        assert!(cold.get_entry(&id).await.unwrap().progress.is_none());
+        // flush persists it
+        store.flush().await.unwrap();
+        let warm = DownloadStore::open(dir.join("downloads.json")).await.unwrap();
+        assert_eq!(warm.get_entry(&id).await.unwrap().progress.unwrap().downloaded_bytes, 10);
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn update_where_touches_only_matches_and_persists_once() {
+        let dir = std::env::temp_dir().join(format!("luedd-store-uw-{}", std::process::id()));
+        let store = DownloadStore::open(dir.join("downloads.json")).await.unwrap();
+
+        for (author, status) in [
+            (Some("@a"), DownloadStatus::Queued),
+            (Some("@a"), DownloadStatus::Downloading),
+            (Some("@b"), DownloadStatus::Queued),
+            (None, DownloadStatus::Queued),
+        ] {
+            let entry = DownloadEntry::new("http://x/f".into(), "/tmp/f".into(), DownloadKind::Http);
+            let id = entry.id.clone();
+            store.add_entry(entry).await.unwrap();
+            store
+                .update_entry(&id, |e| {
+                    e.status = status;
+                    e.author = author.map(str::to_string);
+                })
+                .await
+                .unwrap();
+        }
+
+        let touched = store
+            .update_where(
+                |e| e.author.as_deref() == Some("@a") && e.status == DownloadStatus::Queued,
+                |e| e.status = DownloadStatus::Paused,
+            )
+            .await
+            .unwrap();
+        assert_eq!(touched.len(), 1);
+
+        let reopened = DownloadStore::open(dir.join("downloads.json")).await.unwrap();
+        let paused = reopened
+            .list_entries()
+            .await
+            .into_iter()
+            .filter(|e| e.status == DownloadStatus::Paused)
+            .count();
+        assert_eq!(paused, 1, "only the one @a/Queued entry, and it survived a reload");
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn remove_where_drops_matches_keeps_rest() {
+        let dir = std::env::temp_dir().join(format!("luedd-store-rw-{}", std::process::id()));
+        let store = DownloadStore::open(dir.join("downloads.json")).await.unwrap();
+
+        for status in [DownloadStatus::Queued, DownloadStatus::Paused, DownloadStatus::Finished] {
+            let entry = DownloadEntry::new("http://x/f".into(), "/tmp/f".into(), DownloadKind::Http);
+            let id = entry.id.clone();
+            store.add_entry(entry).await.unwrap();
+            store.update_entry(&id, |e| e.status = status).await.unwrap();
+        }
+
+        let removed = store
+            .remove_where(|e| !matches!(e.status, DownloadStatus::Finished))
+            .await
+            .unwrap();
+        assert_eq!(removed.len(), 2);
+
+        let remaining = store.list_entries().await;
+        assert_eq!(remaining.len(), 1);
+        assert!(matches!(remaining[0].status, DownloadStatus::Finished));
 
         tokio::fs::remove_dir_all(&dir).await.ok();
     }

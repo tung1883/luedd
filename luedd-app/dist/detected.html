@@ -144,6 +144,15 @@
   .add-btn { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 600;
     border-radius: 5px; font-size: 11px; padding: 4px 11px; cursor: pointer; font-family: var(--sans); white-space: nowrap; }
   .add-btn:hover { filter: brightness(1.08); }
+  .row-actions { position: relative; }
+  .add-pick { padding: 4px 6px; display: inline-flex; align-items: center; }
+  .add-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; width: 170px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 4px;
+    box-shadow: 0 14px 34px -12px rgba(0,0,0,.6); }
+  .add-menu[hidden] { display: none; }
+  .add-menu button { display: block; width: 100%; text-align: left; background: none; border: 0;
+    color: var(--text); font: 500 12px/1.3 var(--sans); padding: 7px 8px; border-radius: 5px; cursor: pointer; }
+  .add-menu button:hover { background: var(--surface-2); }
   .details-panel { display: none; grid-column: 2 / -1; margin-top: 8px; padding-top: 8px;
     border-top: 1px dashed var(--line); font-size: 12px; color: var(--dim); min-width: 0; }
   .details-panel.open { display: block; }
@@ -626,6 +635,15 @@
 
   // Instagram profile pictures and highlight covers are 1:1 - square the slot
   // before /preview resolves so the placeholder icon never sits in a 16:9 box.
+  // The username for a bare instagram.com/<user> profile detection, else "".
+  function igProfileUser(item) {
+    const u = (item.pageUrl || item.url || "").toLowerCase().split("?")[0].replace(/\/+$/, "");
+    const m = u.match(/^https?:\/\/(?:www\.)?instagram\.com\/([^/]+)$/);
+    if (!m) return "";
+    if (["p", "reel", "reels", "tv", "explore", "stories", "accounts"].includes(m[1])) return "";
+    return m[1];
+  }
+
   function isSquarePreview(item) {
     if (providerOf(item) !== "Lüdd-Insta") return false;
     const u = (item.url || item.pageUrl || "").toLowerCase().split("?")[0].replace(/\/+$/, "");
@@ -875,6 +893,23 @@
     addBtn.className = "add-btn";
     addBtn.innerText = L("add");
     actions.appendChild(addBtn);
+
+    // A bare instagram.com/<user> profile row: one button archives the whole
+    // account (pause/resume lives in the viewer).
+    const igProfile = igProfileUser(item);
+    if (igProfile) {
+      addBtn.remove();
+      const dl = document.createElement("button");
+      dl.className = "add-btn";
+      dl.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>' + esc(L("archv_dl_profile"));
+      dl.addEventListener("click", async e => {
+        e.stopPropagation();
+        dl.disabled = true;
+        await post("/ig/archive", { username: igProfile, action: "all" });
+        try { window.__TAURI__.core.invoke("viewer_window_show"); } catch (_) {}
+      });
+      actions.appendChild(dl);
+    }
 
     const detailsPanel = document.createElement("div");
     detailsPanel.className = "details-panel";
