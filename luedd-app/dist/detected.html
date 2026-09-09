@@ -901,7 +901,8 @@
       addBtn.remove();
       const dl = document.createElement("button");
       dl.className = "add-btn";
-      dl.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>' + esc(L("archv_dl_profile"));
+      dl.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>';
+      dl.appendChild(document.createTextNode(L("archv_dl_profile")));
       dl.addEventListener("click", async e => {
         e.stopPropagation();
         dl.disabled = true;
