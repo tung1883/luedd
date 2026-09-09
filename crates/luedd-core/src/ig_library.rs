@@ -197,6 +197,27 @@ impl IgLibraryStore {
         self.save().await
     }
 
+    /// Drop unresolved caught items that no longer look valid (e.g. an
+    /// `instagram.com/reel/audio` music page that was mis-parsed as a reel).
+    /// Returns how many were removed.
+    pub async fn prune_unresolved(&self, keep: impl Fn(&IgCaught) -> bool) -> Result<usize> {
+        let removed = {
+            let mut lib = self.data.write().await;
+            let Some(u) = lib.accounts.get_mut(UNRESOLVED) else { return Ok(0) };
+            let before = u.caught.len();
+            u.caught.retain(&keep);
+            let removed = before - u.caught.len();
+            if u.caught.is_empty() {
+                lib.accounts.remove(UNRESOLVED);
+            }
+            removed
+        };
+        if removed > 0 {
+            self.save().await?;
+        }
+        Ok(removed)
+    }
+
     /// Cache the resolved profile picture for an account (no-op for an unknown
     /// account or an unchanged URL, so it rarely writes).
     pub async fn set_avatar(&self, account: &str, url: &str) -> Result<()> {

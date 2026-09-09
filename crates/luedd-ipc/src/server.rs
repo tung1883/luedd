@@ -732,13 +732,28 @@ fn ig_caught_of(url: &str) -> Option<(Option<String>, IgCaught)> {
     let mk = |account: Option<String>, kind: &str, key: String| {
         Some((account, IgCaught { kind: kind.to_string(), key, url: url.to_string(), seen: unix_now() }))
     };
+    // A post/reel/igtv shortcode: 5-30 of [A-Za-z0-9_-], and not one of IG's
+    // own path words (`/reels/audio/<id>` is a music page, not a reel).
+    fn is_shortcode(s: &str) -> bool {
+        (5..=30).contains(&s.len())
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && !matches!(s, "audio" | "tags" | "locations" | "explore" | "saved" | "liked" | "audio_page")
+    }
+    // Route words that are never a username.
+    const NOT_A_USER: &[&str] = &[
+        "p", "reel", "reels", "tv", "stories", "explore", "directory", "accounts",
+        "about", "developer", "legal", "privacy", "terms", "web", "api", "graphql",
+        "challenge", "session", "emails", "push", "ajax", "oauth",
+    ];
     match segs.as_slice() {
-        ["p", code, ..] => mk(None, "post", code.to_string()),
-        ["reel" | "reels", code, ..] => mk(None, "reel", code.to_string()),
-        ["tv", code, ..] => mk(None, "igtv", code.to_string()),
-        ["stories", "highlights", id, ..] => mk(None, "highlight", id.to_string()),
-        ["stories", user, ..] => mk(Some(user.to_string()), "story", String::new()),
-        [user] => mk(Some(user.to_string()), "profile", String::new()),
+        ["p", code, ..] if is_shortcode(code) => mk(None, "post", code.to_string()),
+        ["reel" | "reels", code, ..] if is_shortcode(code) => mk(None, "reel", code.to_string()),
+        ["tv", code, ..] if is_shortcode(code) => mk(None, "igtv", code.to_string()),
+        ["stories", "highlights", id, ..] if is_shortcode(id) => mk(None, "highlight", id.to_string()),
+        ["stories", user, ..] if !NOT_A_USER.contains(user) => {
+            mk(Some(user.to_string()), "story", String::new())
+        }
+        [user] if !NOT_A_USER.contains(user) => mk(Some(user.to_string()), "profile", String::new()),
         _ => None,
     }
 }
@@ -1165,6 +1180,12 @@ struct IgQueueReq {
 
 /// The caught-accounts list for the profile viewer's home screen.
 async fn ig_profiles(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    // Clear out junk that can never resolve (mis-parsed music / explore pages),
+    // so the viewer stops showing a stuck "resolving N…".
+    let _ = state
+        .ig_library
+        .prune_unresolved(|c| ig_caught_of(&c.url).map(|(a, _)| a.is_none()).unwrap_or(false))
+        .await;
     let lib = state.ig_library.snapshot().await;
     let mut accounts = Vec::new();
     let mut unresolved = 0usize;
