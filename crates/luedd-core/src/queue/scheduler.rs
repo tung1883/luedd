@@ -21,10 +21,43 @@ pub fn next_auto_retry_at(retry_count: u32) -> Option<i64> {
 
 pub async fn run_forever(store: Arc<DownloadStore>, manager: Arc<DownloadManager>) -> ! {
     requeue_interrupted(&store).await;
+    // Ids seen `Downloading` with no live run task; requeued once they show up
+    // dead on two consecutive ticks (a just-spawned task may not have its
+    // handle registered yet on the first).
+    let mut suspected_dead: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
-        tick(&store, &manager).await;
+        tick(&store, &manager, &mut suspected_dead).await;
         tokio::time::sleep(CHECK_INTERVAL).await;
     }
+}
+
+/// Heal entries stuck at `Downloading` with no owning task — a run future that
+/// died without hitting its Ok/Err arm (a panic tokio swallowed, an abort).
+async fn reap_dead_downloads(
+    store: &DownloadStore,
+    manager: &DownloadManager,
+    suspected: &mut std::collections::HashSet<String>,
+) {
+    let live: std::collections::HashSet<String> = manager.running_ids().into_iter().collect();
+    let mut still_suspect = std::collections::HashSet::new();
+    for entry in store.list_entries().await {
+        if !matches!(entry.status, DownloadStatus::Downloading) || live.contains(&entry.id) {
+            continue;
+        }
+        if suspected.contains(&entry.id) {
+            tracing::warn!(id = %entry.id, "download stuck with no run task; re-queuing");
+            store
+                .update_entry(&entry.id, |e| {
+                    e.status = DownloadStatus::Queued;
+                    e.next_retry_at = None;
+                })
+                .await
+                .ok();
+        } else {
+            still_suspect.insert(entry.id.clone());
+        }
+    }
+    *suspected = still_suspect;
 }
 
 /// A `Downloading` entry can only be stale on startup - the task that owned it
@@ -52,9 +85,14 @@ async fn requeue_interrupted(store: &DownloadStore) {
     }
 }
 
-async fn tick(store: &DownloadStore, manager: &DownloadManager) {
+async fn tick(
+    store: &DownloadStore,
+    manager: &DownloadManager,
+    suspected_dead: &mut std::collections::HashSet<String>,
+) {
     // Persist any coalesced in-memory progress.
     store.flush().await.ok();
+    reap_dead_downloads(store, manager, suspected_dead).await;
     auto_retry_due_entries(store, manager).await;
 
     let now = chrono::Local::now();

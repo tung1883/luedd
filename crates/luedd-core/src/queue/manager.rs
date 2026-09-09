@@ -6,7 +6,7 @@ use luedd_net::{HttpClient, RequestContext};
 use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 
-use super::model::{DownloadEntry, DownloadProgress, DownloadStatus};
+use super::model::{now_unix, DownloadEntry, DownloadProgress, DownloadStatus};
 use super::store::DownloadStore;
 use crate::backend::{BackendConfig, BackendRegistry, DownloadReq};
 
@@ -98,6 +98,11 @@ impl DownloadManager {
         Ok(())
     }
 
+    /// Ids of entries with a live run task right now.
+    pub fn running_ids(&self) -> Vec<String> {
+        self.running.lock().unwrap().keys().cloned().collect()
+    }
+
     pub async fn pause_entry(&self, id: &str) -> anyhow::Result<bool> {
         let handle = { self.running.lock().unwrap().remove(id) };
         let Some(handle) = handle else {
@@ -180,8 +185,22 @@ async fn run_single(
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
     let progress_store = store.clone();
     let progress_id = entry.id.clone();
+    // Last time the backend emitted any event (unix seconds). The stall monitor
+    // aborts a run that goes quiet for too long — an Instagram fetch on a hung
+    // connection would otherwise sit at `Downloading` forever.
+    // (last event time, converting?) — the stall monitor ignores runs that have
+    // entered the mux phase, which is legitimately long and silent.
+    let last_beat = Arc::new(StdMutex::new((now_unix(), false)));
+    let beat_w = last_beat.clone();
     let progress_task = tokio::spawn(async move {
         while let Some(event) = progress_rx.recv().await {
+            {
+                let mut b = beat_w.lock().unwrap();
+                b.0 = now_unix();
+                if matches!(event, luedd_net::JobEvent::Converting) {
+                    b.1 = true;
+                }
+            }
             match event {
                 luedd_net::JobEvent::Progress { downloaded_bytes, total_bytes, done_units, total_units, speed_bps } => {
                     // In-memory only; the scheduler flushes it to disk on a
@@ -222,7 +241,25 @@ async fn run_single(
         concurrency,
         config: config.clone(),
     };
-    let result = backend.run(&req, Some(&progress_tx)).await;
+    // Abort the run if it emits nothing for STALL_SECS (some backends — a bare
+    // Instagram profile probe — legitimately run a while before the first
+    // event, so this only kicks in once things go completely silent).
+    const STALL_SECS: i64 = 150;
+    let run = backend.run(&req, Some(&progress_tx));
+    let result = {
+        tokio::pin!(run);
+        loop {
+            tokio::select! {
+                r = &mut run => break r,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                    let (beat, converting) = *last_beat.lock().unwrap();
+                    if !converting && now_unix() - beat > STALL_SECS {
+                        break Err(anyhow::anyhow!("download stalled - no data for {STALL_SECS}s"));
+                    }
+                }
+            }
+        }
+    };
     drop(progress_tx);
     progress_task.await.ok();
 

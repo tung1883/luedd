@@ -523,6 +523,15 @@ impl InstagramBackend {
             };
             let n = if ts_total.get(&it.timestamp).copied().unwrap_or(1) > 1 { Some(seq) } else { None };
             let dest = req.dest_dir.join(item_filename(it, i, n));
+            // Already on disk (a re-run of an interrupted post/story, or the
+            // profile walker re-visiting): the final file only appears after an
+            // atomic rename, so its presence means that item completed. Skip the
+            // re-fetch — CDN bytes are immutable for a given shortcode/timestamp.
+            if std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false) {
+                tracker.add_unit(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
+                files.push(dest);
+                continue;
+            }
             match jobs::run_http(&self.client, &it.url, &dest, 1, &dl_ctx, None).await {
                 Ok(path) => {
                     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);

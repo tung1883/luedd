@@ -1902,6 +1902,35 @@ async fn ig_archive_state(
     let user = q.username.trim().trim_start_matches('@').to_string();
     let job = state.ig_library.archive_of(&user).await;
 
+    // An unfinished job whose post-count never got filled (the one-shot fetch at
+    // start failed / it predates that field) shows a meaningless bar. Refill it
+    // once in the background — guarded so repeated polls don't spam Instagram.
+    if let Some(j) = &job {
+        if j.total == 0
+            && j.state != ArchiveState::Done
+            && state.ig_archiving.lock().await.get(&format!("total:{}", user.to_ascii_lowercase())).is_none()
+        {
+            let st = state.clone();
+            let u = user.clone();
+            tokio::spawn(async move {
+                let guard_key = format!("total:{}", u.to_ascii_lowercase());
+                st.ig_archiving.lock().await.insert(guard_key.clone(), 0);
+                let cfg = st.config.settings.get().await.backends;
+                let ck = st.ig_cookie(None).await;
+                let n = st.instagram.profile_header(&u, ck.as_deref(), &cfg.instagram).await.post_count;
+                if n > 0 {
+                    if let Some(mut jj) = st.ig_library.archive_of(&u).await {
+                        if jj.total == 0 {
+                            jj.total = n;
+                            let _ = st.ig_library.set_archive(&u, Some(jj)).await;
+                        }
+                    }
+                }
+                st.ig_archiving.lock().await.remove(&guard_key);
+            });
+        }
+    }
+
     let entries = state.store.list_entries().await;
     let (mut done, mut active, mut failed, mut paused, mut partial) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -2952,6 +2981,22 @@ async fn queue_url(
     // once and choke the app).
     defer: bool,
 ) -> Option<String> {
+    // Dedup: if this exact URL already has an in-flight entry, hand back its id
+    // instead of queuing a second one. A double-click (or a viewer firing the
+    // same "Download story" twice) would otherwise spawn parallel runs fighting
+    // over the same output folder, leaving one stuck `Downloading`. Finished
+    // entries are NOT deduped — a `stories/<user>/` URL is re-used every day.
+    {
+        use luedd_core::queue::DownloadStatus as S;
+        let want = url.trim_end_matches('/');
+        if let Some(e) = state.store.list_entries().await.into_iter().find(|e| {
+            e.url.trim_end_matches('/') == want
+                && matches!(e.status, S::Queued | S::Downloading | S::Converting | S::Paused)
+        }) {
+            return Some(e.id);
+        }
+    }
+
     let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
 
     let settings = state.config.settings.get().await;

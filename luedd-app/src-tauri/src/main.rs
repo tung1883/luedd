@@ -196,6 +196,18 @@ struct PreviewOut {
     kind: String,
 }
 
+/// Of the given paths, which no longer exist on disk. One blocking task does
+/// all the stats (cheaper than a tokio fs call each); the plugin views use it
+/// to drop tiles for files deleted outside Lüdd.
+#[tauri::command]
+async fn missing_paths(paths: Vec<String>) -> Vec<String> {
+    tokio::task::spawn_blocking(move || {
+        paths.into_iter().filter(|p| !std::path::Path::new(p).exists()).collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// A preview image for a queue entry's file: the image itself for image files,
 /// a single grabbed frame for video (also works on the in-progress `.partial`),
 /// and an error otherwise so the UI can fall back to a file-type glyph.
@@ -601,6 +613,7 @@ fn main() {
             open_file,
             read_image_data_url,
             read_preview,
+            missing_paths,
             open_containing_folder,
             open_external_url,
             detection_window_set_pinned,
