@@ -130,6 +130,7 @@
   .status-Failed { color: var(--bad); }
   .status-Cancelled { color: var(--dim); }
   .status-Paused { color: var(--warn); }
+  .status-Seeding { color: var(--good); }
   /* Finished: the green dot pings - a ring expands outward and fades, then repeats */
   .status-Finished::before { animation: ping 1.5s ease-out infinite; }
   @keyframes ping {
@@ -327,6 +328,88 @@
   .pv-vtitle { font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .pv-vmeta { font-size: 10px; color: var(--dim); margin-top: 3px; }
   .pv-vstat { text-align: right; font-size: 11px; }
+  /* torrent view: table matching the All list + expand panel */
+  .tor-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+  .tor-table col.c-tog { width: 28px } .tor-table col.c-size { width: 72px }
+  .tor-table col.c-prog { width: 138px } .tor-table col.c-stat { width: 104px }
+  .tor-table col.c-pr { width: 50px } .tor-table col.c-dn { width: 78px }
+  .tor-table col.c-up { width: 74px } .tor-table col.c-ratio { width: 52px }
+  .tor-table col.c-eta { width: 54px } .tor-table col.c-act { width: 120px }
+  .tor-table thead th { font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim);
+    font-weight: 600; text-align: left; padding: 6px 7px; border-bottom: 1px solid var(--line); }
+  .tor-table th.r, .tor-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
+  .tor-table th.c, .tor-table td.c { text-align: center; }
+  .tor-table tbody td { padding: 8px 7px; border-bottom: 1px solid var(--line); vertical-align: middle;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .tor-table td:first-child, .tor-table th:first-child { padding-left: 8px; padding-right: 0; overflow: visible; }
+  .tor-table tr.trow { cursor: pointer; }
+  .tor-table tr.trow:hover > td { background: var(--surface); }
+  .tor-table tr.trow.open > td { background: var(--surface); border-bottom-color: transparent; }
+  /* status column — identical treatment to the All list */
+  .tor-table td.status-cell { white-space: nowrap; }
+  .tor-table td.status-cell::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; margin-right: 8px; vertical-align: middle; }
+  .tor-tog { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0; width: 16px;
+    display: inline-flex; justify-content: center; }
+  .tor-tog:hover { color: var(--text); }
+  .tor-tog svg { transition: transform .12s; }
+  tr.open .tor-tog svg { transform: rotate(90deg); }
+  .tor-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .tor-name .ic { width: 24px; height: 24px; border-radius: 6px; background: var(--surface-2); flex-shrink: 0;
+    display: grid; place-items: center; color: var(--dim); }
+  .tor-name .ic svg { width: 13px; height: 13px; }
+  .tor-name .tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tor-name.magnet .tx { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+  .tmeter { display: flex; align-items: center; gap: 7px; }
+  .tmeter .tk { flex: 1; height: 5px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .tmeter .fl { height: 100%; border-radius: 2px; background: var(--accent); }
+  .tmeter .fl.done { background: var(--good); } .tmeter .fl.pause { background: var(--warn); opacity: .8; }
+  .tmeter .fl.check { background: var(--violet); }
+  .tmeter .pc { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; width: 28px; text-align: right; }
+  .tdn { color: var(--accent); } .tup { color: var(--good); }
+  .tor-acts { display: flex; gap: 5px; justify-content: center; }
+  .tor-acts .ia { width: 27px; height: 25px; border-radius: 5px; border: 1px solid var(--line); background: transparent;
+    color: var(--dim); display: grid; place-items: center; flex-shrink: 0; }
+  .tor-acts .ia svg { width: 13px; height: 13px; display: block; }
+  .tor-acts .ia:hover { color: var(--text); border-color: var(--dim); }
+  .tor-acts .ia.play { border-color: var(--accent); color: var(--accent); }
+  .tor-acts .ia.danger:hover { background: var(--bad); color: var(--bg); border-color: var(--bad); }
+  /* detail panel */
+  tr.tdetail > td { padding: 0; background: var(--surface); border-bottom: 1px solid var(--line); }
+  .tpanel { display: grid; grid-template-columns: minmax(0,0.85fr) minmax(0,1.15fr); gap: 20px; padding: 4px 12px 16px 40px; }
+  .tpanel h5 { margin: 12px 0 8px; font-size: 9px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim); font-weight: 600; }
+  .tfacts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; align-items: baseline; }
+  .tfacts dt { color: var(--dim); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
+  .tfacts dd { margin: 0; font-size: 11px; }
+  .tfacts dd.mono { font-family: var(--mono); font-size: 10.5px; color: var(--disc); word-break: break-all; white-space: normal; }
+  .tsub { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  .tsub th { text-align: left; font-size: 8.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim);
+    font-weight: 600; padding: 3px 7px; border-bottom: 1px solid var(--line); }
+  .tsub th.r, .tsub td.r { text-align: right; font-variant-numeric: tabular-nums; }
+  .tsub td { padding: 4px 7px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tsub td.cc { text-align: center; padding-left: 0; padding-right: 0; }
+  .tsub tr:last-child td { border-bottom: 0; }
+  .tsub .fn { font-family: var(--mono); font-size: 10px; }
+  .tsub .fmini { display: flex; align-items: center; gap: 6px; }
+  .tsub .fmini .tk { width: 60px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; flex-shrink: 0; }
+  .tsub .fmini .fl { height: 100%; background: var(--accent); } .tsub .fmini .fl.done { background: var(--good); }
+  .tbox { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .tbox .scroll { overflow-y: scroll; overflow-x: hidden; }
+  .tbox.files .scroll { height: 150px; }
+  .tbox.peers .scroll { height: 76px; }
+  .tbox.peers .tsub thead th { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+  .tbox .bar { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; font-size: 10px;
+    color: var(--dim); background: var(--surface-2); }
+  .tbox .bar button { background: none; border: 0; color: var(--disc); font-size: 10px; font-family: var(--sans); padding: 0 4px; }
+  .tfile-chk { width: 13px; height: 13px; accent-color: var(--accent); }
+  /* file picker modal */
+  #tfiles-list { max-height: 46vh; overflow-y: scroll; border: 1px solid var(--line); border-radius: 7px; }
+  #tfiles-list .fr { display: grid; grid-template-columns: 22px 1fr 84px; gap: 8px; align-items: center;
+    padding: 6px 10px; font-size: 11px; border-top: 1px solid var(--line); }
+  #tfiles-list .fr:first-child { border-top: 0; }
+  #tfiles-list .fr > input { justify-self: center; }
+  #tfiles-list .fr .fn { font-family: var(--mono); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tfiles-list .fr .sz { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
   .pv-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; padding: 2px 4px 6px; }
   .pv-cell { position: relative; aspect-ratio: 1; background: var(--surface-2); border-radius: 3px; overflow: hidden;
     cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--dim);
@@ -623,6 +706,28 @@
             <button type="button" id="ytdlp-update" class="secondary" data-i18n="check_updates" style="margin-top:6px">Check for updates</button>
           </div>
         </div>
+
+        <div class="set-section">
+          <h3 data-i18n="sec_torrent">torrent</h3>
+          <div class="set-row">
+            <label for="torrent-dir" data-i18n="tor_dir">Torrent download folder</label>
+            <div class="dir-row">
+              <input id="torrent-dir" type="text" class="set-field" placeholder="same as download folder" />
+              <button type="button" class="secondary" data-i18n="browse" id="torrent-dir-browse">Browse&hellip;</button>
+            </div>
+          </div>
+          <div class="set-grid2">
+            <div class="set-row"><span class="set-sub" data-i18n="tor_port">listen port</span><input id="torrent-port" type="text" class="set-field" placeholder="4240" /></div>
+            <div class="set-row"><span class="set-sub" data-i18n="tor_max_peers">max peers / torrent</span><input id="torrent-max-peers" type="text" class="set-field" placeholder="—" /></div>
+            <div class="set-row"><span class="set-sub" data-i18n="tor_dl_limit">download limit (KB/s)</span><input id="torrent-dl-limit" type="text" class="set-field" placeholder="—" /></div>
+            <div class="set-row"><span class="set-sub" data-i18n="tor_ul_limit">upload limit (KB/s)</span><input id="torrent-ul-limit" type="text" class="set-field" placeholder="—" /></div>
+          </div>
+          <label class="checkbox"><input type="checkbox" id="torrent-dht" checked /> <span data-i18n="tor_dht">Enable DHT (needed for magnet links)</span></label>
+          <label class="checkbox"><input type="checkbox" id="torrent-upnp" checked /> <span data-i18n="tor_upnp">Enable UPnP / NAT-PMP port forwarding</span></label>
+          <label class="checkbox"><input type="checkbox" id="torrent-seed-forever" /> <span data-i18n="tor_seed_forever">Keep seeding after 100% (until removed)</span></label>
+          <div class="ig-note" data-i18n="tor_note">librqbit — embedded, no install.</div>
+          <div class="ig-note" data-i18n="tor_restart_hint">Engine settings apply after an app restart.</div>
+        </div>
       </div>
       <div class="set-foot">
         <button id="settings-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
@@ -765,6 +870,24 @@
       <div id="quality-options" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 300px; overflow-y: auto;"></div>
       <div style="display: flex; justify-content: flex-end;">
         <button id="quality-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tfiles-overlay" class="overlay">
+    <div class="overlay-card" style="min-width: 460px; max-width: 620px;">
+      <div style="font-size: 14px; color: var(--text); margin-bottom: 3px;" id="tfiles-title" data-i18n="tor_pick_files">Choose files to download</div>
+      <div style="font-size: 11px; color: var(--dim); margin-bottom: 10px;" id="tfiles-name"></div>
+      <div style="display:flex; gap:12px; font-size:11px; color:var(--dim); margin-bottom:8px;">
+        <button class="secondary small" id="tfiles-all" data-i18n="tor_select_all">Select all</button>
+        <button class="secondary small" id="tfiles-none" data-i18n="tor_select_none">None</button>
+        <span style="flex:1"></span>
+        <span id="tfiles-count"></span>
+      </div>
+      <div id="tfiles-list"></div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+        <button id="tfiles-cancel" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="tfiles-ok" data-i18n="tor_download_sel">Download</button>
       </div>
     </div>
   </div>
@@ -1027,7 +1150,15 @@ function formatProgress(e) {
 // Split a URL so the origin (scheme + host) always stays fully visible; the
 // middle path collapses first, the trailing segment (filename) second. The
 // query string is dropped here - the full URL is in the tooltip / on copy.
+function magnetName(u) {
+  const m = /[?&]dn=([^&]+)/.exec(u);
+  if (m) { try { return decodeURIComponent(m[1].replace(/\+/g, " ")); } catch { return m[1]; } }
+  const ih = /xt=urn:bt[im]h:([^&]+)/i.exec(u);
+  return ih ? "magnet · " + ih[1].slice(0, 16) + "…" : "magnet link";
+}
+
 function splitUrl(u) {
+  if (u.startsWith("magnet:")) return { origin: "", mid: "", tail: magnetName(u) };
   try {
     const url = new URL(u);
     const path = url.pathname || "/";
@@ -1057,7 +1188,7 @@ function kindLabel(kind) {
 }
 
 // The backend that fetched a download. http/hls/dash are all the built-in engine.
-const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Lüdd-Insta", instaloader: "instaloader", torrent: "torrent" };
+const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Lüdd-Insta", instaloader: "instaloader", torrent: "Torrent" };
 function providerLabel(id) {
   return PROVIDER_LABELS[id] ?? id ?? "Lüdd";
 }
@@ -1150,6 +1281,7 @@ async function refresh() {
   }
   firstLoadOk = true;
   dismissBootSpinner();
+  window.__lastEntries = entries;
   const liveIds = new Set(entries.map(e => e.id));
   for (const id of [...selected]) {
     if (!liveIds.has(id)) selected.delete(id);
@@ -1527,6 +1659,7 @@ function renderPluginView(provider, entries) {
 
   const sig = pvStructSig(provider, entries);
   if (pv.dataset.sig === sig && pv.childElementCount) {
+    if (provider === PROVIDER_LABELS.torrent) { scheduleTorrentStats(); return; }
     // Same structure — just refresh live status text in place, no DOM rebuild.
     const byId = new Map(entries.map(e => [e.id, e]));
     pv.querySelectorAll(".pv-cell[data-eid]").forEach(el => {
@@ -1554,6 +1687,16 @@ function renderPluginView(provider, entries) {
   }
   pv.dataset.sig = sig;
   pv.innerHTML = "";
+
+  if (provider === PROVIDER_LABELS.torrent) {
+    if (!entries.length) {
+      pv.innerHTML = `<div class="empty" style="padding:24px;text-align:center;color:var(--dim)">${esc(t("no_matches"))}</div>`;
+      return;
+    }
+    pv.appendChild(renderTorrentList(entries));
+    return;
+  }
+
   pvSweepMissing(provider, entries);
   const isIG = provider === "Lüdd-Insta";
   // Drop entries whose every file is gone from disk.
@@ -1623,6 +1766,402 @@ function renderYtGroup(g, entries) {
     });
     g.appendChild(row);
   }
+}
+
+// ============ torrent view: table + expand panel + file selection ============
+const torrentStats = {};      // url -> TorrentStat (list row)
+const torrentDetail = {};     // url -> TorrentDetail (expanded panel)
+const torrentPeerPrev = {};   // url -> { addr: {dl, ul, t} }  for peer-rate diffing
+const torrentOpen = new Set(); // expanded entry ids
+
+const TOR_ICONS = {
+  caret:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  file:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M15 4v5h5"/></svg>',
+  pause:  '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+  play:   '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+  retry:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  trash:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M9 7V4h6v3"/></svg>',
+};
+
+function formatDuration(secs) {
+  secs = Math.max(0, Math.round(secs));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+// One of: metadata | checking | downloading | seeding | paused | error | done
+function torState(e) {
+  if (e.status === "Finished") return "done";
+  if (e.status === "Failed") return "error";
+  const s = torrentStats[e.url];
+  if (s) return s.state;
+  if (e.status === "Paused") return "paused";
+  return "metadata";
+}
+// Status column, styled exactly like the All list. Only torrent-specific twist:
+// a finished-but-still-running torrent reads "Seeding" (green), everything else
+// maps through the shared statusLabel() ("Downloading" -> "Running", etc.).
+function torDispStatus(e) {
+  const s = torrentStats[e.url];
+  if (s && s.finished && e.status !== "Finished") return "Seeding";
+  return e.status;
+}
+function torStatusHtml(e) {
+  const st = torDispStatus(e);
+  return `<td class="status-cell status-${st} j-stat">${esc(statusLabel(st))}</td>`;
+}
+
+function torName(e) {
+  const s = torrentStats[e.url];
+  return (s && s.name) || e.title || (e.url.startsWith("magnet:") ? magnetName(e.url) : baseName(e.dest)) || "torrent";
+}
+
+function torProgress(e) {
+  const s = torrentStats[e.url];
+  const st = torState(e);
+  let pct = 0, cls = "", label = "–";
+  if (e.status === "Finished") { pct = 100; cls = "done"; label = "100%"; }
+  else if (s && s.total_bytes) {
+    pct = Math.min(100, Math.floor(s.progress_bytes / s.total_bytes * 100));
+    label = pct + "%";
+    if (s.finished) { cls = "done"; label = t("tor_prog_seeding"); }
+    else if (st === "paused") cls = "pause";
+    else if (st === "checking") { cls = "check"; label = t("tor_prog_checking") + " " + pct + "%"; }
+  } else if (e.status === "Paused" && e.progress && e.progress.total_bytes) {
+    pct = Math.min(100, Math.floor(e.progress.downloaded_bytes / e.progress.total_bytes * 100));
+    label = pct + "%"; cls = "pause";
+  } else if (st === "metadata") {
+    label = t("tor_prog_metadata");
+  } else if (st === "checking") {
+    label = t("tor_prog_checking"); cls = "check";
+  }
+  const wide = /[A-Za-z]/.test(label);
+  return `<div class="tmeter"><span class="tk"><span class="fl ${cls}" style="width:${pct}%"></span></span>`
+    + `<span class="pc"${wide ? ' style="width:auto"' : ""}>${esc(label)}</span></div>`;
+}
+
+function torCells(e) {
+  const s = torrentStats[e.url] || {};
+  const st = torState(e);
+  const live = st === "downloading" || st === "seeding";
+  return {
+    size: s.total_bytes ? formatBytes(s.total_bytes)
+      : (e.progress && e.progress.total_bytes ? formatBytes(e.progress.total_bytes) : "–"),
+    peers: s.peers != null ? String(s.peers) : "–",
+    dn: live && s.dl_speed ? formatBytesPerSec(s.dl_speed) : "0",
+    up: live && s.ul_speed ? formatBytesPerSec(s.ul_speed) : "0",
+    ratio: s.ratio ? s.ratio.toFixed(2) : (e.status === "Finished" ? "–" : "0.00"),
+    eta: (s.eta_secs != null && !s.finished && s.dl_speed) ? formatDuration(s.eta_secs)
+      : (s.finished ? "∞" : "–"),
+  };
+}
+
+function torActions(e) {
+  const st = torState(e);
+  const b = [];
+  if (["downloading", "checking", "metadata", "seeding"].includes(st))
+    b.push(`<button class="ia" data-act="pause" title="${esc(t("act_pause"))}">${TOR_ICONS.pause}</button>`);
+  if (st === "paused")
+    b.push(`<button class="ia play" data-act="resume" title="${esc(t("act_resume"))}">${TOR_ICONS.play}</button>`);
+  if (st === "error")
+    b.push(`<button class="ia" data-act="resume" title="${esc(t("act_retry"))}">${TOR_ICONS.retry}</button>`);
+  b.push(`<button class="ia" data-act="folder" title="${esc(t("open_folder"))}">${TOR_ICONS.folder}</button>`);
+  b.push(`<button class="ia danger" data-act="remove" title="${esc(t("remove"))}">${TOR_ICONS.trash}</button>`);
+  return `<div class="tor-acts">${b.join("")}</div>`;
+}
+
+function torRow(e) {
+  const tr = document.createElement("tr");
+  tr.className = "trow" + (torrentOpen.has(e.id) ? " open" : "");
+  tr.dataset.eid = e.id;
+  const isMagnet = e.url.startsWith("magnet:") && !(torrentStats[e.url] && torrentStats[e.url].name);
+  const nm = torName(e);
+  const c = torCells(e);
+  tr.innerHTML =
+      `<td><button class="tor-tog" tabindex="-1">${CARET}</button></td>`
+    + `<td><div class="tor-name${isMagnet ? " magnet" : ""}"><span class="ic">${TOR_ICONS.file}</span><span class="tx" title="${esc(nm)}">${esc(nm)}</span></div></td>`
+    + `<td class="r j-size">${esc(c.size)}</td>`
+    + `<td class="j-prog">${torProgress(e)}</td>`
+    + torStatusHtml(e)
+    + `<td class="r j-peers">${c.peers}</td>`
+    + `<td class="r tdn j-dn">${esc(c.dn)}</td>`
+    + `<td class="r tup j-up">${esc(c.up)}</td>`
+    + `<td class="r j-ratio">${esc(c.ratio)}</td>`
+    + `<td class="r j-eta">${esc(c.eta)}</td>`
+    + `<td class="c j-act">${torActions(e)}</td>`;
+  tr.addEventListener("click", ev => {
+    const ia = ev.target.closest(".ia");
+    if (ia) { ev.stopPropagation(); torAct(e, ia.dataset.act); return; }
+    torToggle(e.id);
+  });
+  return tr;
+}
+
+function torDetailRow(e) {
+  const tr = document.createElement("tr");
+  tr.className = "tdetail";
+  tr.dataset.eid = e.id;
+  tr.innerHTML = `<td colspan="11"><div class="tpanel j-panel">${torPanelHtml(e)}</div></td>`;
+  tr.addEventListener("click", ev => {
+    if (ev.target.closest(".tfile-chk")) { ev.stopPropagation(); tr.querySelector(".j-panel").dataset.dirty = "1"; return; }
+    const b = ev.target.closest("[data-pact]");
+    if (!b) return;
+    ev.stopPropagation();
+    torPanelAct(e, b.dataset.pact, tr);
+  });
+  return tr;
+}
+
+function torPanelHtml(e) {
+  const d = torrentDetail[e.url];
+  if (!d) return `<div style="grid-column:1/-1;color:var(--dim);font-size:11px;padding:8px 0">${esc(t("tor_loading_detail"))}</div>`;
+  const facts = `<h5>${esc(t("tor_details"))}</h5><dl class="tfacts">`
+    + `<dt>${esc(t("tor_infohash"))}</dt><dd class="mono">${esc(d.info_hash)}</dd>`
+    + `<dt>${esc(t("tor_savepath"))}</dt><dd class="mono">${esc(d.save_path)}</dd>`
+    + `<dt>${esc(t("tor_pieces"))}</dt><dd>${d.total_pieces.toLocaleString()}</dd>`
+    + `<dt>${esc(t("tor_downloaded"))}</dt><dd>${formatBytes(d.progress_bytes)} / ${formatBytes(d.total_bytes)}</dd>`
+    + `<dt>${esc(t("tor_uploaded"))}</dt><dd>${formatBytes(d.uploaded_bytes)} · ${esc(t("tor_ratio", { r: d.ratio.toFixed(2) }))}</dd>`
+    + `</dl>`
+    + (e.url.startsWith("magnet:")
+        ? `<div style="margin-top:10px"><button class="secondary small" data-pact="copy">${esc(t("tor_copy_magnet"))}</button></div>` : "");
+
+  const sel = d.files.filter(f => f.selected).length;
+  const frows = d.files.map(f => {
+    const pct = f.size_bytes ? Math.min(100, Math.floor(f.downloaded_bytes / f.size_bytes * 100)) : 100;
+    return `<tr><td class="cc" style="width:22px"><input type="checkbox" class="tfile-chk" data-fi="${f.index}"${f.selected ? " checked" : ""}></td>`
+      + `<td class="fn" title="${esc(f.path)}">${esc(f.path)}</td>`
+      + `<td class="r" style="width:66px;color:var(--dim)">${formatBytes(f.size_bytes)}</td>`
+      + `<td style="width:104px"><div class="fmini"><span class="tk"><span class="fl ${pct >= 100 ? "done" : ""}" style="width:${pct}%"></span></span><span class="pc" style="width:28px;text-align:right;color:var(--dim)">${pct}%</span></div></td></tr>`;
+  }).join("");
+  const files = `<h5>${esc(t("tor_files"))} · ${sel}/${d.files.length}</h5>`
+    + `<div class="tbox files"><div class="scroll" data-k="files"><table class="tsub"><tbody>${frows}</tbody></table></div>`
+    + `<div class="bar"><span>${esc(t("tor_apply_hint"))}</span>`
+    + `<span><button data-pact="fall">${esc(t("tor_select_all"))}</button> <button data-pact="fnone">${esc(t("tor_select_none"))}</button> <button data-pact="fapply">${esc(t("tor_apply"))}</button></span></div></div>`;
+
+  const peerList = d.peers.slice().sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
+  const prows = peerList.length ? peerList.map(p => {
+    const r = torPeerRate(e.url, p);
+    return `<tr><td class="fn">${esc(p.addr)}</td><td style="color:var(--dim)">${esc(p.client || "–")}</td>`
+      + `<td class="r tdn">${r.dl ? formatBytesPerSec(r.dl) : "0"}</td>`
+      + `<td class="r tup">${r.ul ? formatBytesPerSec(r.ul) : "0"}</td>`
+      + `<td class="r" style="color:var(--dim)">${formatBytes(p.downloaded_bytes)}</td></tr>`;
+  }).join("") : `<tr><td colspan="5" style="color:var(--dim);padding:8px">${esc(t("tor_no_peers"))}</td></tr>`;
+  const peers = `<h5>${esc(t("tor_peers_h"))} · ${d.peers.length}</h5>`
+    + `<div class="tbox peers"><div class="scroll" data-k="peers"><table class="tsub"><thead><tr><th>${esc(t("tor_addr"))}</th><th>${esc(t("tor_client"))}</th><th class="r">↓</th><th class="r">↑</th><th class="r">${esc(t("tor_got"))}</th></tr></thead><tbody>${prows}</tbody></table></div></div>`;
+
+  return `<div>${facts}</div><div>${files}${peers}</div>`;
+}
+
+function torPeerRate(url, p) {
+  const prev = (torrentPeerPrev[url] || {})[p.addr];
+  const now = Date.now();
+  if (!prev || now <= prev.t) return { dl: 0, ul: 0 };
+  const dt = (now - prev.t) / 1000;
+  return {
+    dl: Math.max(0, (p.downloaded_bytes - prev.dl) / dt),
+    ul: Math.max(0, (p.uploaded_bytes - prev.ul) / dt),
+  };
+}
+
+function torToggle(id) {
+  const tr = document.querySelector(`#plugin-view tr.trow[data-eid="${CSS.escape(id)}"]`);
+  if (!tr) return;
+  const d = tr.nextElementSibling;
+  if (torrentOpen.has(id)) {
+    torrentOpen.delete(id); tr.classList.remove("open"); if (d) d.hidden = true;
+  } else {
+    torrentOpen.add(id); tr.classList.add("open"); if (d) d.hidden = false;
+    const e = (window.__lastEntries || []).find(x => x.id === id);
+    if (e) { refreshTorrentDetail(e); scheduleTorrentStats(); }
+  }
+}
+
+async function torAct(e, act) {
+  if (act === "pause") await invoke("pause_entry", { id: e.id });
+  else if (act === "resume") await invoke("retry_entry", { id: e.id });
+  else if (act === "folder") await invoke("open_containing_folder", { path: e.dest });
+  else if (act === "remove") {
+    const { confirmed, deleteFiles } = await confirmAction(t("confirm_remove_one"));
+    if (!confirmed) return;
+    await invoke("remove_entry", { id: e.id, deleteFiles });
+  }
+  await refresh();
+}
+
+async function torPanelAct(e, act, tr) {
+  const chks = [...tr.querySelectorAll(".tfile-chk")];
+  if (act === "fall") { chks.forEach(c => c.checked = true); tr.querySelector(".j-panel").dataset.dirty = "1"; return; }
+  if (act === "fnone") { chks.forEach(c => c.checked = false); tr.querySelector(".j-panel").dataset.dirty = "1"; return; }
+  if (act === "fapply") {
+    const idx = chks.filter(c => c.checked).map(c => +c.dataset.fi);
+    if (!idx.length) { document.getElementById("url").focus(); return; }
+    try { await invoke("torrent_set_files", { url: e.url, files: idx }); }
+    catch (err) { alertToast(String(err)); return; }
+    tr.querySelector(".j-panel").dataset.dirty = "";
+    await refreshTorrentDetail(e);
+    return;
+  }
+  if (act === "copy") { try { await navigator.clipboard.writeText(e.url); } catch {} return; }
+}
+
+function alertToast(msg) { console.warn(msg); }
+
+async function refreshTorrentDetail(e) {
+  let d;
+  try { d = await invoke("torrent_detail", { url: e.url }); } catch { return; }
+  if (!d) return;
+  torrentDetail[e.url] = d;
+  const now = Date.now();
+  const snap = {};
+  for (const p of d.peers) snap[p.addr] = { dl: p.downloaded_bytes, ul: p.uploaded_bytes, t: now };
+  const panel = document.querySelector(`#plugin-view tr.tdetail[data-eid="${CSS.escape(e.id)}"] .j-panel`);
+  if (panel) {
+    const checkedBefore = new Set([...panel.querySelectorAll(".tfile-chk:checked")].map(c => +c.dataset.fi));
+    const dirty = panel.dataset.dirty === "1";
+    const scroll = {};
+    panel.querySelectorAll(".tbox .scroll").forEach(el => { scroll[el.dataset.k] = el.scrollTop; });
+    panel.innerHTML = torPanelHtml(e);
+    panel.querySelectorAll(".tbox .scroll").forEach(el => { if (scroll[el.dataset.k] != null) el.scrollTop = scroll[el.dataset.k]; });
+    if (dirty) {
+      panel.dataset.dirty = "1";
+      panel.querySelectorAll(".tfile-chk").forEach(c => { c.checked = checkedBefore.has(+c.dataset.fi); });
+    }
+  }
+  torrentPeerPrev[e.url] = snap;
+}
+
+function renderTorrentList(entries) {
+  const wrap = document.createElement("div");
+  wrap.style.overflowX = "auto";
+  const tbl = document.createElement("table");
+  tbl.className = "tor-table";
+  tbl.innerHTML =
+      `<colgroup><col class="c-tog"><col><col class="c-size"><col class="c-prog"><col class="c-stat"><col class="c-pr"><col class="c-dn"><col class="c-up"><col class="c-ratio"><col class="c-eta"><col class="c-act"></colgroup>`
+    + `<thead><tr><th></th><th>${esc(t("tor_col_name"))}</th><th class="r">${esc(t("tor_col_size"))}</th>`
+    + `<th>${esc(t("tor_col_progress"))}</th><th>${esc(t("tor_col_status"))}</th><th class="r">${esc(t("tor_peers_short"))}</th>`
+    + `<th class="r">↓</th><th class="r">↑</th><th class="r">${esc(t("tor_col_ratio"))}</th><th class="r">ETA</th>`
+    + `<th class="c">${esc(t("tor_col_actions"))}</th></tr></thead>`;
+  const tb = document.createElement("tbody");
+  for (const e of entries) {
+    tb.appendChild(torRow(e));
+    const d = torDetailRow(e);
+    d.hidden = !torrentOpen.has(e.id);
+    tb.appendChild(d);
+  }
+  tbl.appendChild(tb);
+  wrap.appendChild(tbl);
+  scheduleTorrentStats();
+  return wrap;
+}
+
+function patchTorRow(e) {
+  const tr = document.querySelector(`#plugin-view tr.trow[data-eid="${CSS.escape(e.id)}"]`);
+  if (!tr) return;
+  const c = torCells(e);
+  const set = (sel, html) => { const el = tr.querySelector(sel); if (el && el.innerHTML !== html) el.innerHTML = html; };
+  set(".j-size", esc(c.size));
+  set(".j-prog", torProgress(e));
+  const stat = tr.querySelector(".j-stat");
+  const sh = torStatusHtml(e);
+  if (stat && stat.outerHTML !== sh) stat.outerHTML = sh;
+  set(".j-peers", c.peers);
+  set(".j-dn", esc(c.dn));
+  set(".j-up", esc(c.up));
+  set(".j-ratio", esc(c.ratio));
+  set(".j-eta", esc(c.eta));
+  set(".j-act", torActions(e));
+}
+
+let torrentStatsTimer = null;
+let torDetailTick = 0;
+async function scheduleTorrentStats() {
+  if (torrentStatsTimer) return;
+  const tick = async () => {
+    torrentStatsTimer = null;
+    if (currentView !== PROVIDER_LABELS.torrent) return;
+    const rows = [...document.querySelectorAll("#plugin-view tr.trow[data-eid]")];
+    if (!rows.length) return;
+    const byUrl = new Map();
+    const urls = [];
+    for (const r of rows) {
+      const e = (window.__lastEntries || []).find(x => x.id === r.dataset.eid);
+      if (e) { urls.push(e.url); byUrl.set(e.url, e); }
+    }
+    let stats = [];
+    try { stats = await invoke("torrent_stats", { urls }); } catch { return; }
+    let anyLive = false;
+    const seen = new Set();
+    for (const s of stats) {
+      torrentStats[s.url] = s;
+      seen.add(s.url);
+      if (!s.finished || s.ul_speed) anyLive = true;
+      const e = byUrl.get(s.url);
+      if (e) patchTorRow(e);
+    }
+    for (const [url, e] of byUrl) if (!seen.has(url)) patchTorRow(e);
+
+    torDetailTick = (torDetailTick + 1) % 2;
+    if (torDetailTick === 0) {
+      for (const id of torrentOpen) {
+        const e = (window.__lastEntries || []).find(x => x.id === id);
+        if (e) await refreshTorrentDetail(e);
+      }
+    }
+    if (currentView !== PROVIDER_LABELS.torrent) return;
+    if (anyLive) torrentStatsTimer = setTimeout(tick, 1500);
+    else if (torrentOpen.size) torrentStatsTimer = setTimeout(tick, 3000);
+  };
+  torrentStatsTimer = setTimeout(tick, 250);
+}
+
+// The add-form file picker (magnet / .torrent). Resolves to an index array,
+// [] for "all", or null if the user cancelled.
+function torrentFilePicker(preview) {
+  return new Promise(resolve => {
+    const ov = document.getElementById("tfiles-overlay");
+    const list = document.getElementById("tfiles-list");
+    const cnt = document.getElementById("tfiles-count");
+    const okB = document.getElementById("tfiles-ok");
+    const cB = document.getElementById("tfiles-cancel");
+    document.getElementById("tfiles-name").textContent =
+      `${preview.name}  ·  ${formatBytes(preview.total_bytes)}  ·  ${t("pv_items", { n: preview.files.length })}`;
+    list.innerHTML = preview.files.map(f =>
+      `<label class="fr"><input type="checkbox" class="tfp" data-i="${f.index}" data-sz="${f.size_bytes}" checked>`
+      + `<span class="fn" title="${esc(f.path)}">${esc(f.path)}</span><span class="sz">${formatBytes(f.size_bytes)}</span></label>`
+    ).join("");
+    const upd = () => {
+      const on = [...list.querySelectorAll(".tfp:checked")];
+      const bytes = on.reduce((a, c) => a + Number(c.dataset.sz), 0);
+      cnt.textContent = t("tor_sel_count", { n: on.length, total: preview.files.length, size: formatBytes(bytes) });
+      okB.disabled = on.length === 0;
+    };
+    const onAll = () => { list.querySelectorAll(".tfp").forEach(c => c.checked = true); upd(); };
+    const onNone = () => { list.querySelectorAll(".tfp").forEach(c => c.checked = false); upd(); };
+    const finish = val => {
+      ov.style.display = "none";
+      list.removeEventListener("change", upd);
+      document.getElementById("tfiles-all").removeEventListener("click", onAll);
+      document.getElementById("tfiles-none").removeEventListener("click", onNone);
+      okB.removeEventListener("click", onOk);
+      cB.removeEventListener("click", onCancel);
+      resolve(val);
+    };
+    const onOk = () => {
+      const idx = [...list.querySelectorAll(".tfp:checked")].map(c => +c.dataset.i);
+      finish(idx.length === preview.files.length ? [] : idx);
+    };
+    const onCancel = () => finish(null);
+    list.addEventListener("change", upd);
+    document.getElementById("tfiles-all").addEventListener("click", onAll);
+    document.getElementById("tfiles-none").addEventListener("click", onNone);
+    okB.addEventListener("click", onOk);
+    cB.addEventListener("click", onCancel);
+    upd();
+    ov.style.display = "flex";
+  });
 }
 
 function renderIgGroup(g, entries) {
@@ -1708,7 +2247,15 @@ document.getElementById("retry-selected-btn").addEventListener("click", async ()
   await refresh();
 });
 
+function isTorrentLink(v) {
+  const s = v.trim();
+  if (s.startsWith("magnet:")) return true;
+  const path = s.split(/[?#]/)[0].toLowerCase();
+  if (path.endsWith(".torrent")) return true;
+  return false;
+}
 function validLink(v) {
+  if (isTorrentLink(v)) return true;
   try { const u = new URL(v.trim()); return u.protocol === "http:" || u.protocol === "https:"; }
   catch { return false; }
 }
@@ -1736,21 +2283,40 @@ document.getElementById("add-form").addEventListener("submit", async (ev) => {
   clearAddHint();
 
   let quality = null;
+  let torrentFiles = null;   // null => all files
   const submitBtn = ev.target.querySelector("button[type=submit]");
+  const btnText = submitBtn.textContent;
   submitBtn.disabled = true;
   try {
-    const variants = await invoke("probe_qualities", { url });
-    if (variants.length > 0) {
-      quality = await pickQuality(variants);
-      if (quality === null && variants.length > 0) {
-        return;
+    if (isTorrentLink(url)) {
+      submitBtn.textContent = t("tor_reading");
+      let preview = null;
+      try {
+        preview = await invoke("torrent_preview", { url });
+      } catch (err) {
+        const { confirmed } = await confirmAction(t("tor_preview_failed", { e: String(err).split("\n")[0] }));
+        if (!confirmed) return;
+      }
+      if (preview) {
+        const picked = await torrentFilePicker(preview);
+        if (picked === null) return;          // cancelled
+        torrentFiles = picked.length ? picked : null;
+      }
+    } else {
+      const variants = await invoke("probe_qualities", { url });
+      if (variants.length > 0) {
+        quality = await pickQuality(variants);
+        if (quality === null && variants.length > 0) {
+          return;
+        }
       }
     }
   } finally {
     submitBtn.disabled = false;
+    submitBtn.textContent = btnText;
   }
 
-  await invoke("add_download", { url, filename, quality });
+  await invoke("add_download", { url, filename, quality, files: torrentFiles });
   const urlIn = document.getElementById("url");
   urlIn.value = "";
   urlIn.closest(".clr-wrap")?.classList.remove("has-text");
@@ -2143,6 +2709,18 @@ function openSettings(settings) {
   document.getElementById("ytdlp-limit-rate").value = bk.ytdlp_limit_rate || "";
   document.getElementById("ytdlp-frags").value = bk.ytdlp_concurrent_fragments == null ? "" : bk.ytdlp_concurrent_fragments;
 
+  // torrent
+  const tor = (settings.backends && settings.backends.torrent) || {};
+  const torNum = (id, v) => document.getElementById(id).value = (v == null ? "" : v);
+  document.getElementById("torrent-dir").value = tor.download_dir || "";
+  torNum("torrent-port", tor.listen_port);
+  torNum("torrent-max-peers", tor.max_peers_per_torrent);
+  torNum("torrent-dl-limit", tor.download_limit_kbps);
+  torNum("torrent-ul-limit", tor.upload_limit_kbps);
+  document.getElementById("torrent-dht").checked = tor.enable_dht !== false;
+  document.getElementById("torrent-upnp").checked = tor.enable_upnp !== false;
+  document.getElementById("torrent-seed-forever").checked = tor.seed_forever === true;
+
   // advanced groups start collapsed every time
   document.querySelectorAll(".set-fold").forEach(d => { d.open = false; });
   refreshInstaloaderStatus();
@@ -2230,6 +2808,11 @@ document.getElementById("browse-btn").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("torrent-dir-browse").addEventListener("click", async () => {
+  const picked = await invoke("pick_folder");
+  if (picked) document.getElementById("torrent-dir").value = picked;
+});
+
 // "Browse…" next to the instaloader / python path fields.
 document.querySelectorAll("button[data-pick]").forEach(btn => {
   btn.addEventListener("click", async () => {
@@ -2308,6 +2891,18 @@ document.getElementById("save-settings-btn").addEventListener("click", async () 
   backends.cookies_from_browser = ddYtCookies.dataset.value || null;
   backends.ytdlp_limit_rate = igIn("ytdlp-limit-rate");
   backends.ytdlp_concurrent_fragments = numOrNull("ytdlp-frags");
+
+  backends.torrent = {
+    ...(backends.torrent || {}),
+    download_dir: document.getElementById("torrent-dir").value.trim() || null,
+    listen_port: numOrNull("torrent-port"),
+    max_peers_per_torrent: numOrNull("torrent-max-peers"),
+    download_limit_kbps: numOrNull("torrent-dl-limit"),
+    upload_limit_kbps: numOrNull("torrent-ul-limit"),
+    enable_dht: document.getElementById("torrent-dht").checked,
+    enable_upnp: document.getElementById("torrent-upnp").checked,
+    seed_forever: document.getElementById("torrent-seed-forever").checked,
+  };
   const settings = {
     ...(loadedSettings || {}),
     download_dir: document.getElementById("download-dir").value.trim(),

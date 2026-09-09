@@ -17,10 +17,17 @@ use crate::jobs::DownloadKind;
 pub mod builtin;
 pub mod instagram;
 pub mod instaloader;
+#[cfg(feature = "torrent")]
+pub mod torrent;
 pub mod ytdlp;
 
 pub use builtin::{DashBackend, HlsBackend, HttpBackend};
 pub use instagram::InstagramBackend;
+#[cfg(feature = "torrent")]
+pub use torrent::{
+    TorrentBackend, TorrentDetail, TorrentFileStat, TorrentPeer, TorrentPreview, TorrentPreviewFile,
+    TorrentStat,
+};
 pub use ytdlp::YtdlpBackend;
 
 /// How strongly a backend claims a URL. Higher wins.
@@ -141,6 +148,20 @@ pub trait DownloadBackend: Send + Sync {
     }
 
     async fn run(&self, req: &DownloadReq, progress: Option<&ProgressTx>) -> Result<Outcome>;
+
+    /// Called by the queue when the user pauses an entry, *after* the run task
+    /// is aborted. A torrent's transfer lives in a background session that the
+    /// abort doesn't touch, so it pauses it here. No-op for every other backend.
+    async fn on_pause(&self, _url: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called by the queue when the user removes an entry, *before* the on-disk
+    /// artifacts are deleted (so a torrent session releases its file handles
+    /// first — `remove_dir_all` fails on Windows otherwise).
+    async fn on_remove(&self, _url: &str, _delete_files: bool) -> Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +191,7 @@ pub fn provider_label(backend_id: &str) -> &str {
         "http" | "hls" | "dash" => "Lüdd",
         "ytdlp" => "yt-dlp",
         "instagram" => "Lüdd-Insta",
-        "torrent" => "torrent",
+        "torrent" => "Torrent",
         other => other,
     }
 }
@@ -374,6 +395,32 @@ pub struct BackendConfig {
     /// Manual host -> backend overrides.
     pub host_routing: Vec<HostRoute>,
     pub instagram: InstagramConfig,
+    pub torrent: TorrentConfig,
+}
+
+/// Embedded BitTorrent engine (librqbit) settings. All optional; `None` = the
+/// default noted per field. Bound at first use — a change needs an app restart.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TorrentConfig {
+    /// Where torrents download to; blank => `Settings.download_dir`. Each
+    /// torrent still gets its own sub-folder under this.
+    pub download_dir: Option<PathBuf>,
+    /// TCP/uTP + DHT listen port. `None` => 4240.
+    pub listen_port: Option<u16>,
+    /// `None` => true. DHT is required for magnet links.
+    pub enable_dht: Option<bool>,
+    /// `None` => true. UPnP / NAT-PMP port forwarding.
+    pub enable_upnp: Option<bool>,
+    /// Global download cap, KB/s. `None`/0 => unlimited.
+    pub download_limit_kbps: Option<u32>,
+    /// Global upload cap, KB/s. `None`/0 => unlimited.
+    pub upload_limit_kbps: Option<u32>,
+    /// Max connected peers per torrent. `None` => librqbit default.
+    pub max_peers_per_torrent: Option<u32>,
+    /// `None`/false => stop uploading at 100%. `true` => keep seeding until the
+    /// entry is removed.
+    pub seed_forever: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -463,6 +510,24 @@ mod tests {
         assert!(host_matches("cdn.instagram.com", ".instagram.com"));
         assert!(!host_matches("notyoutube.com", "youtube.com"));
         assert!(!host_matches("youtube.com.evil.com", "youtube.com"));
+    }
+
+    #[test]
+    fn backend_config_torrent_serde_roundtrip() {
+        // Old file with no `torrent` key still loads.
+        let old: BackendConfig = serde_json::from_str(r#"{"ytdlp_path":null}"#).unwrap();
+        assert!(old.torrent.download_dir.is_none());
+        assert_eq!(old.torrent.seed_forever, None);
+
+        let mut cfg = BackendConfig::default();
+        cfg.torrent.listen_port = Some(51413);
+        cfg.torrent.seed_forever = Some(true);
+        cfg.torrent.upload_limit_kbps = Some(2000);
+        let s = serde_json::to_string(&cfg).unwrap();
+        let back: BackendConfig = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.torrent.listen_port, Some(51413));
+        assert_eq!(back.torrent.seed_forever, Some(true));
+        assert_eq!(back.torrent.upload_limit_kbps, Some(2000));
     }
 
     #[test]

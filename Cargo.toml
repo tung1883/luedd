@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "time", "sync", "net"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "deflate"] }
 wreq = { version = "=0.15.3", default-features = false, features = ["gzip", "brotli", "deflate", "stream", "webpki-roots"] }
 wreq-util = "=0.1.0"
@@ -38,3 +38,5 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors"] }
+librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls"] }
+librqbit-core = { version = "9.0.1", default-features = false }
