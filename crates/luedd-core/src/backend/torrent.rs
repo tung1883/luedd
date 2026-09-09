@@ -55,7 +55,7 @@ pub struct TorrentStat {
     pub uploaded_bytes: u64,
     /// Connected (live) peers. librqbit exposes no separate swarm seed count.
     pub peers: u32,
-    /// `metadata` | `checking` | `downloading` | `seeding` | `paused` | `error`.
+    /// `metadata` | `verifying` | `downloading` | `seeding` | `paused` | `error`.
     pub state: String,
     pub error: Option<String>,
     pub finished: bool,
@@ -187,76 +187,36 @@ impl TorrentBackend {
     }
 
     /// Live stats for the given entry URLs (skips URLs with no live torrent).
+    /// The `handle.stats()` reads take librqbit's internal blocking locks, which
+    /// contend with the transfer / metadata-fetch hot path — run them off the
+    /// async worker so the UI stays responsive.
     pub async fn stats(&self, urls: &[String]) -> Vec<TorrentStat> {
-        let idx = self.url_index.lock().await;
-        let handles = self.handles.lock().await;
-        urls.iter()
-            .filter_map(|u| {
-                let hash = idx.get(u)?;
-                let h = handles.get(hash)?;
-                Some(to_stat(u.clone(), h))
-            })
-            .collect()
+        let pairs: Vec<(String, Arc<ManagedTorrent>)> = {
+            let idx = self.url_index.lock().await;
+            let handles = self.handles.lock().await;
+            urls.iter()
+                .filter_map(|u| Some((u.clone(), handles.get(idx.get(u)?)?.clone())))
+                .collect()
+        };
+        if pairs.is_empty() {
+            return Vec::new();
+        }
+        tokio::task::spawn_blocking(move || {
+            pairs.iter().map(|(u, h)| to_stat(u.clone(), h)).collect()
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// Full detail for one torrent's expanded panel (files + connected peers).
+    /// Also off the async worker — the peer snapshot walks a live DashMap.
     pub async fn detail(&self, url: &str) -> Option<TorrentDetail> {
         let hash = *self.url_index.lock().await.get(url)?;
         let handle = self.handles.lock().await.get(&hash).cloned()?;
-        let s = handle.stats();
-        let only = handle.only_files();
-        let total_pieces = handle
-            .with_metadata(|m| m.info.lengths().total_pieces())
-            .unwrap_or(0);
-        let file_meta: Vec<(String, u64)> = handle
-            .with_metadata(|m| {
-                m.file_infos
-                    .iter()
-                    .map(|fi| {
-                        (
-                            fi.relative_filename.to_string_lossy().into_owned(),
-                            fi.len,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let files = file_meta
-            .iter()
-            .enumerate()
-            .map(|(i, (p, sz))| TorrentFileStat {
-                index: i,
-                path: p.clone(),
-                size_bytes: *sz,
-                downloaded_bytes: s.file_progress.get(i).copied().unwrap_or(0),
-                selected: only.as_ref().map_or(true, |o| o.contains(&i)),
-            })
-            .collect();
-        let peers = handle.with_state(|st| match st {
-            ManagedTorrentState::Live(l) => l
-                .per_peer_stats_snapshot(Default::default())
-                .peers
-                .into_iter()
-                .map(|(addr, ps)| TorrentPeer {
-                    addr,
-                    client: ps.client_name,
-                    downloaded_bytes: ps.counters.fetched_bytes,
-                    uploaded_bytes: ps.counters.uploaded_bytes,
-                })
-                .collect(),
-            _ => Vec::new(),
-        });
-        Some(TorrentDetail {
-            info_hash: hash.as_string(),
-            save_path: handle.output_folder().to_string_lossy().into_owned(),
-            total_pieces,
-            progress_bytes: s.progress_bytes,
-            total_bytes: s.total_bytes,
-            uploaded_bytes: s.uploaded_bytes,
-            ratio: ratio_of(&s),
-            files,
-            peers,
-        })
+        tokio::task::spawn_blocking(move || build_torrent_detail(hash, &handle))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// List the files in a torrent without downloading it — the add dialog's
@@ -592,6 +552,59 @@ fn ratio_of(s: &librqbit::TorrentStats) -> f64 {
     }
 }
 
+/// The blocking half of [`TorrentBackend::detail`] — runs on a blocking thread.
+fn build_torrent_detail(hash: Id20, handle: &Arc<ManagedTorrent>) -> Option<TorrentDetail> {
+    let s = handle.stats();
+    let only = handle.only_files();
+    let total_pieces = handle
+        .with_metadata(|m| m.info.lengths().total_pieces())
+        .unwrap_or(0);
+    let file_meta: Vec<(String, u64)> = handle
+        .with_metadata(|m| {
+            m.file_infos
+                .iter()
+                .map(|fi| (fi.relative_filename.to_string_lossy().into_owned(), fi.len))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let files = file_meta
+        .iter()
+        .enumerate()
+        .map(|(i, (p, sz))| TorrentFileStat {
+            index: i,
+            path: p.clone(),
+            size_bytes: *sz,
+            downloaded_bytes: s.file_progress.get(i).copied().unwrap_or(0),
+            selected: only.as_ref().map_or(true, |o| o.contains(&i)),
+        })
+        .collect();
+    let peers = handle.with_state(|st| match st {
+        ManagedTorrentState::Live(l) => l
+            .per_peer_stats_snapshot(Default::default())
+            .peers
+            .into_iter()
+            .map(|(addr, ps)| TorrentPeer {
+                addr,
+                client: ps.client_name,
+                downloaded_bytes: ps.counters.fetched_bytes,
+                uploaded_bytes: ps.counters.uploaded_bytes,
+            })
+            .collect(),
+        _ => Vec::new(),
+    });
+    Some(TorrentDetail {
+        info_hash: hash.as_string(),
+        save_path: handle.output_folder().to_string_lossy().into_owned(),
+        total_pieces,
+        progress_bytes: s.progress_bytes,
+        total_bytes: s.total_bytes,
+        uploaded_bytes: s.uploaded_bytes,
+        ratio: ratio_of(&s),
+        files,
+        peers,
+    })
+}
+
 fn to_stat(url: String, h: &Arc<ManagedTorrent>) -> TorrentStat {
     let s = h.stats();
     let (dl, ul) = s
@@ -613,7 +626,7 @@ fn to_stat(url: String, h: &Arc<ManagedTorrent>) -> TorrentStat {
     let raw = s.state.to_string();
     let state = match raw.as_str() {
         "initializing" if s.total_bytes == 0 => "metadata",
-        "initializing" => "checking",
+        "initializing" => "verifying",
         "live" if s.finished => "seeding",
         "live" => "downloading",
         "paused" => "paused",
