@@ -191,7 +191,7 @@ pub fn provider_label(backend_id: &str) -> &str {
         "http" | "hls" | "dash" => "Lüdd",
         "ytdlp" => "yt-dlp",
         "instagram" => "Lüdd-Insta",
-        "torrent" => "Torrent",
+        "torrent" => "Lüdd-Torrent",
         other => other,
     }
 }

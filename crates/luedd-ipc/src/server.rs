@@ -2247,62 +2247,76 @@ async fn download(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncR
 }
 
 async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResponse> {
-    if !MONITORING.load(Ordering::Relaxed) {
+    let req = match serde_json::from_slice::<MediaRequest>(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            tracing::warn!(error = %e, "malformed /media payload from extension");
+            return Json(default_sync_response(video_list(&state).await));
+        }
+    };
+    let is_magnet = req.url.starts_with("magnet:");
+    // Passive media detections respect the monitoring toggle; an explicit
+    // magnet-link click from the content script always goes through.
+    if !is_magnet && !MONITORING.load(Ordering::Relaxed) {
         return Json(default_sync_response(video_list(&state).await));
     }
+    // Media requests fired by a page a plugin owns (Instagram thumbnails,
+    // a yt-dlp watch page's HLS/ad requests) are noise — the page detection is
+    // the download. Drop them; keep the page instead. (Never applies to a
+    // magnet — a magnet is not a page-host media request.)
+    let page_hosts = state.registry.page_hosts();
+    if !is_magnet && req.tab_url.as_deref().map(|u| is_page_host(u, &page_hosts)).unwrap_or(false) {
+        return Json(default_sync_response(video_list(&state).await));
+    }
+
     let mut new_item = None;
-    match serde_json::from_slice::<MediaRequest>(&body) {
-        Ok(req) => {
-            // Media requests fired by a page a plugin owns (Instagram thumbnails,
-            // a yt-dlp watch page's HLS/ad requests) are noise — the page
-            // detection is the download. Drop them; keep the page instead.
-            let page_hosts = state.registry.page_hosts();
-            if req.tab_url.as_deref().map(|u| is_page_host(u, &page_hosts)).unwrap_or(false) {
-                return Json(default_sync_response(video_list(&state).await));
-            }
-            let cfg = state.config.settings.get().await.backends;
-            let provider = luedd_core::backend::provider_label(state.registry.quick_id(&req.url, &cfg)).to_string();
-            let mut detected = state.detected.lock().await;
-            if !detected.iter().any(|m| m.url == req.url) {
-                let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
-                tracing::info!(url = %req.url, %id, "detected media from browser extension");
-                let ct = first_header(&req.response_headers, "content-type");
-                let is_image = looks_like_image(ct, &req.url);
-                let kind_hint = kind_from_content_type(ct).map(str::to_string);
-                new_item = Some(to_video_list_item(
-                    &id,
-                    &req.url,
-                    req.tab_url.as_deref(),
-                    req.file.as_deref(),
-                    req.tab_url.as_deref(),
-                    is_image,
-                    false,
-                    &provider,
-                    kind_hint.as_deref(),
-                ));
-                if let Some(item) = &new_item {
-                    if let Some(tx) = &state.config.on_new_detection {
-                        let _ = tx.send(item.clone());
-                    }
-                }
-                detected.push(DetectedMedia {
-                    id,
-                    url: req.url,
-                    tab_url: req.tab_url.clone().or_else(|| req.file.clone()),
-                    page_title: req.file,
-                    page_url: req.tab_url,
-                    request_headers: req.request_headers,
-                    cookie: req.cookie,
-                    user_agent: req.user_agent,
-                    is_image,
-                    is_page: false,
-                    kind_hint,
-                    provider,
-                });
+    let cfg = state.config.settings.get().await.backends;
+    let provider = luedd_core::backend::provider_label(state.registry.quick_id(&req.url, &cfg)).to_string();
+    let mut detected = state.detected.lock().await;
+    if !detected.iter().any(|m| m.url == req.url) {
+        let id = format!("v{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+        tracing::info!(url = %req.url, %id, is_magnet, "detected media from browser extension");
+        let ct = first_header(&req.response_headers, "content-type");
+        let is_image = looks_like_image(ct, &req.url);
+        // For a magnet, show its name as the panel's primary line (not the
+        // page it was on) and flag it as a torrent.
+        let kind_hint = if is_magnet {
+            Some("torrent".to_string())
+        } else {
+            kind_from_content_type(ct).map(str::to_string)
+        };
+        new_item = Some(to_video_list_item(
+            &id,
+            &req.url,
+            if is_magnet { None } else { req.tab_url.as_deref() },
+            req.file.as_deref(),
+            req.tab_url.as_deref(),
+            is_image,
+            false,
+            &provider,
+            kind_hint.as_deref(),
+        ));
+        if let Some(item) = &new_item {
+            if let Some(tx) = &state.config.on_new_detection {
+                let _ = tx.send(item.clone());
             }
         }
-        Err(e) => tracing::warn!(error = %e, "malformed /media payload from extension"),
+        detected.push(DetectedMedia {
+            id,
+            url: req.url,
+            tab_url: req.tab_url.clone().or_else(|| req.file.clone()),
+            page_title: req.file,
+            page_url: req.tab_url,
+            request_headers: req.request_headers,
+            cookie: req.cookie,
+            user_agent: req.user_agent,
+            is_image,
+            is_page: false,
+            kind_hint,
+            provider,
+        });
     }
+    drop(detected);
     Json(sync_response(video_list(&state).await, new_item))
 }
 

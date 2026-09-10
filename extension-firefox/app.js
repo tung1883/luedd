@@ -3,6 +3,22 @@ import Logger from './logger.js';
 import RequestWatcher from './request-watcher.js';
 import Connector from './connector.js';
 
+// A readable name for a magnet link: its `dn=` (display name), else the
+// truncated info-hash, else "magnet link".
+function magnetName(url) {
+    try {
+        const q = url.slice(url.indexOf("?") + 1);
+        for (const part of q.split("&")) {
+            if (part.startsWith("dn=")) {
+                return decodeURIComponent(part.slice(3).replace(/\+/g, " "));
+            }
+        }
+        const m = url.match(/xt=urn:bt[im]h:([^&]+)/i);
+        if (m) return "magnet · " + m[1].slice(0, 16) + "…";
+    } catch (_) {}
+    return "magnet link";
+}
+
 export default class App {
     constructor() {
         this.logger = new Logger();
@@ -561,6 +577,20 @@ export default class App {
                 const tid = sender && sender.tab ? sender.tab.id : undefined;
                 this.maybeDetectPage({ url: request.url, title: request.title || null, id: tid });
             }
+        }
+        // Content script on every page catches clicks on magnet: links. An
+        // explicit magnet click is user intent, so it bypasses the passive
+        // monitoring toggle (the server also skips the toggle for magnets) —
+        // only a fully disabled extension opts out.
+        else if (request.type === "magnet" && request.url) {
+            if (this.userDisabled) { sendResponse({ ok: false }); return true; }
+            const data = { url: request.url, file: magnetName(request.url), tabUrl: request.pageUrl || null };
+            this.recordLocalDetection(data);
+            this.connector.postMessage("/media", data).then(res => {
+                this.logger.log("magnet -> /media: " + (res ? "ok" : "no response"));
+                sendResponse({ ok: !!res });
+            });
+            return true;
         }
     }
 
