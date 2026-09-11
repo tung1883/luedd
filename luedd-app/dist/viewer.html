@@ -26,9 +26,15 @@
   header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
   .search-wrap { position: relative; flex: 1; min-width: 0; max-width: 340px; margin-left: auto; }
   .hsearch { width: 100%; background: var(--surface-2);
-    border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 6px 10px; }
+    border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 6px 26px 6px 10px; }
   .hsearch:focus { outline: none; border-color: var(--accent); }
   .hsearch::-webkit-search-cancel-button { -webkit-appearance: none; }
+  .search-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); z-index: 5;
+    width: 18px; height: 18px; padding: 0; display: flex; align-items: center; justify-content: center;
+    background: transparent; border: 0; color: var(--dim); cursor: pointer; }
+  .search-clear:hover { color: var(--text); }
+  .search-clear[hidden] { display: none; }
+  .search-clear svg { width: 12px; height: 12px; }
 
   .search-dd { position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px; background: var(--surface);
     border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 24px -8px rgba(0,0,0,.5); z-index: 30; overflow: hidden; }
@@ -259,6 +265,9 @@
     <span class="htitle" id="head-title" data-i18n="viewer_title">Instagram</span>
     <div class="search-wrap" id="search-wrap">
       <input id="search" type="search" class="hsearch" data-i18n-placeholder="viewer_search" placeholder="Search accounts" autocomplete="off" />
+      <button type="button" id="search-clear" class="search-clear" title="Clear" aria-label="Clear" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
       <div id="search-dd" class="search-dd" hidden></div>
     </div>
     <button id="refresh-btn" class="ghost iconbtn" title="Refresh" aria-label="Refresh">
@@ -430,14 +439,23 @@
     hideSearchDd();
     const se = document.getElementById("search");
     se.value = ""; acctQuery = "";
+    document.getElementById("search-clear").hidden = true;
     openProfile(username);
   }
 
   {
     const se = document.getElementById("search");
+    const clearBtn = document.getElementById("search-clear");
+    const syncClearBtn = () => { clearBtn.hidden = !se.value; };
     se.addEventListener("input", () => {
       acctQuery = se.value.trim().toLowerCase(); paintAccounts();
       scheduleLookup(se.value);
+      syncClearBtn();
+    });
+    clearBtn.addEventListener("click", () => {
+      se.value = ""; acctQuery = ""; paintAccounts();
+      clearTimeout(lookupTimer); hideSearchDd(); syncClearBtn();
+      se.focus();
     });
     se.addEventListener("blur", () => setTimeout(hideSearchDd, 150));
     se.addEventListener("keydown", async e => {
