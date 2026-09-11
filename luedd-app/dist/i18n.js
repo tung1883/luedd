@@ -179,6 +179,8 @@
       viewer_caught: "caught",
       viewer_search: "Search accounts",
       viewer_no_match: "No accounts match your search.",
+      viewer_found_ig: "Found on Instagram",
+      viewer_open: "Open",
       ytv_search: "Search channels",
       ytv_no_match: "No channels match your search.",
 
@@ -377,6 +379,8 @@
       viewer_caught: "erfasst",
       viewer_search: "Konten suchen",
       viewer_no_match: "Keine Konten passen zur Suche.",
+      viewer_found_ig: "Auf Instagram gefunden",
+      viewer_open: "Öffnen",
       ytv_search: "Kanäle suchen",
       ytv_no_match: "Keine Kanäle passen zur Suche.",
 

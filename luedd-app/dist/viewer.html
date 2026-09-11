@@ -24,10 +24,25 @@
   header { display: flex; align-items: center; gap: 10px; padding: 11px 16px;
     background: linear-gradient(180deg, #212227, var(--surface)); border-bottom: 1px solid var(--line); }
   header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
-  .hsearch { flex: 1; min-width: 0; max-width: 340px; margin-left: auto; background: var(--surface-2);
+  .search-wrap { position: relative; flex: 1; min-width: 0; max-width: 340px; margin-left: auto; }
+  .hsearch { width: 100%; background: var(--surface-2);
     border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 6px 10px; }
   .hsearch:focus { outline: none; border-color: var(--accent); }
   .hsearch::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+  .search-dd { position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 24px -8px rgba(0,0,0,.5); z-index: 30; overflow: hidden; }
+  .search-dd[hidden] { display: none; }
+  .search-dd .grp-label { font: 700 9.5px/1 var(--mono); text-transform: uppercase; letter-spacing: .07em; color: var(--dim); padding: 9px 11px 5px; }
+  .search-dd .row { display: flex; align-items: center; gap: 9px; padding: 7px 11px; cursor: pointer; }
+  .search-dd .row:hover { background: var(--surface-2); }
+  .search-dd .av { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 10px; font-weight: 700; overflow: hidden; }
+  .search-dd .av img { width: 100%; height: 100%; object-fit: cover; }
+  .search-dd .nm { font-weight: 600; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .search-dd .nm .sub { color: var(--dim); font-size: 10.5px; font-weight: 500; }
+  .search-dd .tag { font: 600 9.5px/1 var(--mono); color: var(--good); border: 1px solid rgba(79,208,138,.4);
+    border-radius: 4px; padding: 2px 5px; flex-shrink: 0; }
   button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
     border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
   button.ghost { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
@@ -87,10 +102,11 @@
   .pfc.sel-t.on { border-color: var(--good); background: rgba(79,208,138,.14); }
 
   /* multi-select */
-  .selbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 18px 0;
-    padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2);
-    font-size: 11px; color: var(--dim); }
+  .selbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 4px;
+    padding: 8px 18px; border-bottom: 1px solid var(--line); background: var(--surface-2);
+    font-size: 11px; color: var(--dim); position: sticky; top: 0; z-index: 15; }
   .selbar[hidden] { display: none; }
+  .selbar.shadow { box-shadow: 0 6px 14px -8px rgba(0,0,0,.55); }
   .selbar b { color: var(--text); font-variant-numeric: tabular-nums; }
   .selbar .sp { flex: 1; }
   .selbar button { font: 600 10.5px/1 inherit; padding: 6px 10px; border-radius: 5px; border: 1px solid var(--line);
@@ -243,7 +259,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
     <span class="htitle" id="head-title" data-i18n="viewer_title">Instagram</span>
-    <input id="search" type="search" class="hsearch" data-i18n-placeholder="viewer_search" placeholder="Search accounts" />
+    <div class="search-wrap" id="search-wrap">
+      <input id="search" type="search" class="hsearch" data-i18n-placeholder="viewer_search" placeholder="Search accounts" autocomplete="off" />
+      <div id="search-dd" class="search-dd" hidden></div>
+    </div>
     <button id="refresh-btn" class="ghost iconbtn" title="Refresh" aria-label="Refresh">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
     </button>
@@ -360,9 +379,66 @@
     warmAvatars(avSlots);
   }
 
+  // scroll shadow for the sticky selection bar
+  document.getElementById("scroll").addEventListener("scroll", e => {
+    const bar = document.getElementById("selbar");
+    if (bar) bar.classList.toggle("shadow", e.target.scrollTop > 2);
+  });
+
+  // ---- header search: local filter + remote username lookup ----
+  const searchDd = document.getElementById("search-dd");
+  let lookupTimer = null, lookupAbort = null;
+
+  function hideSearchDd() { searchDd.hidden = true; searchDd.innerHTML = ""; }
+
+  function scheduleLookup(raw) {
+    clearTimeout(lookupTimer);
+    const q = raw.trim().replace(/^@/, "");
+    if (!q || currentUser) { hideSearchDd(); return; }
+    lookupTimer = setTimeout(() => runLookup(q), 400);
+  }
+
+  async function runLookup(q) {
+    if (lookupAbort) lookupAbort.abort();
+    const ctl = new AbortController(); lookupAbort = ctl;
+    let p = null;
+    try {
+      p = await (await fetch(APP + "/ig/profile", {
+        method: "POST", body: JSON.stringify({ username: q }), signal: ctl.signal,
+      })).json();
+    } catch (_) { return; }
+    const still = document.getElementById("search").value.trim().replace(/^@/, "");
+    if (still !== q) return; // input changed while we were waiting
+    const h = p && p.header;
+    if (!h || !h.username || p.cookie === false) { hideSearchDd(); return; }
+    paintSearchDd(h);
+  }
+
+  function paintSearchDd(h) {
+    const known = (lastAcctData && lastAcctData.accounts || []).some(a => a.username.toLowerCase() === h.username.toLowerCase());
+    const avInner = h.profile_pic_url ? `<img src="${esc(img(h.profile_pic_url))}" alt="">` : esc((h.username[0] || "?").toUpperCase());
+    searchDd.innerHTML = `<div class="grp-label">${esc(L("viewer_found_ig"))}</div>`
+      + `<div class="row" id="dd-remote">`
+      +   `<div class="av">${avInner}</div>`
+      +   `<div class="nm">@${esc(h.username)}<div class="sub">${esc(fmtNum(h.follower_count || 0))} ${esc(L("viewer_followers"))}</div></div>`
+      +   `<span class="tag">${known ? esc(L("viewer_open")) : "+ " + esc(L("add"))}</span>`
+      + `</div>`;
+    searchDd.hidden = false;
+    searchDd.querySelector("#dd-remote").addEventListener("click", () => {
+      hideSearchDd();
+      const se = document.getElementById("search");
+      se.value = ""; acctQuery = "";
+      openProfile(h.username);
+    });
+  }
+
   {
     const se = document.getElementById("search");
-    se.addEventListener("input", () => { acctQuery = se.value.trim().toLowerCase(); paintAccounts(); });
+    se.addEventListener("input", () => {
+      acctQuery = se.value.trim().toLowerCase(); paintAccounts();
+      scheduleLookup(se.value);
+    });
+    se.addEventListener("blur", () => setTimeout(hideSearchDd, 150));
   }
   // Fetch missing avatars ONE AT A TIME with a gap - IG's web_profile_info is
   // heavily throttled, a burst of parallel calls trips a 10-min 429 backoff.
@@ -398,7 +474,7 @@
     currentUser = username;
     accountsEl.style.display = "none"; profileEl.style.display = "block";
     backBtn.style.display = "flex"; headTitle.textContent = "@" + username;
-    document.getElementById("search").style.display = "none";
+    document.getElementById("search-wrap").style.display = "none";
     document.getElementById("scroll").scrollTop = 0;
     postsCursor = null; postsLoading = false; postsDone = false; postsErr = false;
     archState = null; clearTimeout(archTimer);
@@ -1183,7 +1259,7 @@
     if (postsObserver) { postsObserver.disconnect(); postsObserver = null; }
     profileEl.style.display = "none"; accountsEl.style.display = "block";
     backBtn.style.display = "none"; headTitle.textContent = L("viewer_title");
-    document.getElementById("search").style.display = "";
+    document.getElementById("search-wrap").style.display = "";
     clearTimeout(archTimer); archState = null;
     renderAccounts();
   }
