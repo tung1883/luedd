@@ -1217,6 +1217,7 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
+    let resolved;
     let header = {
         let inst = state.instagram.clone();
         let igc = cfg.instagram.clone();
@@ -1234,6 +1235,7 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
                 }
             })
             .await;
+        resolved = res.is_ok();
         match res {
             Ok(h) => h,
             // Every session was blocked (IG throttling). Don't burn another
@@ -1254,6 +1256,13 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
             },
         }
     };
+    if resolved {
+        // The viewer's own lookup just confirmed this account exists on
+        // Instagram — count that the same as a browser visit so it shows up
+        // in the accounts grid without needing the extension to catch it.
+        let url = format!("https://www.instagram.com/{}/", req.username);
+        record_ig_catch(&state, &url, None).await;
+    }
     if !header.profile_pic_url.is_empty() {
         let (st, user, pic) = (state.clone(), req.username.clone(), header.profile_pic_url.clone());
         tokio::spawn(async move { st.ig_library.set_avatar(&user, &pic).await.ok(); });

@@ -41,8 +41,6 @@
   .search-dd .av img { width: 100%; height: 100%; object-fit: cover; }
   .search-dd .nm { font-weight: 600; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .search-dd .nm .sub { color: var(--dim); font-size: 10.5px; font-weight: 500; }
-  .search-dd .tag { font: 600 9.5px/1 var(--mono); color: var(--good); border: 1px solid rgba(79,208,138,.4);
-    border-radius: 4px; padding: 2px 5px; flex-shrink: 0; }
   button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
     border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
   button.ghost { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
@@ -415,21 +413,24 @@
   }
 
   function paintSearchDd(h) {
-    const known = (lastAcctData && lastAcctData.accounts || []).some(a => a.username.toLowerCase() === h.username.toLowerCase());
     const avInner = h.profile_pic_url ? `<img src="${esc(img(h.profile_pic_url))}" alt="">` : esc((h.username[0] || "?").toUpperCase());
     searchDd.innerHTML = `<div class="grp-label">${esc(L("viewer_found_ig"))}</div>`
-      + `<div class="row" id="dd-remote">`
+      + `<div class="row" id="dd-remote" data-username="${esc(h.username)}">`
       +   `<div class="av">${avInner}</div>`
       +   `<div class="nm">@${esc(h.username)}<div class="sub">${esc(fmtNum(h.follower_count || 0))} ${esc(L("viewer_followers"))}</div></div>`
-      +   `<span class="tag">${known ? esc(L("viewer_open")) : "+ " + esc(L("add"))}</span>`
       + `</div>`;
     searchDd.hidden = false;
-    searchDd.querySelector("#dd-remote").addEventListener("click", () => {
-      hideSearchDd();
-      const se = document.getElementById("search");
-      se.value = ""; acctQuery = "";
-      openProfile(h.username);
-    });
+    searchDd.querySelector("#dd-remote").addEventListener("click", () => openFromSearchDd(h.username));
+  }
+
+  // opening a profile found this way calls POST /ig/profile in openProfile's
+  // enrich step, which is enough for the backend to add the account to the
+  // library - no separate "add" step needed here.
+  function openFromSearchDd(username) {
+    hideSearchDd();
+    const se = document.getElementById("search");
+    se.value = ""; acctQuery = "";
+    openProfile(username);
   }
 
   {
@@ -439,6 +440,17 @@
       scheduleLookup(se.value);
     });
     se.addEventListener("blur", () => setTimeout(hideSearchDd, 150));
+    se.addEventListener("keydown", async e => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const already = document.getElementById("dd-remote");
+      if (already) { openFromSearchDd(already.dataset.username || se.value.trim().replace(/^@/, "")); return; }
+      const q = se.value.trim().replace(/^@/, "");
+      if (!q) return;
+      clearTimeout(lookupTimer);
+      await runLookup(q);
+      document.getElementById("dd-remote")?.click();
+    });
   }
   // Fetch missing avatars ONE AT A TIME with a gap - IG's web_profile_info is
   // heavily throttled, a burst of parallel calls trips a 10-min 429 backoff.
