@@ -109,6 +109,15 @@ impl DownloadManager {
             return Ok(false);
         };
         handle.abort();
+        // The abort stops our run task, but a torrent's transfer lives in a
+        // background session — pause it there too.
+        if let Some(e) = self.store.get_entry(id).await {
+            if let Some(b) = self.registry.get(&e.backend_id) {
+                if b.is_torrent() {
+                    let _ = b.on_pause(&e.url).await;
+                }
+            }
+        }
         self.store.update_entry(id, |e| e.status = DownloadStatus::Paused).await?;
         Ok(true)
     }
@@ -116,6 +125,13 @@ impl DownloadManager {
     pub async fn remove_entry(&self, id: &str, delete_files: bool) -> anyhow::Result<bool> {
         let removed = self.store.remove_entry(id).await?;
         if let Some(entry) = &removed {
+            // Let a torrent session drop the torrent (and release file handles)
+            // BEFORE we try to delete anything on disk.
+            if let Some(b) = self.registry.get(&entry.backend_id) {
+                if b.is_torrent() {
+                    let _ = b.on_remove(&entry.url, delete_files).await;
+                }
+            }
             if delete_files {
                 delete_artifacts(entry).await;
             }
@@ -285,6 +301,12 @@ async fn run_single(
                     }
                     if meta.media_class.is_some() {
                         e.media_class = meta.media_class.clone();
+                    }
+                    // A backend that picks its own output folder (torrent, and
+                    // some Instagram runs) — record it so delete-cleanup can wipe
+                    // the whole folder later.
+                    if meta.out_dir.is_some() {
+                        e.out_dir = meta.out_dir.clone();
                     }
                 })
                 .await
@@ -489,6 +511,127 @@ mod tests {
         assert!(manager.remove_entry(&id, false).await.unwrap());
         assert!(store.get_entry(&id).await.is_none());
         assert!(tokio::fs::metadata(&dest).await.is_ok(), "output file should be left alone");
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    // --- torrent hook wiring -------------------------------------------------
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct StubTorrent {
+        paused: Arc<AtomicBool>,
+        removed: Arc<AtomicBool>,
+        remove_saw_file: Arc<AtomicBool>,
+        watch_path: std::path::PathBuf,
+        block: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::backend::DownloadBackend for StubTorrent {
+        fn id(&self) -> &'static str {
+            "torrent"
+        }
+        fn can_handle(&self, _u: &str, _s: Option<&crate::backend::Sniff>) -> crate::backend::Confidence {
+            crate::backend::Confidence::No
+        }
+        fn is_torrent(&self) -> bool {
+            true
+        }
+        async fn run(
+            &self,
+            _req: &crate::backend::DownloadReq,
+            _p: Option<&luedd_net::ProgressTx>,
+        ) -> anyhow::Result<crate::backend::Outcome> {
+            if self.block {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+            Ok(crate::backend::Outcome::default())
+        }
+        async fn on_pause(&self, _url: &str) -> anyhow::Result<()> {
+            self.paused.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn on_remove(&self, _url: &str, _delete: bool) -> anyhow::Result<()> {
+            self.removed.store(true, Ordering::SeqCst);
+            self.remove_saw_file
+                .store(self.watch_path.exists(), Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn manager_with_stub(
+        store: Arc<DownloadStore>,
+        stub: Arc<StubTorrent>,
+    ) -> DownloadManager {
+        let client = HttpClient::new().unwrap();
+        let mut reg = BackendRegistry::with_builtins(client.clone());
+        reg.register(stub);
+        DownloadManager::new(store, client, 2, 2)
+            .with_backends(Arc::new(reg), BackendConfig::default())
+    }
+
+    #[tokio::test]
+    async fn remove_entry_calls_on_remove_before_deleting_files() {
+        let dir = std::env::temp_dir().join(format!("luedd-mgr-tor-rm-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let store = Arc::new(DownloadStore::open(dir.join("downloads.json")).await.unwrap());
+        let dest = dir.join("movie.mkv");
+        tokio::fs::write(&dest, b"data").await.unwrap();
+
+        let stub = Arc::new(StubTorrent {
+            paused: Arc::new(AtomicBool::new(false)),
+            removed: Arc::new(AtomicBool::new(false)),
+            remove_saw_file: Arc::new(AtomicBool::new(false)),
+            watch_path: dest.clone(),
+            block: false,
+        });
+        let mut entry = DownloadEntry::new("magnet:?xt=urn:btih:x".into(), dest.clone(), DownloadKind::Http);
+        entry.backend_id = "torrent".into();
+        let id = entry.id.clone();
+        store.add_entry(entry).await.unwrap();
+
+        let manager = manager_with_stub(store.clone(), stub.clone());
+        assert!(manager.remove_entry(&id, true).await.unwrap());
+        assert!(stub.removed.load(Ordering::SeqCst), "on_remove not called");
+        assert!(stub.remove_saw_file.load(Ordering::SeqCst), "on_remove ran after file was deleted");
+        assert!(tokio::fs::metadata(&dest).await.is_err(), "file should be gone afterwards");
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn pause_entry_calls_on_pause_for_a_torrent() {
+        let dir = std::env::temp_dir().join(format!("luedd-mgr-tor-pause-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let store = Arc::new(DownloadStore::open(dir.join("downloads.json")).await.unwrap());
+
+        let stub = Arc::new(StubTorrent {
+            paused: Arc::new(AtomicBool::new(false)),
+            removed: Arc::new(AtomicBool::new(false)),
+            remove_saw_file: Arc::new(AtomicBool::new(false)),
+            watch_path: dir.clone(),
+            block: true,
+        });
+        let mut entry = DownloadEntry::new("magnet:?xt=urn:btih:y".into(), dir.join("o.bin"), DownloadKind::Http);
+        entry.backend_id = "torrent".into();
+        let id = entry.id.clone();
+        store.add_entry(entry).await.unwrap();
+
+        let manager = Arc::new(manager_with_stub(store.clone(), stub.clone()));
+        let m2 = manager.clone();
+        let id2 = id.clone();
+        tokio::spawn(async move { m2.run_entry_now(&id2).await.ok(); });
+
+        for _ in 0..100 {
+            if matches!(store.get_entry(&id).await.unwrap().status, DownloadStatus::Downloading) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(manager.pause_entry(&id).await.unwrap());
+        assert!(stub.paused.load(Ordering::SeqCst), "on_pause not called");
+        assert!(matches!(store.get_entry(&id).await.unwrap().status, DownloadStatus::Paused));
 
         tokio::fs::remove_dir_all(&dir).await.ok();
     }

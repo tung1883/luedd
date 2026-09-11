@@ -110,6 +110,7 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
         let mut r = luedd_core::backend::BackendRegistry::with_builtins(client.clone());
         r.register(ytdlp.clone());
         r.register(instagram.clone());
+        r.register(Arc::new(luedd_core::backend::TorrentBackend::new(data_dir.join("torrent"))));
         Arc::new(r)
     };
     let ig_library = Arc::new(

@@ -35,6 +35,16 @@
                 "content-ig.js"
             ],
             "run_at": "document_idle"
+        },
+        {
+            "matches": [
+                "*://*/*"
+            ],
+            "js": [
+                "content-magnet.js"
+            ],
+            "run_at": "document_start",
+            "all_frames": true
         }
     ]
 }

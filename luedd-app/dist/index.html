@@ -130,6 +130,7 @@
   .status-Failed { color: var(--bad); }
   .status-Cancelled { color: var(--dim); }
   .status-Paused { color: var(--warn); }
+  .status-Seeding { color: var(--good); }
   /* Finished: the green dot pings - a ring expands outward and fades, then repeats */
   .status-Finished::before { animation: ping 1.5s ease-out infinite; }
   @keyframes ping {
@@ -327,6 +328,57 @@
   .pv-vtitle { font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .pv-vmeta { font-size: 10px; color: var(--dim); margin-top: 3px; }
   .pv-vstat { text-align: right; font-size: 11px; }
+  /* torrent: stacked ↓/↑ inside the shared Speed cell */
+  .speed-col .sp2 { display: flex; flex-direction: column; line-height: 1.3; }
+  .speed-col .sp2 .dn { color: var(--accent); }
+  .speed-col .sp2 .up { color: var(--good); font-size: 11px; }
+  /* lock torrent row height so the Speed cell flipping between blank / 1-line /
+     2-line never resizes the row (which would jog the list scrollbar). */
+  #rows tr.data-row[data-tor="1"] > td { height: 44px; }
+  /* torrent detail panel — lives inside the shared .detgrid skeleton */
+  .tdet-bar { display: flex; gap: 6px; margin-top: 10px; }
+  .tdet-bar button { background: none; border: 1px solid var(--line); border-radius: 5px; color: var(--dim);
+    font-size: 11px; font-family: var(--sans); padding: 4px 9px; display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .tdet-bar button:hover { color: var(--text); border-color: var(--dim); }
+  .tdet-bar svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .tdet-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .tdet-right h6 { margin: 0 0 6px; font-size: 9px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim); font-weight: 600; }
+  .tbox { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--bg); }
+  .tbox .scroll { overflow-y: scroll; overflow-x: hidden; }
+  .tbox .scroll::-webkit-scrollbar { width: 8px; }
+  .tbox .scroll::-webkit-scrollbar-track { background: var(--surface); }
+  .tbox .scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  .tbox .scroll::-webkit-scrollbar-thumb:hover { background: #474a52; }
+  .tbox .scroll.files { max-height: 172px; }
+  .tbox .scroll.peers { height: 90px; }
+  .tbox .frow, .tbox .prow { display: grid; align-items: center; gap: 8px; padding: 5px 8px; font-size: 10.5px;
+    border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .tbox .frow { grid-template-columns: 20px minmax(0,1fr) 58px 96px; }
+  .tbox .prow { grid-template-columns: minmax(0,1fr) 104px 62px 62px; }
+  .tbox .prow.one { grid-template-columns: 1fr; }
+  .tbox .frow > *, .tbox .prow > * { overflow: hidden; text-overflow: ellipsis; }
+  .tbox .scroll .frow:last-child, .tbox .scroll .prow:last-child { border-bottom: 0; }
+  .tbox .frow .fn, .tbox .prow .fn { font-family: var(--mono); font-size: 10px; }
+  .tbox .frow .sz, .tbox .prow .r { text-align: right; font-variant-numeric: tabular-nums; }
+  .tbox .prow .dn { color: var(--accent); } .tbox .prow .up { color: var(--good); }
+  .tbox .prow.phead { background: var(--surface-2); font-size: 8.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--dim); font-weight: 600; padding-right: 16px; }
+  .tbox .frow .fmini { display: flex; align-items: center; gap: 7px; }
+  .tbox .frow .fmini .tk { width: 60px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; flex-shrink: 0; }
+  .tbox .frow .fmini .fl { height: 100%; background: var(--accent); } .tbox .frow .fmini .fl.done { background: var(--good); }
+  .tbox .frow .fmini .pc { width: 30px; text-align: right; color: var(--dim); }
+  .tbox .bar { display: flex; justify-content: space-between; align-items: center; padding: 5px 9px; font-size: 10px;
+    color: var(--dim); background: var(--surface-2); border-top: 1px solid var(--line); }
+  .tbox .bar button { background: none; border: 0; color: var(--disc); font-size: 10px; font-family: var(--sans); padding: 0 4px; cursor: pointer; }
+  .tfile-chk { width: 13px; height: 13px; accent-color: var(--accent); }
+  /* file picker modal */
+  #tfiles-list { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; }
+  #tfiles-list .fr { display: grid; grid-template-columns: 22px 1fr 84px; gap: 8px; align-items: center;
+    padding: 6px 10px; font-size: 11px; border-top: 1px solid var(--line); }
+  #tfiles-list .fr:first-child { border-top: 0; }
+  #tfiles-list .fr > input { justify-self: center; }
+  #tfiles-list .fr .fn { font-family: var(--mono); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tfiles-list .fr .sz { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
   .pv-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; padding: 2px 4px 6px; }
   .pv-cell { position: relative; aspect-ratio: 1; background: var(--surface-2); border-radius: 3px; overflow: hidden;
     cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--dim);
@@ -358,6 +410,8 @@
   /* first column is a gutter that lines the field block up with the ID column;
      the preview column's right edge lines up with the Actions column. */
   .detgrid { display: grid; grid-template-columns: 34px minmax(0,1fr) 208px; gap: 0 16px; padding: 12px 8px 15px 0; }
+  .detgrid.tor { grid-template-columns: 34px minmax(0,0.85fr) minmax(0,1.15fr); }
+  .detgrid.tor .tdet-host { display: contents; }
   .detgrid .df { display: grid; grid-template-columns: max-content 1fr; gap: 7px 14px; align-items: baseline; min-width: 0; }
   .detgrid .df dt { color: var(--dim); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; }
   .detgrid .df dd { margin: 0; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -623,6 +677,28 @@
             <button type="button" id="ytdlp-update" class="secondary" data-i18n="check_updates" style="margin-top:6px">Check for updates</button>
           </div>
         </div>
+
+        <div class="set-section">
+          <h3 data-i18n="sec_torrent">torrent</h3>
+          <div class="set-row">
+            <label for="torrent-dir" data-i18n="tor_dir">Torrent download folder</label>
+            <div class="dir-row">
+              <input id="torrent-dir" type="text" class="set-field" placeholder="same as download folder" />
+              <button type="button" class="secondary" data-i18n="browse" id="torrent-dir-browse">Browse&hellip;</button>
+            </div>
+          </div>
+          <div class="set-grid2">
+            <div class="set-row"><span class="set-sub" data-i18n="tor_port">listen port</span><input id="torrent-port" type="text" class="set-field" placeholder="4240" /></div>
+            <div class="set-row"><span class="set-sub" data-i18n="tor_max_peers">max peers / torrent</span><input id="torrent-max-peers" type="text" class="set-field" placeholder="—" /></div>
+            <div class="set-row"><span class="set-sub" data-i18n="tor_dl_limit">download limit (KB/s)</span><input id="torrent-dl-limit" type="text" class="set-field" placeholder="—" /></div>
+            <div class="set-row"><span class="set-sub" data-i18n="tor_ul_limit">upload limit (KB/s)</span><input id="torrent-ul-limit" type="text" class="set-field" placeholder="—" /></div>
+          </div>
+          <label class="checkbox"><input type="checkbox" id="torrent-dht" checked /> <span data-i18n="tor_dht">Enable DHT (needed for magnet links)</span></label>
+          <label class="checkbox"><input type="checkbox" id="torrent-upnp" checked /> <span data-i18n="tor_upnp">Enable UPnP / NAT-PMP port forwarding</span></label>
+          <label class="checkbox"><input type="checkbox" id="torrent-seed-forever" /> <span data-i18n="tor_seed_forever">Keep seeding after 100% (until removed)</span></label>
+          <div class="ig-note" data-i18n="tor_note">librqbit — embedded, no install.</div>
+          <div class="ig-note" data-i18n="tor_restart_hint">Engine settings apply after an app restart.</div>
+        </div>
       </div>
       <div class="set-foot">
         <button id="settings-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
@@ -765,6 +841,24 @@
       <div id="quality-options" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 300px; overflow-y: auto;"></div>
       <div style="display: flex; justify-content: flex-end;">
         <button id="quality-cancel-btn" class="secondary" data-i18n="cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tfiles-overlay" class="overlay">
+    <div class="overlay-card" style="min-width: 460px; max-width: 620px;">
+      <div style="font-size: 14px; color: var(--text); margin-bottom: 3px;" id="tfiles-title" data-i18n="tor_pick_files">Choose files to download</div>
+      <div style="font-size: 11px; color: var(--dim); margin-bottom: 10px;" id="tfiles-name"></div>
+      <div style="display:flex; gap:12px; font-size:11px; color:var(--dim); margin-bottom:8px;">
+        <button class="secondary small" id="tfiles-all" data-i18n="tor_select_all">Select all</button>
+        <button class="secondary small" id="tfiles-none" data-i18n="tor_select_none">None</button>
+        <span style="flex:1"></span>
+        <span id="tfiles-count"></span>
+      </div>
+      <div id="tfiles-list"></div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+        <button id="tfiles-cancel" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="tfiles-ok" data-i18n="tor_download_sel">Download</button>
       </div>
     </div>
   </div>
@@ -1027,7 +1121,15 @@ function formatProgress(e) {
 // Split a URL so the origin (scheme + host) always stays fully visible; the
 // middle path collapses first, the trailing segment (filename) second. The
 // query string is dropped here - the full URL is in the tooltip / on copy.
+function magnetName(u) {
+  const m = /[?&]dn=([^&]+)/.exec(u);
+  if (m) { try { return decodeURIComponent(m[1].replace(/\+/g, " ")); } catch { return m[1]; } }
+  const ih = /xt=urn:bt[im]h:([^&]+)/i.exec(u);
+  return ih ? "magnet · " + ih[1].slice(0, 16) + "…" : "magnet link";
+}
+
 function splitUrl(u) {
+  if (u.startsWith("magnet:")) return { origin: "", mid: "", tail: magnetName(u) };
   try {
     const url = new URL(u);
     const path = url.pathname || "/";
@@ -1057,7 +1159,7 @@ function kindLabel(kind) {
 }
 
 // The backend that fetched a download. http/hls/dash are all the built-in engine.
-const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Lüdd-Insta", instaloader: "instaloader", torrent: "torrent" };
+const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Lüdd-Insta", instaloader: "instaloader", torrent: "Lüdd-Torrent" };
 function providerLabel(id) {
   return PROVIDER_LABELS[id] ?? id ?? "Lüdd";
 }
@@ -1150,6 +1252,7 @@ async function refresh() {
   }
   firstLoadOk = true;
   dismissBootSpinner();
+  window.__lastEntries = entries;
   const liveIds = new Set(entries.map(e => e.id));
   for (const id of [...selected]) {
     if (!liveIds.has(id)) selected.delete(id);
@@ -1157,7 +1260,9 @@ async function refresh() {
 
   rebuildProviderFilterOptions(entries);
   resyncFilterDDs();
-  const visible = entries.filter(entryMatchesFilter);
+  let visible = entries.filter(entryMatchesFilter);
+  // The "Torrent" tab is just the All-list table scoped to torrent entries.
+  if (currentView === TORRENT_LABEL) visible = visible.filter(isTor);
   sortEntries(visible);
   updateFilterUI(entries.length, visible.length);
 
@@ -1166,15 +1271,18 @@ async function refresh() {
   for (const e of visible) {
     const tr = document.createElement("tr");
     tr.className = "data-row";
+    tr.dataset.id = e.id;
+    const tor = isTor(e);
+    if (tor) tr.dataset.tor = "1";
     const isOpen = detailsOpen.has(e.id);
     tr.innerHTML = `
       <td class="toggle-col"><button class="details-toggle-btn${isOpen ? " open" : ""}" data-id="${e.id}" title="${t("details")}">${CARET}</button></td>
       <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${e.id}" ${selected.has(e.id) ? "checked" : ""} /></td>
       <td class="id id-col">${e.id.slice(0, 8)}</td>
-      <td class="kind-col">${kindLabel(e.kind)}</td>
-      <td class="status-${e.status} status-col">${statusLabel(e.status)}</td>
-      <td class="progress-col">${formatProgress(e)}</td>
-      <td class="speed-text speed-col">${formatSpeed(e)}</td>
+      <td class="kind-col">${tor ? "Torrent" : kindLabel(e.kind)}</td>
+      ${tor ? torStatusHtml(e) : `<td class="status-${e.status} status-col">${statusLabel(e.status)}</td>`}
+      <td class="progress-col">${tor ? torProgressHtml(e) : formatProgress(e)}</td>
+      <td class="speed-text speed-col">${tor ? torSpeedHtml(e) : formatSpeed(e)}</td>
       <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;${t("dbl_copy")}">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span>${s.mid ? `<span class="u-mid">${s.mid}</span>` : ""}<span class="u-tail">${s.tail}</span></span>`; })()}</td>
       <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n" + t("dbl_copy") : ""}">${e.error ?? ""}</td>
       <td class="actions-col"><div class="actions">
@@ -1192,7 +1300,7 @@ async function refresh() {
     let site = "";
     try { site = new URL(e.url).host; } catch { site = t("val_unknown"); }
     const headerNames = Object.keys(e.headers ?? {});
-    detailsTr.innerHTML = `
+    detailsTr.innerHTML = tor ? `<td colspan="10" class="details-cell">${torDetailCell(e)}</td>` : `
       <td colspan="10" class="details-cell">
         <div class="detgrid">
           <div></div>
@@ -1213,7 +1321,13 @@ async function refresh() {
       </td>
     `;
     rows.appendChild(detailsTr);
-    if (isOpen) loadDetailPreview(detailsTr);
+    if (tor) {
+      const grid = detailsTr.querySelector(".detgrid.tor");
+      const host = torHost[e.id] || torMakeHost(e);
+      grid.appendChild(host);          // move the cached node — keeps scroll + gesture
+      torApplyScroll(e.id, host);
+      if (isOpen && !torDetail[e.url]) refreshTorDetail(e, true);
+    } else if (isOpen) loadDetailPreview(detailsTr);
 
     tr.addEventListener("click", (ev) => {
       if (ev.target.closest("button, input, a")) return;
@@ -1222,6 +1336,11 @@ async function refresh() {
       chk.checked = !chk.checked;
       chk.dispatchEvent(new Event("change"));
     });
+  }
+
+  // drop cached torrent panels for entries that are gone
+  for (const id of Object.keys(torHost)) {
+    if (!liveIds.has(id)) { delete torHost[id]; delete torScroll[id]; delete torScrollAt[id]; }
   }
 
   if (visible.length === 0) {
@@ -1246,7 +1365,14 @@ async function refresh() {
       const nowOpen = detailsTr.style.display === "none";
       detailsTr.style.display = nowOpen ? "table-row" : "none";
       btn.classList.toggle("open", nowOpen);
-      if (nowOpen) { detailsOpen.add(id); loadDetailPreview(detailsTr); } else { detailsOpen.delete(id); }
+      const ent = (window.__lastEntries || []).find(x => x.id === id);
+      if (nowOpen) {
+        detailsOpen.add(id);
+        if (ent && isTor(ent)) { refreshTorDetail(ent, true); armTorPoll(); }
+        else loadDetailPreview(detailsTr);
+      } else {
+        detailsOpen.delete(id);
+      }
     });
   });
   rows.querySelectorAll(".retry-btn").forEach(btn => {
@@ -1311,6 +1437,7 @@ async function refresh() {
   lastEntries = entries;
 
   syncPluginViews(entries, visible);
+  if (document.querySelector('#rows tr.data-row[data-tor="1"]')) armTorPoll();
 }
 
 // The master toggle keeps its own state; toggling a single row doesn't move it.
@@ -1463,7 +1590,8 @@ function syncPluginViews(entries, visible) {
     refresh();
   }));
 
-  if (currentView === "all") {
+  if (currentView === "all" || currentView === TORRENT_LABEL) {
+    // Torrents render in the real table (scoped in refresh()), not a plugin view.
     pv.hidden = true; tw.hidden = false;
   } else {
     tw.hidden = true; pv.hidden = false;
@@ -1554,6 +1682,7 @@ function renderPluginView(provider, entries) {
   }
   pv.dataset.sig = sig;
   pv.innerHTML = "";
+
   pvSweepMissing(provider, entries);
   const isIG = provider === "Lüdd-Insta";
   // Drop entries whose every file is gone from disk.
@@ -1623,6 +1752,320 @@ function renderYtGroup(g, entries) {
     });
     g.appendChild(row);
   }
+}
+
+// ============ torrent rows in the All list ============
+const torLive = {};      // url -> latest TorrentStat  (torrent_stats, ~1.5s)
+const torDetail = {};     // url -> latest TorrentDetail (open rows only)
+const torPeerPrev = {};   // url -> { addr: {dl,ul,t} }  for peer-rate diffing
+const TORRENT_LABEL = PROVIDER_LABELS.torrent;   // "Torrent"
+function isTor(e) { return e.backend_id === "torrent"; }
+
+function torDur(secs) {
+  secs = Math.max(0, Math.round(secs));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m`;
+  return `${secs}s`;
+}
+
+// Status <td> — All-list dot + colour class, label is the torrent's own phase.
+const TOR_ST = {
+  metadata:    { key: "tor_st_metadata",    cls: "Downloading" },
+  downloading: { key: "tor_st_downloading", cls: "Downloading" },
+  seeding:     { key: "tor_st_seeding",     cls: "Seeding" },
+};
+function torStatusMeta(e) {
+  const s = torLive[e.url];
+  if (e.status === "Paused")   return { label: t("status_Paused"), cls: "Paused" };
+  if (e.status === "Failed")   return { label: t("status_Failed"), cls: "Failed" };
+  if (e.status === "Queued")   return { label: t("status_Queued"), cls: "Queued" };
+  // Finished = run() returned, torrent dropped from the session — done, not seeding.
+  if (e.status === "Finished") return { label: statusLabel("Finished"), cls: "Finished" };
+  if (s && s.state === "verifying") {
+    const pct = s.total_bytes ? Math.floor(s.progress_bytes / s.total_bytes * 100) : 0;
+    return { label: t("tor_st_verifying", { n: pct }), cls: "Converting" };
+  }
+  const m = (s && TOR_ST[s.state]) || TOR_ST.metadata;
+  return { label: t(m.key), cls: m.cls };
+}
+function torStatusHtml(e) {
+  const m = torStatusMeta(e);
+  return `<td class="status-${m.cls} status-col">${esc(m.label)}</td>`;
+}
+
+// Speed cell — stacked down/up while transferring, blank otherwise (like a
+// normal download).
+function torSpeedHtml(e) {
+  const s = torLive[e.url];
+  const st = s ? s.state : "metadata";
+  if (["Paused", "Queued", "Failed", "Finished"].includes(e.status) || st === "metadata" || st === "verifying") {
+    return "";
+  }
+  const dl = (e.progress && e.progress.speed_bps) || (s && s.dl_speed) || 0;
+  const ul = (s && s.ul_speed) || 0;
+  return `<span class="sp2"><span class="dn">↓ ${dl ? formatBytesPerSec(dl) : "0"}</span>`
+       + `<span class="up">↑ ${ul ? formatBytesPerSec(ul) : "0"}</span></span>`;
+}
+
+// Progress meter — green + 100% once librqbit reports finished (seeding).
+function torProgressHtml(e) {
+  const s = torLive[e.url];
+  if (e.status === "Finished" || (s && s.finished)) {
+    return `<div class="meter"><div class="track"><div class="fill done" style="width:100%"></div></div><div class="mlabel">100%</div></div>`;
+  }
+  if (s && s.state === "verifying" && s.total_bytes) {
+    const pct = Math.floor(s.progress_bytes / s.total_bytes * 100);
+    return `<div class="meter"><div class="track"><div class="fill" style="width:${pct}%;background:var(--violet)"></div></div><div class="mlabel">${pct}%</div></div>`;
+  }
+  return formatProgress(e) || `<div class="mlabel" style="color:var(--dim)">—</div>`;
+}
+
+function torPeerRate(url, p) {
+  const prev = (torPeerPrev[url] || {})[p.addr];
+  const now = Date.now();
+  if (!prev || now <= prev.t) return { dl: 0, ul: 0 };
+  const dt = (now - prev.t) / 1000;
+  return {
+    dl: Math.max(0, (p.downloaded_bytes - prev.dl) / dt),
+    ul: Math.max(0, (p.uploaded_bytes - prev.ul) / dt),
+  };
+}
+
+// ---- torrent expand panel (rendered into the shared .detgrid) ----
+const TOR_TP_ICON = {
+  copy:   '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+};
+
+function torDetailInner(e) {
+  const d = torDetail[e.url];
+  const s = torLive[e.url] || {};
+  if (d && d.gone) {
+    return `<div><dl class="df"><dt>${esc(t("d_provider"))}</dt><dd>Torrent · librqbit</dd>`
+      + `<dt>${esc(t("d_saving_to"))}</dt><dd class="selectable">${esc(e.out_dir || e.dest)}</dd></dl>`
+      + `<div class="tdet-bar"><button data-tp="folder">${TOR_TP_ICON.folder} ${esc(t("open_folder"))}</button></div></div>`
+      + `<div class="tdet-right"></div>`;
+  }
+  if (!d) return `<div style="color:var(--dim);font-size:12px">${esc(t("tor_loading_detail"))}</div><div></div>`;
+
+  const eta = (s.eta_secs != null && s.dl_speed) ? torDur(s.eta_secs) : "—";
+  const facts = `<dl class="df">`
+    + `<dt>${esc(t("d_provider"))}</dt><dd>Torrent · librqbit</dd>`
+    + `<dt>${esc(t("tor_infohash"))}</dt><dd class="selectable">${esc(d.info_hash)}</dd>`
+    + `<dt>${esc(t("d_saving_to"))}</dt><dd class="selectable">${esc(d.save_path)}</dd>`
+    + `<dt>${esc(t("tor_pieces"))}</dt><dd>${d.total_pieces.toLocaleString()}</dd>`
+    + `<dt>${esc(t("tor_downloaded"))}</dt><dd>${formatBytes(d.progress_bytes)} / ${formatBytes(d.total_bytes)}</dd>`
+    + `<dt>${esc(t("tor_uploaded"))}</dt><dd>${formatBytes(d.uploaded_bytes)} · ${esc(t("tor_ratio", { r: d.ratio.toFixed(2) }))}</dd>`
+    + `<dt>${esc(t("tor_peers_h"))}</dt><dd>${s.peers ?? 0} · ${esc(t("tor_eta", { v: eta }))}</dd>`
+    + `<dt>${esc(t("d_added"))}</dt><dd>${new Date(e.created_at * 1000).toLocaleString(window.I18N.lang)}</dd>`
+    + `</dl>`
+    + `<div class="tdet-bar">`
+    + (e.url.startsWith("magnet:") ? `<button data-tp="copy">${TOR_TP_ICON.copy} ${esc(t("tor_copy_magnet"))}</button>` : "")
+    + `<button data-tp="folder">${TOR_TP_ICON.folder} ${esc(t("open_folder"))}</button></div>`;
+
+  const sel = d.files.filter(f => f.selected).length;
+  const frows = d.files.map(f => {
+    const pct = f.size_bytes ? Math.min(100, Math.floor(f.downloaded_bytes / f.size_bytes * 100)) : 100;
+    return `<div class="frow"><input type="checkbox" class="tfile-chk" data-fi="${f.index}"${f.selected ? " checked" : ""}>`
+      + `<span class="fn" title="${esc(f.path)}">${esc(f.path)}</span>`
+      + `<span class="sz">${formatBytes(f.size_bytes)}</span>`
+      + `<div class="fmini"><span class="tk"><span class="fl ${pct >= 100 ? "done" : ""}" style="width:${pct}%"></span></span><span class="pc">${pct}%</span></div></div>`;
+  }).join("");
+  const files = `<h6>${esc(t("tor_files"))} · ${sel}/${d.files.length}</h6>`
+    + `<div class="tbox"><div class="scroll files" data-k="files">${frows}</div>`
+    + `<div class="bar"><span>${esc(t("tor_apply_hint"))}</span>`
+    + `<span><button data-tp="fall">${esc(t("tor_select_all"))}</button> <button data-tp="fnone">${esc(t("tor_select_none"))}</button> <button data-tp="fapply">${esc(t("tor_apply"))}</button></span></div></div>`;
+
+  const peerList = d.peers.slice().sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
+  const prows = peerList.length ? peerList.map(p => {
+    const r = torPeerRate(e.url, p);
+    return `<div class="prow"><span class="fn" title="${esc(p.addr)}">${esc(p.addr)}</span>`
+      + `<span style="color:var(--dim)">${esc(p.client || "—")}</span>`
+      + `<span class="r dn">${r.dl ? formatBytesPerSec(r.dl) : "0"}</span>`
+      + `<span class="r up">${r.ul ? formatBytesPerSec(r.ul) : "0"}</span></div>`;
+  }).join("") : `<div class="prow one" style="color:var(--dim)">${esc(t("tor_no_peers"))}</div>`;
+  const peers = `<h6>${esc(t("tor_peers_h"))} · ${d.peers.length}</h6>`
+    + `<div class="tbox"><div class="prow phead"><span>${esc(t("tor_addr"))}</span><span>${esc(t("tor_client"))}</span>`
+    + `<span class="r">↓</span><span class="r">↑</span></div>`
+    + `<div class="scroll peers" data-k="peers">${prows}</div></div>`;
+
+  return `<div>${facts}</div><div class="tdet-right">${files}${peers}</div>`;
+}
+
+async function torPanelAct(e, act, host) {
+  if (act === "copy")   { try { await navigator.clipboard.writeText(e.url); } catch {} return; }
+  if (act === "folder") { await invoke("open_containing_folder", { path: e.dest }); return; }
+  const chks = [...host.querySelectorAll(".tfile-chk")];
+  if (act === "fall")  { chks.forEach(c => c.checked = true);  host.dataset.dirty = "1"; return; }
+  if (act === "fnone") { chks.forEach(c => c.checked = false); host.dataset.dirty = "1"; return; }
+  if (act === "fapply") {
+    const idx = chks.filter(c => c.checked).map(c => +c.dataset.fi);
+    if (!idx.length) return;
+    try { await invoke("torrent_set_files", { url: e.url, files: idx }); }
+    catch (err) { console.warn("torrent_set_files", err); return; }
+    host.dataset.dirty = "";
+    await refreshTorDetail(e);
+  }
+}
+
+// The panel's `.tdet-host` element is created once per entry and CACHED. The
+// 2s list rebuild moves this same node into the fresh <tr> instead of building
+// new HTML, so its scroll positions and in-progress scroll gestures survive.
+const torHost = {};       // entry id -> <div class="tdet-host">
+const torScroll = {};     // entry id -> { files: n, peers: n }
+const torScrollAt = {};   // entry id -> last user-scroll timestamp
+
+function torApplyScroll(id, root) {
+  const m = torScroll[id];
+  if (!m) return;
+  root.querySelectorAll(".scroll[data-k]").forEach(el => {
+    if (m[el.dataset.k] != null) el.scrollTop = m[el.dataset.k];
+  });
+}
+
+function torMakeHost(e) {
+  const host = document.createElement("div");
+  host.className = "tdet-host";
+  host.innerHTML = torDetailInner(e);
+  host.addEventListener("scroll", ev => {
+    const el = ev.target;
+    if (el.dataset && el.dataset.k) {
+      (torScroll[e.id] ??= {})[el.dataset.k] = el.scrollTop;
+      torScrollAt[e.id] = Date.now();
+    }
+  }, true);
+  host.addEventListener("click", ev => {
+    if (ev.target.closest(".tfile-chk")) { host.dataset.dirty = "1"; return; }
+    const b = ev.target.closest("[data-tp]");
+    if (b) { ev.stopPropagation(); torPanelAct(e, b.dataset.tp, host); }
+  });
+  torHost[e.id] = host;
+  return host;
+}
+
+// Skeleton only — the row builder attaches the cached torHost node.
+function torDetailCell() {
+  return `<div class="detgrid tor"><div></div></div>`;
+}
+
+async function refreshTorDetail(e, force) {
+  let d;
+  try { d = await invoke("torrent_detail", { url: e.url }); } catch { d = null; }
+  torDetail[e.url] = d || { gone: true };
+  if (d) {
+    const now = Date.now(), snap = {};
+    for (const p of d.peers) snap[p.addr] = { dl: p.downloaded_bytes, ul: p.uploaded_bytes, t: now };
+    torPeerPrev[e.url] = snap;
+  }
+  const host = torHost[e.id];
+  if (!host || !host.isConnected) return;
+  // Never repaint while the user is scrolling or hovering the panel.
+  if (!force && (Date.now() - (torScrollAt[e.id] || 0) < 1800 || host.matches(":hover"))) return;
+  const checked = new Set([...host.querySelectorAll(".tfile-chk:checked")].map(c => +c.dataset.fi));
+  const dirty = host.dataset.dirty === "1";
+  host.innerHTML = torDetailInner(e);
+  torApplyScroll(e.id, host);
+  if (dirty) {
+    host.dataset.dirty = "1";
+    host.querySelectorAll(".tfile-chk").forEach(c => { c.checked = checked.has(+c.dataset.fi); });
+  }
+}
+
+// ---- live-stats poll: patches torrent rows/panels in place ----
+let torPollTimer = null;
+let torPollTick = 0;
+function armTorPoll() {
+  if (torPollTimer) return;
+  torPollTimer = setTimeout(torPollRun, 250);
+}
+function patchTorRow(e, tr) {
+  const set = (sel, html) => { const el = tr.querySelector(sel); if (el && el.innerHTML !== html) el.innerHTML = html; };
+  set(".progress-col", torProgressHtml(e));
+  set(".speed-col", torSpeedHtml(e));
+  const st = tr.querySelector(".status-col");
+  if (st) {
+    const m = torStatusMeta(e);
+    const cls = `status-${m.cls} status-col`;
+    if (st.className !== cls) st.className = cls;
+    if (st.textContent !== m.label) st.textContent = m.label;
+  }
+}
+async function torPollRun() {
+  torPollTimer = null;
+  const entries = window.__lastEntries || [];
+  const rows = [...document.querySelectorAll('#rows tr.data-row[data-tor="1"]')];
+  if (!rows.length) return;
+  const byUrl = new Map();
+  for (const r of rows) {
+    const e = entries.find(x => x.id === r.dataset.id);
+    if (e) byUrl.set(e.url, { e, r });
+  }
+  let stats = [];
+  try { stats = await invoke("torrent_stats", { urls: [...byUrl.keys()] }); } catch { return; }
+  let anyLive = false;
+  const seen = new Set();
+  for (const s of stats) {
+    torLive[s.url] = s; seen.add(s.url);
+    if (!s.finished || s.ul_speed) anyLive = true;
+    const hit = byUrl.get(s.url);
+    if (hit) patchTorRow(hit.e, hit.r);
+  }
+  for (const [url, hit] of byUrl) if (!seen.has(url)) patchTorRow(hit.e, hit.r);
+
+  torPollTick = (torPollTick + 1) % 2;
+  const openTor = [...detailsOpen].map(id => entries.find(x => x.id === id)).filter(e => e && isTor(e));
+  if (torPollTick === 0) {
+    for (const e of openTor) if (torHost[e.id] && torHost[e.id].isConnected) refreshTorDetail(e);
+  }
+  if (anyLive || openTor.length) torPollTimer = setTimeout(torPollRun, 1500);
+}
+
+// The add-form file picker (magnet / .torrent). Resolves to an index array,
+// [] for "all", or null if the user cancelled.
+function torrentFilePicker(preview) {
+  return new Promise(resolve => {
+    const ov = document.getElementById("tfiles-overlay");
+    const list = document.getElementById("tfiles-list");
+    const cnt = document.getElementById("tfiles-count");
+    const okB = document.getElementById("tfiles-ok");
+    const cB = document.getElementById("tfiles-cancel");
+    document.getElementById("tfiles-name").textContent =
+      `${preview.name}  ·  ${formatBytes(preview.total_bytes)}  ·  ${t("pv_items", { n: preview.files.length })}`;
+    list.innerHTML = preview.files.map(f =>
+      `<label class="fr"><input type="checkbox" class="tfp" data-i="${f.index}" data-sz="${f.size_bytes}" checked>`
+      + `<span class="fn" title="${esc(f.path)}">${esc(f.path)}</span><span class="sz">${formatBytes(f.size_bytes)}</span></label>`
+    ).join("");
+    const upd = () => {
+      const on = [...list.querySelectorAll(".tfp:checked")];
+      const bytes = on.reduce((a, c) => a + Number(c.dataset.sz), 0);
+      cnt.textContent = t("tor_sel_count", { n: on.length, total: preview.files.length, size: formatBytes(bytes) });
+      okB.disabled = on.length === 0;
+    };
+    const onAll = () => { list.querySelectorAll(".tfp").forEach(c => c.checked = true); upd(); };
+    const onNone = () => { list.querySelectorAll(".tfp").forEach(c => c.checked = false); upd(); };
+    const finish = val => {
+      ov.style.display = "none";
+      list.removeEventListener("change", upd);
+      document.getElementById("tfiles-all").removeEventListener("click", onAll);
+      document.getElementById("tfiles-none").removeEventListener("click", onNone);
+      okB.removeEventListener("click", onOk);
+      cB.removeEventListener("click", onCancel);
+      resolve(val);
+    };
+    const onOk = () => {
+      const idx = [...list.querySelectorAll(".tfp:checked")].map(c => +c.dataset.i);
+      finish(idx.length === preview.files.length ? [] : idx);
+    };
+    const onCancel = () => finish(null);
+    list.addEventListener("change", upd);
+    document.getElementById("tfiles-all").addEventListener("click", onAll);
+    document.getElementById("tfiles-none").addEventListener("click", onNone);
+    okB.addEventListener("click", onOk);
+    cB.addEventListener("click", onCancel);
+    upd();
+    ov.style.display = "flex";
+  });
 }
 
 function renderIgGroup(g, entries) {
@@ -1708,7 +2151,15 @@ document.getElementById("retry-selected-btn").addEventListener("click", async ()
   await refresh();
 });
 
+function isTorrentLink(v) {
+  const s = v.trim();
+  if (s.startsWith("magnet:")) return true;
+  const path = s.split(/[?#]/)[0].toLowerCase();
+  if (path.endsWith(".torrent")) return true;
+  return false;
+}
 function validLink(v) {
+  if (isTorrentLink(v)) return true;
   try { const u = new URL(v.trim()); return u.protocol === "http:" || u.protocol === "https:"; }
   catch { return false; }
 }
@@ -1736,21 +2187,40 @@ document.getElementById("add-form").addEventListener("submit", async (ev) => {
   clearAddHint();
 
   let quality = null;
+  let torrentFiles = null;   // null => all files
   const submitBtn = ev.target.querySelector("button[type=submit]");
+  const btnText = submitBtn.textContent;
   submitBtn.disabled = true;
   try {
-    const variants = await invoke("probe_qualities", { url });
-    if (variants.length > 0) {
-      quality = await pickQuality(variants);
-      if (quality === null && variants.length > 0) {
-        return;
+    if (isTorrentLink(url)) {
+      submitBtn.textContent = t("tor_reading");
+      let preview = null;
+      try {
+        preview = await invoke("torrent_preview", { url });
+      } catch (err) {
+        const { confirmed } = await confirmAction(t("tor_preview_failed", { e: String(err).split("\n")[0] }));
+        if (!confirmed) return;
+      }
+      if (preview) {
+        const picked = await torrentFilePicker(preview);
+        if (picked === null) return;          // cancelled
+        torrentFiles = picked.length ? picked : null;
+      }
+    } else {
+      const variants = await invoke("probe_qualities", { url });
+      if (variants.length > 0) {
+        quality = await pickQuality(variants);
+        if (quality === null && variants.length > 0) {
+          return;
+        }
       }
     }
   } finally {
     submitBtn.disabled = false;
+    submitBtn.textContent = btnText;
   }
 
-  await invoke("add_download", { url, filename, quality });
+  await invoke("add_download", { url, filename, quality, files: torrentFiles });
   const urlIn = document.getElementById("url");
   urlIn.value = "";
   urlIn.closest(".clr-wrap")?.classList.remove("has-text");
@@ -2143,6 +2613,18 @@ function openSettings(settings) {
   document.getElementById("ytdlp-limit-rate").value = bk.ytdlp_limit_rate || "";
   document.getElementById("ytdlp-frags").value = bk.ytdlp_concurrent_fragments == null ? "" : bk.ytdlp_concurrent_fragments;
 
+  // torrent
+  const tor = (settings.backends && settings.backends.torrent) || {};
+  const torNum = (id, v) => document.getElementById(id).value = (v == null ? "" : v);
+  document.getElementById("torrent-dir").value = tor.download_dir || "";
+  torNum("torrent-port", tor.listen_port);
+  torNum("torrent-max-peers", tor.max_peers_per_torrent);
+  torNum("torrent-dl-limit", tor.download_limit_kbps);
+  torNum("torrent-ul-limit", tor.upload_limit_kbps);
+  document.getElementById("torrent-dht").checked = tor.enable_dht !== false;
+  document.getElementById("torrent-upnp").checked = tor.enable_upnp !== false;
+  document.getElementById("torrent-seed-forever").checked = tor.seed_forever === true;
+
   // advanced groups start collapsed every time
   document.querySelectorAll(".set-fold").forEach(d => { d.open = false; });
   refreshInstaloaderStatus();
@@ -2230,6 +2712,11 @@ document.getElementById("browse-btn").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("torrent-dir-browse").addEventListener("click", async () => {
+  const picked = await invoke("pick_folder");
+  if (picked) document.getElementById("torrent-dir").value = picked;
+});
+
 // "Browse…" next to the instaloader / python path fields.
 document.querySelectorAll("button[data-pick]").forEach(btn => {
   btn.addEventListener("click", async () => {
@@ -2308,6 +2795,18 @@ document.getElementById("save-settings-btn").addEventListener("click", async () 
   backends.cookies_from_browser = ddYtCookies.dataset.value || null;
   backends.ytdlp_limit_rate = igIn("ytdlp-limit-rate");
   backends.ytdlp_concurrent_fragments = numOrNull("ytdlp-frags");
+
+  backends.torrent = {
+    ...(backends.torrent || {}),
+    download_dir: document.getElementById("torrent-dir").value.trim() || null,
+    listen_port: numOrNull("torrent-port"),
+    max_peers_per_torrent: numOrNull("torrent-max-peers"),
+    download_limit_kbps: numOrNull("torrent-dl-limit"),
+    upload_limit_kbps: numOrNull("torrent-ul-limit"),
+    enable_dht: document.getElementById("torrent-dht").checked,
+    enable_upnp: document.getElementById("torrent-upnp").checked,
+    seed_forever: document.getElementById("torrent-seed-forever").checked,
+  };
   const settings = {
     ...(loadedSettings || {}),
     download_dir: document.getElementById("download-dir").value.trim(),

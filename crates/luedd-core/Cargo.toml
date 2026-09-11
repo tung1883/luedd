@@ -15,5 +15,11 @@ futures.workspace = true
 chrono.workspace = true
 uuid = { version = "1", features = ["v4"] }
 url.workspace = true
+librqbit = { workspace = true, optional = true }
+librqbit-core = { workspace = true, optional = true }
 luedd-net = { path = "../luedd-net" }
 luedd-media = { path = "../luedd-media" }
+
+[features]
+default = ["torrent"]
+torrent = ["dep:librqbit", "dep:librqbit-core"]

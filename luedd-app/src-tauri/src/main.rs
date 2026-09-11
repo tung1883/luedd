@@ -18,6 +18,7 @@ struct AppState {
     settings: Arc<SettingsStore>,
     manager: RwLock<Arc<DownloadManager>>,
     registry: Arc<BackendRegistry>,
+    torrent: Arc<luedd_core::backend::TorrentBackend>,
 }
 
 /// The backend registry: the three transport built-ins plus (later phases)
@@ -25,17 +26,21 @@ struct AppState {
 /// config from `DownloadReq.config`, so this is built once and never rebuilt.
 fn build_registry(
     client: HttpClient,
+    data_dir: &std::path::Path,
 ) -> (
     Arc<BackendRegistry>,
     Arc<luedd_core::backend::instagram::InstagramBackend>,
     Arc<luedd_core::backend::YtdlpBackend>,
+    Arc<luedd_core::backend::TorrentBackend>,
 ) {
     let mut registry = BackendRegistry::with_builtins(client.clone());
     let ytdlp = Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone()));
     registry.register(ytdlp.clone());
     let instagram = Arc::new(luedd_core::backend::InstagramBackend::new(client));
     registry.register(instagram.clone());
-    (Arc::new(registry), instagram, ytdlp)
+    let torrent = Arc::new(luedd_core::backend::TorrentBackend::new(data_dir.join("torrent")));
+    registry.register(torrent.clone());
+    (Arc::new(registry), instagram, ytdlp, torrent)
 }
 
 fn build_manager(
@@ -64,12 +69,20 @@ fn probe_req(url: String, ctx: RequestContext, config: BackendConfig) -> Downloa
 }
 
 #[tauri::command]
-async fn add_download(state: State<'_, AppState>, url: String, filename: Option<String>, quality: Option<String>) -> Result<(), String> {
+async fn add_download(
+    state: State<'_, AppState>,
+    url: String,
+    filename: Option<String>,
+    quality: Option<String>,
+    files: Option<Vec<usize>>,
+) -> Result<(), String> {
     let settings = state.settings.get().await;
     let client = state.manager.read().await.http_client();
     let ctx = RequestContext::default();
 
-    let detected_ext = if matches!(DownloadKind::guess_from_url(&url), DownloadKind::Http) {
+    let detected_ext = if !url.starts_with("magnet:")
+        && matches!(DownloadKind::guess_from_url(&url), DownloadKind::Http)
+    {
         luedd_core::naming::resolve_real_extension(&client, &url, &ctx).await
     } else {
         None
@@ -103,7 +116,52 @@ async fn add_download(state: State<'_, AppState>, url: String, filename: Option<
     entry.author = meta.author;
     entry.title = meta.title;
     entry.media_class = meta.media_class;
+    if backend.is_torrent() {
+        entry.out_dir = meta.out_dir;
+        if let Some(files) = files.filter(|f| !f.is_empty()) {
+            let list = files.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            entry.extras.insert(luedd_core::backend::torrent::FILES_EXTRA.to_string(), list);
+        }
+    }
     state.store.add_entry(entry).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn torrent_stats(
+    state: State<'_, AppState>,
+    urls: Vec<String>,
+) -> Result<Vec<luedd_core::backend::TorrentStat>, String> {
+    Ok(state.torrent.stats(&urls).await)
+}
+
+#[tauri::command]
+async fn torrent_detail(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<Option<luedd_core::backend::TorrentDetail>, String> {
+    Ok(state.torrent.detail(&url).await)
+}
+
+#[tauri::command]
+async fn torrent_preview(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<luedd_core::backend::TorrentPreview, String> {
+    let settings = state.settings.get().await;
+    state
+        .torrent
+        .preview(&url, &settings.backends)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn torrent_set_files(
+    state: State<'_, AppState>,
+    url: String,
+    files: Vec<usize>,
+) -> Result<(), String> {
+    state.torrent.set_files(&url, files).await.map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -497,8 +555,17 @@ fn main() {
             });
 
             let initial_settings = tauri::async_runtime::block_on(settings.get());
-            let (registry, instagram, ytdlp) =
-                build_registry(HttpClient::new().expect("failed to build http client"));
+            let (registry, instagram, ytdlp, torrent) =
+                build_registry(HttpClient::new().expect("failed to build http client"), &data_dir);
+            {
+                let torrent = torrent.clone();
+                let cfg = initial_settings.backends.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = torrent.ensure_session(&cfg).await {
+                        tracing::warn!(error = %e, "failed to start torrent session");
+                    }
+                });
+            }
             let manager = build_manager(store.clone(), &initial_settings, registry.clone())
                 .expect("failed to build download manager");
 
@@ -589,12 +656,16 @@ fn main() {
                 });
             }
 
-            app.manage(AppState { store, settings, manager: RwLock::new(manager), registry });
+            app.manage(AppState { store, settings, manager: RwLock::new(manager), registry, torrent });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             add_download,
             probe_qualities,
+            torrent_stats,
+            torrent_detail,
+            torrent_preview,
+            torrent_set_files,
             list_downloads,
             run_queue,
             remove_entry,
