@@ -216,23 +216,39 @@ export default class App {
 
     // The server only knows an item by its own id; a freshly detected local
     // one needs a sync round-trip first.
-    async serverItemForUrl(url) {
+    async serverItemForUrl(url, tabId) {
         const find = () => this.videoList.find(v => v.url === url && !this.isLocalId(v.id));
         let v = find();
         if (!v) {
             try { await this.connector.syncNow(); } catch (e) { }
             v = find();
         }
+        // A permalink picked off a feed (not the tab's own URL) was never
+        // offered to the app: register it as a page detection, then wait for
+        // the server to list it.
+        if (!v && this.hostMatchesPageHost(url)) {
+            this.postedPages.delete(url);
+            await this.maybeDetectPage({ url, title: null, id: tabId });
+            for (let i = 0; i < 5 && !v; i++) {
+                await new Promise(r => setTimeout(r, 400));
+                try { await this.connector.syncNow(); } catch (e) { }
+                v = find();
+            }
+        }
         return v || null;
     }
 
-    async barDownload(url, quality) {
-        const v = await this.serverItemForUrl(url);
+    barKey(url) {
+        return this.hostMatchesPageHost(url) ? this.canonicalPageUrl(url) : url;
+    }
+
+    async barDownload(url, quality, tabId) {
+        const v = await this.serverItemForUrl(this.barKey(url), tabId);
         return v ? !!(await this.queueVideo(v.id, quality)) : false;
     }
 
-    async barProbe(url) {
-        const v = await this.serverItemForUrl(url);
+    async barProbe(url, tabId) {
+        const v = await this.serverItemForUrl(this.barKey(url), tabId);
         return v ? await this.probeQuality(v.id) : [];
     }
 
@@ -625,14 +641,14 @@ export default class App {
             this.syncWatcherRegistration();
         }
         else if (request.type === "bar-query") {
-            sendResponse({ items: this.barItemsForTab(sender && sender.tab) });
+            sendResponse({ items: this.barItemsForTab(sender && sender.tab), enabled: this.isMonitoringEnabled() });
         }
         else if (request.type === "bar-download" && request.url) {
-            this.barDownload(request.url, request.quality).then(ok => sendResponse({ ok }));
+            this.barDownload(request.url, request.quality, sender && sender.tab && sender.tab.id).then(ok => sendResponse({ ok }));
             return true;
         }
         else if (request.type === "bar-probe" && request.url) {
-            this.barProbe(request.url).then(variants => sendResponse({ variants }));
+            this.barProbe(request.url, sender && sender.tab && sender.tab.id).then(variants => sendResponse({ variants }));
             return true;
         }
         else if (request.type === "vid") {

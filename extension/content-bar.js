@@ -18,6 +18,7 @@
   let disabled = false;
   let items = [];
   let itemsAt = 0;
+  let monitoring = false;
 
   const send = msg => new Promise(resolve => {
     try {
@@ -48,6 +49,7 @@
     itemsAt = Date.now();
     const r = await send({ type: "bar-query" });
     items = (r && r.items) || [];
+    monitoring = !!(r && r.enabled);
   }
 
   const CSS = `
@@ -55,6 +57,7 @@
       background:#16171A; color:#E7E8EA; border:1px solid #34373E; border-radius:7px; box-shadow:0 4px 14px rgba(0,0,0,.45);
       overflow:visible; position:relative; user-select:none; }
     svg { display:block; }
+    .logo { width:16px; height:16px; display:block; border-radius:4px; }
     button { all:unset; cursor:pointer; padding:7px 10px; display:inline-flex; align-items:center; gap:6px; color:inherit; }
     button:hover { background:#26282E; }
     .dl { color:#4FA3D8; border-radius:6px 0 0 6px; }
@@ -72,12 +75,15 @@
   `;
 
   // One draggable-free pill. `pick()` returns the candidate list to offer.
+  let iconUrl = "";
+  try { iconUrl = ext.runtime.getURL("icon48.png"); } catch (_) {}
+
   function makeBar(pick) {
     const host = document.createElement("div");
     host.style.cssText = "all:initial;position:fixed;left:0;top:0;z-index:2147483647;display:none;";
     const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `<style>${CSS}</style><div class="bar">
-      <button class="dl" title="Download with Lüdd"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v10"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg> <span class="lbl">Download</span></button>
+      <button class="dl" title="Download with Lüdd"><img class="logo" alt="" src="${iconUrl}"> <span class="lbl">Download</span></button>
       <button class="more" title="Choose" style="display:none"><svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
       <button class="x" title="Hide"><svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
       <div class="menu"></div></div>`;
@@ -207,7 +213,44 @@
     return out;
   }
 
+  // Feed sites show many videos on one URL, so the tab-level item is the wrong
+  // download for the hovered one. Find that video's own post link instead.
+  const plain = u => u.origin + u.pathname;
+  const PERMALINKS = [
+    { host: /(^|\.)instagram\.com$/, path: /^\/(?:[^/]+\/)?(?:p|reel|reels|tv)\/[\w-]+/, clean: plain },
+    { host: /(^|\.)(x|twitter)\.com$/, path: /^\/[^/]+\/status\/\d+/, clean: plain },
+    { host: /(^|\.)tiktok\.com$/, path: /^\/@[^/]+\/video\/\d+/, clean: plain },
+    { host: /(^|\.)facebook\.com$/, path: /^\/(?:[^/]+\/)?(?:reel|videos)\/\d+|^\/watch\/?$/,
+      clean: u => u.pathname.startsWith("/watch") ? u.origin + u.pathname + u.search : plain(u) },
+    // Only the main player (and Shorts) use the tab URL; hover previews on
+    // home/search/sidebar thumbnails resolve to the thumbnail's own link.
+    { host: /(^|\.)youtube\.com$/, path: /^\/(?:watch$|shorts\/[\w-]+)/, mainSel: "#movie_player, ytd-shorts, ytd-reel-video-renderer",
+      ok: u => u.pathname.startsWith("/shorts/") || u.searchParams.has("v"),
+      clean: u => u.pathname.startsWith("/shorts/") ? plain(u) : u.origin + u.pathname + "?v=" + u.searchParams.get("v") },
+  ];
+
+  function permalinkFor(el) {
+    const rule = PERMALINKS.find(r => r.host.test(location.hostname));
+    if (!rule) return null;
+    const match = u => rule.path.test(u.pathname) && (!rule.ok || rule.ok(u));
+    const here = new URL(location.href);
+    if (match(here) && (!rule.mainSel || (el.closest && el.closest(rule.mainSel)))) return rule.clean(here);
+    let node = el;
+    for (let i = 0; i < 14 && node && node !== document.body; i++) {
+      node = node.parentElement;
+      if (!node) break;
+      for (const a of node.querySelectorAll("a[href]")) {
+        let u;
+        try { u = new URL(a.getAttribute("href"), location.href); } catch (_) { continue; }
+        if (u.hostname === location.hostname && match(u)) return rule.clean(u);
+      }
+    }
+    return null;
+  }
+
   function candidatesFor(el) {
+    const perma = monitoring && el && permalinkFor(el);
+    if (perma) return [{ url: perma, name: "This video", kind: "video" }];
     const list = items.filter(isMedia);
     const cur = el && el.currentSrc;
     const i = cur ? list.findIndex(it => it.url === cur) : -1;

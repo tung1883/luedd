@@ -21,6 +21,16 @@
         "service_worker": "main.js",
         "type": "module"
     },
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "icon48.png"
+            ],
+            "matches": [
+                "*://*/*"
+            ]
+        }
+    ],
     "icons": {
         "16": "icon16.png",
         "48": "icon48.png",
