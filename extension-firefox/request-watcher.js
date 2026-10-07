@@ -19,6 +19,17 @@ const DEFAULT_MEDIA_TYPES = [
 const SEGMENT_EXTS = ['.TS', '.M4S'];
 const SEGMENT_PATH_RE = /(?:^|\/)(?:seg(?:ment)?|chunk|frag(?:ment)?)[-_]?\d+/i;
 
+// Playlists served under a fake name/type (index.jpg, a.txt, no extension):
+// small ambiguous responses get their first bytes read to tell.
+const SNIFF_MAX_BYTES = 256 * 1024;
+const SNIFF_MIN_BYTES = 7;
+const SNIFF_READ_BYTES = 512;
+const SNIFF_CONCURRENCY = 2;
+const SNIFF_SEEN_MAX = 500;
+const SNIFF_TIMEOUT_MS = 5000;
+const SNIFFABLE_TYPE_RE = /^(image\/|text\/plain|application\/octet-stream|binary\/octet-stream)/;
+const MANIFEST_TYPE_RE = /mpegurl|dash\+xml|vnd\.ms-sstr\+xml/;
+
 const REQUEST_MAP_MAX = 1000;
 const REQUEST_MAP_TARGET = 800;
 const REQUEST_MAP_TTL_MS = 60000;
@@ -39,6 +50,8 @@ export default class RequestWatcher {
         this.urlPatterns = [];
         this.requestFileExts = [];
         this.registered = false;
+        this.sniffSeen = new Set();
+        this.sniffInFlight = 0;
     }
 
     updateConfig(config) {
@@ -85,6 +98,9 @@ export default class RequestWatcher {
         }
         let ctHeader = res.responseHeaders && res.responseHeaders.find(h => h["name"].toUpperCase() === "CONTENT-TYPE");
         let ctVal = ctHeader ? ctHeader["value"].toLowerCase() : "";
+        if (MANIFEST_TYPE_RE.test(ctVal)) {
+            return true;
+        }
         if ((ctVal.indexOf("video/mp2t") >= 0 || ctVal.indexOf("application/octet-stream") >= 0) && /\d/.test(path)) {
             return false;
         }
@@ -178,34 +194,118 @@ export default class RequestWatcher {
         }
     }
 
+    shouldSniff(res) {
+        if (res.statusCode && res.statusCode !== 200 && res.statusCode !== 206) return false;
+        let u;
+        try { u = new URL(res.url); } catch { return false; }
+        if (this.blockedHosts.find(h => u.host.indexOf(h) >= 0)) return false;
+        const path = u.pathname;
+        const upath = path.toUpperCase();
+        if (SEGMENT_EXTS.find(e => upath.endsWith(e)) || SEGMENT_PATH_RE.test(path)) return false;
+        const hs = res.responseHeaders || [];
+        const ct = hs.find(h => h["name"].toUpperCase() === "CONTENT-TYPE");
+        const ctVal = ct ? ct["value"].toLowerCase().trim() : "";
+        if (ctVal && !SNIFFABLE_TYPE_RE.test(ctVal)) return false;
+        const cl = hs.find(h => h["name"].toUpperCase() === "CONTENT-LENGTH");
+        if (cl) {
+            const n = parseInt(cl["value"], 10);
+            if (!isNaN(n) && (n > SNIFF_MAX_BYTES || n < SNIFF_MIN_BYTES)) return false;
+        }
+        return true;
+    }
+
+    // Reads the first bytes of `url` and returns the real manifest content
+    // type ("application/vnd.apple.mpegurl" / "application/dash+xml") or null.
+    async sniffManifest(url) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), SNIFF_TIMEOUT_MS);
+        try {
+            const r = await fetch(url, {
+                headers: { Range: "bytes=0-" + (SNIFF_READ_BYTES - 1) },
+                credentials: "include",
+                signal: ctl.signal,
+            });
+            if (!r.ok || !r.body) return null;
+            const reader = r.body.getReader();
+            const chunks = [];
+            let got = 0;
+            while (got < SNIFF_READ_BYTES) {
+                const { value, done } = await reader.read();
+                if (done || !value) break;
+                chunks.push(value);
+                got += value.length;
+            }
+            ctl.abort();
+            const buf = new Uint8Array(Math.min(got, SNIFF_READ_BYTES));
+            let off = 0;
+            for (const c of chunks) {
+                const take = c.subarray(0, buf.length - off);
+                buf.set(take, off);
+                off += take.length;
+                if (off >= buf.length) break;
+            }
+            const text = new TextDecoder().decode(buf).replace(/^\uFEFF/, "");
+            if (/^\s*#EXTM3U/.test(text)) return "application/vnd.apple.mpegurl";
+            if (/<MPD[\s>]/.test(text)) return "application/dash+xml";
+            return null;
+        } catch {
+            return null;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    maybeSniff(req, res) {
+        if (!this.shouldSniff(res)) return;
+        if (this.sniffSeen.has(res.url) || this.sniffInFlight >= SNIFF_CONCURRENCY) return;
+        this.sniffSeen.add(res.url);
+        if (this.sniffSeen.size > SNIFF_SEEN_MAX) {
+            this.sniffSeen = new Set([...this.sniffSeen].slice(-SNIFF_SEEN_MAX / 2));
+        }
+        this.sniffInFlight++;
+        this.sniffManifest(res.url).then(ct => {
+            if (ct) this.emit(req, res, ct);
+        }).finally(() => { this.sniffInFlight--; });
+    }
+
+    emit(req, res, contentTypeOverride) {
+        const finish = async (title, tabUrl) => {
+            const data = this.createRequestData(req, res, title, tabUrl, req.tabId);
+            if (contentTypeOverride) {
+                data.responseHeaders["Content-Type"] = [contentTypeOverride];
+            }
+            const cookieFromJar = await this.getCookieHeaderForUrl(res.url);
+            if (cookieFromJar) {
+                data.cookie = cookieFromJar;
+            }
+            this.callback(data);
+        };
+        if (req.tabId !== -1) {
+            chrome.tabs.get(req.tabId, tab => {
+                // Tab may be gone (closed, prefetch, SW request) - lastError
+                // is set and `tab` is undefined.
+                void chrome.runtime.lastError;
+                if (tab) {
+                    finish(tab.title, tab.url);
+                } else {
+                    finish(null, null);
+                }
+            });
+        } else {
+            finish(null, null);
+        }
+    }
+
     onHeadersReceivedEvent(res) {
         let reqId = res.requestId;
         let req = this.requestMap.get(reqId);
         if (req) {
             this.requestMap.delete(reqId);
-            if (this.callback && this.isMatchingRequest(res)) {
-                const finish = async (title, tabUrl) => {
-                    const data = this.createRequestData(req, res, title, tabUrl, req.tabId);
-                    const cookieFromJar = await this.getCookieHeaderForUrl(res.url);
-                    if (cookieFromJar) {
-                        data.cookie = cookieFromJar;
-                    }
-                    this.callback(data);
-                };
-                if (req.tabId !== -1) {
-                    chrome.tabs.get(req.tabId, tab => {
-                        // Tab may be gone (closed, prefetch, SW request) - lastError
-                        // is set and `tab` is undefined.
-                        void chrome.runtime.lastError;
-                        if (tab) {
-                            finish(tab.title, tab.url);
-                        } else {
-                            finish(null, null);
-                        }
-                    });
-                } else {
-                    finish(null, null);
-                }
+            if (!this.callback) return;
+            if (this.isMatchingRequest(res)) {
+                this.emit(req, res);
+            } else {
+                this.maybeSniff(req, res);
             }
         }
     }

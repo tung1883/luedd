@@ -58,6 +58,16 @@
             ],
             "run_at": "document_start",
             "all_frames": true
+        },
+        {
+            "matches": [
+                "*://*/*"
+            ],
+            "js": [
+                "content-bar.js"
+            ],
+            "run_at": "document_idle",
+            "all_frames": true
         }
     ]
 }

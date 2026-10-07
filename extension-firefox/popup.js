@@ -23,6 +23,12 @@ class VideoPopup {
             window.close();
         });
 
+        {
+            const sel = document.getElementById("bar-mode");
+            chrome.storage.local.get("barMode", r => { sel.value = (r && r.barMode) || "video"; });
+            sel.addEventListener("change", () => chrome.storage.local.set({ barMode: sel.value }));
+        }
+
         document.getElementById('clear').addEventListener('click', e => {
             chrome.runtime.sendMessage({ type: "clear" });
             window.close();

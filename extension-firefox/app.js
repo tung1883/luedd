@@ -48,6 +48,9 @@ export default class App {
         // - yt-dlp watch pages etc, where there is no catchable media request.
         this.pageHosts = [];
         this.postedPages = new Set();
+        // tabId -> [{url, name, kind}] of what each tab has loaded, newest last.
+        // Feeds the on-page download button (content-bar.js).
+        this.tabMedia = new Map();
     }
 
     async start() {
@@ -177,6 +180,62 @@ export default class App {
         }
     }
 
+    mediaKind(url, headers) {
+        const ct = ((headers && headers["Content-Type"] && headers["Content-Type"][0]) || "").toLowerCase();
+        let path = "";
+        try { path = new URL(url).pathname.toLowerCase(); } catch { }
+        if (/mpegurl|dash\+xml/.test(ct) || /\.(m3u8|mpd)$/.test(path)) return "stream";
+        if (ct.startsWith("video/") || /\.(mp4|m4v|webm|mkv|mov|avi|flv)$/.test(path)) return "video";
+        if (ct.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg|flac)$/.test(path)) return "audio";
+        if (ct.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|svg)$/.test(path)) return "image";
+        return "other";
+    }
+
+    recordTabMedia(data, item) {
+        const tabId = parseInt(data.tabId, 10);
+        if (Number.isNaN(tabId) || tabId < 0) return;
+        const list = this.tabMedia.get(tabId) || [];
+        list.push({ url: data.url, name: item.info, kind: this.mediaKind(data.url, data.responseHeaders) });
+        if (list.length > 30) list.shift();
+        this.tabMedia.set(tabId, list);
+        try {
+            chrome.tabs.sendMessage(tabId, { type: "bar-changed" }, () => void chrome.runtime.lastError);
+        } catch (e) { }
+    }
+
+    barItemsForTab(tab) {
+        if (!tab || !this.isMonitoringEnabled()) return [];
+        const out = (this.tabMedia.get(tab.id) || []).slice().reverse();
+        if (tab.url && this.hostMatchesPageHost(tab.url)) {
+            const canon = this.canonicalPageUrl(tab.url);
+            const v = this.videoList.find(x => x.url === canon);
+            if (v) out.unshift({ url: canon, name: v.info || v.text || canon, kind: "video" });
+        }
+        return out;
+    }
+
+    // The server only knows an item by its own id; a freshly detected local
+    // one needs a sync round-trip first.
+    async serverItemForUrl(url) {
+        const find = () => this.videoList.find(v => v.url === url && !this.isLocalId(v.id));
+        let v = find();
+        if (!v) {
+            try { await this.connector.syncNow(); } catch (e) { }
+            v = find();
+        }
+        return v || null;
+    }
+
+    async barDownload(url, quality) {
+        const v = await this.serverItemForUrl(url);
+        return v ? !!(await this.queueVideo(v.id, quality)) : false;
+    }
+
+    async barProbe(url) {
+        const v = await this.serverItemForUrl(url);
+        return v ? await this.probeQuality(v.id) : [];
+    }
+
     recordLocalDetection(data) {
         if (this.seenUrls.has(data.url)) return;
         this.localDetectionCounter = (this.localDetectionCounter || 0) + 1;
@@ -188,6 +247,7 @@ export default class App {
             pageUrl: data.tabUrl || null,
         };
         this.seenUrls.add(data.url);
+        this.recordTabMedia(data, item);
         this.videoList = [...this.videoList, item];
         if (this.videoList.length > 300) {
             this.videoList = this.videoList.slice(-300);
@@ -433,6 +493,12 @@ export default class App {
         this.syncWatcherRegistration();
         this.attachContextMenu();
         chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
+        chrome.tabs.onRemoved.addListener(tabId => this.tabMedia.delete(tabId));
+        if (chrome.webNavigation && chrome.webNavigation.onBeforeNavigate) {
+            chrome.webNavigation.onBeforeNavigate.addListener(d => {
+                if (d && d.frameId === 0) this.tabMedia.delete(d.tabId);
+            });
+        }
     }
 
     isSupportedProtocol(url) {
@@ -556,6 +622,17 @@ export default class App {
             }
             this.updateActionIcon();
             this.syncWatcherRegistration();
+        }
+        else if (request.type === "bar-query") {
+            sendResponse({ items: this.barItemsForTab(sender && sender.tab) });
+        }
+        else if (request.type === "bar-download" && request.url) {
+            this.barDownload(request.url, request.quality).then(ok => sendResponse({ ok }));
+            return true;
+        }
+        else if (request.type === "bar-probe" && request.url) {
+            this.barProbe(request.url).then(variants => sendResponse({ variants }));
+            return true;
         }
         else if (request.type === "vid") {
             this.queueVideo(request.itemId, request.quality).then(success => sendResponse({ success }));
