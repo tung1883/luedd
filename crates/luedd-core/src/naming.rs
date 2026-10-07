@@ -228,7 +228,7 @@ pub fn dest_path(download_dir: &Path, url: &str, filename: &str) -> PathBuf {
 
 pub fn cache_dir_for(dest: &Path) -> PathBuf {
     let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("download");
-    dest.parent().unwrap_or_else(|| Path::new(".")).join(".luedd-cache").join(stem)
+    crate::queue::default_data_dir().join("cache").join(stem)
 }
 
 #[cfg(test)]
@@ -338,7 +338,7 @@ mod tests {
         let dir = Path::new("downloads");
         let dest = dest_path(dir, "https://cdn.example/video.m3u8", "My Cool Video.mp4");
         let cache_dir = cache_dir_for(&dest);
-        assert_eq!(cache_dir.parent().unwrap(), Path::new("downloads/.luedd-cache"));
+        assert_eq!(cache_dir.parent().unwrap(), crate::queue::default_data_dir().join("cache"));
         assert_eq!(cache_dir.file_name().and_then(|s| s.to_str()), dest.file_stem().and_then(|s| s.to_str()));
     }
 

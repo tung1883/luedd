@@ -1659,6 +1659,13 @@ async fn ig_archive(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
             };
             let _ = state.ig_library.set_archive(&user, Some(job)).await;
             spawn_ig_archiver(state.clone(), user.clone(), epoch);
+            // Live story + saved highlights aren't paged posts — grab them once,
+            // alongside the post walk, best-effort (need a session cookie).
+            {
+                let st = state.clone();
+                let u = user.clone();
+                tokio::spawn(async move { queue_story_and_highlights(&st, &u).await });
+            }
             // Fill in the real post count for an "all" walk in the background.
             if scope == "all" {
                 let st = state.clone();
@@ -1681,6 +1688,61 @@ async fn ig_archive(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
         }
         other => Json(serde_json::json!({ "error": format!("unknown action {other}") })),
     }
+}
+
+/// Queue the account's live story (if any) and every saved highlight,
+/// best-effort. No-op without a session cookie — stories/highlights need one.
+async fn queue_story_and_highlights(state: &Arc<AppState>, user: &str) {
+    let Some(cookie) = state.ig_cookie(None).await else { return };
+    let cfg = state.config.settings.get().await.backends;
+    let author = format!("@{user}");
+    // Skip the story fetch entirely when there's no active story — otherwise
+    // the download stalls waiting on a REST call that returns nothing to save.
+    let has_story = state
+        .instagram
+        .story_items(user, Some(&cookie), &cfg.instagram)
+        .await
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if has_story {
+        let story_url = format!("https://www.instagram.com/stories/{user}/");
+        queue_url(
+            state,
+            story_url,
+            None,
+            None,
+            HashMap::new(),
+            Some(cookie.clone()),
+            None,
+            Default::default(),
+            None,
+            Some(author.clone()),
+            Some(user.to_string()),
+            true,
+        )
+        .await;
+    }
+    let highlights = state.instagram.highlights_tray(user, Some(&cookie), &cfg.instagram).await;
+    for hl in highlights {
+        let url = format!("https://www.instagram.com/stories/highlights/{}/", hl.id);
+        queue_url(
+            state,
+            url,
+            None,
+            None,
+            HashMap::new(),
+            Some(cookie.clone()),
+            None,
+            Default::default(),
+            None,
+            Some(author.clone()),
+            Some(user.to_string()),
+            true,
+        )
+        .await;
+    }
+    let mgr = state.manager.clone();
+    let _ = mgr.run_queued().await;
 }
 
 /// Fetch one `/ig/posts` page and queue every post on it that isn't already
