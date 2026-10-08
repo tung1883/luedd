@@ -265,7 +265,7 @@ export default class App {
             if (here && here.video && vids.length === 1) idx = vids[0];
         }
         if (idx < 0 || idx >= items.length) return false;
-        const q = await this.connector.postMessage("/ig/queue", { url: items[idx].media_url });
+        const q = await this.connector.postMessage("/ig/queue", { url: items[idx].media_url, post: sc });
         return !!(q && q.queued);
     }
 

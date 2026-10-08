@@ -1176,6 +1176,10 @@ struct IgIdReq {
 #[derive(Debug, Deserialize)]
 struct IgQueueReq {
     url: String,
+    /// Shortcode of the post this file belongs to (a single carousel slide):
+    /// its owner names the destination folder.
+    #[serde(default)]
+    post: Option<String>,
 }
 
 /// The caught-accounts list for the profile viewer's home screen.
@@ -1420,7 +1424,21 @@ async fn ig_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
             ensure_page_detection(&st, &canon, None, ck).await;
         });
     }
-    let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, Default::default(), None, None, None, false).await;
+    let (author_hint, dir_hint) = match req.post.as_deref().filter(|c| !c.is_empty()) {
+        Some(code) => {
+            let cfg = state.config.settings.get().await.backends;
+            let post_url = format!("https://www.instagram.com/p/{code}/");
+            match state.instagram.resolve_account(&post_url, cookie.as_deref(), &cfg.instagram).await {
+                Some(owner) => {
+                    let owner = owner.trim_start_matches('@').to_string();
+                    (Some(format!("@{owner}")), Some(owner))
+                }
+                None => (None, None),
+            }
+        }
+        None => (None, None),
+    };
+    let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, Default::default(), None, author_hint, dir_hint, false).await;
     Json(serde_json::json!({ "queued": id.is_some() }))
 }
 
@@ -3088,6 +3106,21 @@ async fn queue_url(
     let backend = state.registry.resolve(&url, &ctx, &settings.backends).await;
     let backend_id = backend.id().to_string();
     let kind = luedd_core::backend::kind_for_backend_id(&backend_id);
+
+    // A post / reel URL carries only a shortcode (`/p/<code>`), so by default it
+    // lands in a folder named after that code. Resolve the owner (one cached
+    // request) and file it under the account instead, like the profile archive.
+    let (author_hint, dir_hint) = if backend_id == "instagram" && author_hint.is_none() && dir_hint.is_none() {
+        match state.instagram.resolve_account(&url, cookie.as_deref(), &settings.backends.instagram).await {
+            Some(owner) => {
+                let owner = owner.trim_start_matches('@').to_string();
+                (Some(format!("@{owner}")), Some(owner))
+            }
+            None => (None, None),
+        }
+    } else {
+        (author_hint, dir_hint)
+    };
 
     // Only the plain-HTTP backend needs a network round-trip to sniff the real
     // file extension. A plugin backend (Instagram, yt-dlp — all of which map to
