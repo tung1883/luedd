@@ -41,6 +41,16 @@ enum Command {
         #[command(subcommand)]
         action: QueueAction,
     },
+    /// Report duplicate files (same content, any name) under a folder.
+    Dedup {
+        /// Folders to scan together; defaults to the configured download folder.
+        dirs: Vec<PathBuf>,
+        /// Ignore files smaller than this many bytes (default 1 MiB).
+        #[arg(long, default_value_t = 1_048_576)]
+        min_size: u64,
+        #[arg(long)]
+        json: bool,
+    },
     Serve {
         #[arg(short, long, default_value_t = 8597)]
         port: u16,
@@ -89,8 +99,68 @@ async fn main() -> Result<()> {
         Command::Get { url, output, concurrency } => run_job(DownloadKind::Http, &url, &output, concurrency).await,
         Command::Dash { url, output, concurrency } => run_job(DownloadKind::Dash, &url, &output, concurrency).await,
         Command::Queue { action } => run_queue_action(action).await,
+        Command::Dedup { dirs, min_size, json } => run_dedup(dirs, min_size, json).await,
         Command::Serve { port, download_dir } => run_serve(port, download_dir).await,
     }
+}
+
+fn human_size(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[i]) }
+}
+
+async fn run_dedup(dirs: Vec<PathBuf>, min_size: u64, json: bool) -> Result<()> {
+    let dirs = if dirs.is_empty() {
+        let data_dir = luedd_core::queue::default_data_dir();
+        let settings = SettingsStore::open(default_settings_path(&data_dir), &data_dir).await?;
+        vec![settings.get().await.download_dir]
+    } else {
+        dirs
+    };
+    let scan_dirs = dirs.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        let never = std::sync::atomic::AtomicBool::new(false);
+        luedd_core::dedup::scan_with(&scan_dirs, min_size, &never, &|p| {
+            if !json {
+                eprint!(
+                    "\r{:<7} {}/{} files  {} / {}   ",
+                    p.phase,
+                    p.files_done,
+                    p.files_total,
+                    human_size(p.bytes_done),
+                    human_size(p.bytes_total)
+                );
+            }
+        })
+    })
+    .await?;
+    if !json {
+        eprintln!();
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    for (i, g) in report.groups.iter().enumerate() {
+        println!("#{} {} x{}  (sha256 {})", i + 1, human_size(g.size), g.files.len(), &g.sha256[..12.min(g.sha256.len())]);
+        for (j, f) in g.files.iter().enumerate() {
+            println!("  {} {}", if j == 0 { "keep?" } else { "dup  " }, f.path.display());
+        }
+    }
+    println!(
+        "{} duplicate group(s), {} reclaimable, {} file(s) scanned in {}",
+        report.groups.len(),
+        human_size(report.wasted_bytes),
+        report.scanned_files,
+        dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
+    );
+    Ok(())
 }
 
 async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {

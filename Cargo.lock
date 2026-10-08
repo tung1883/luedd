@@ -3276,6 +3276,7 @@ dependencies = [
  "luedd-ipc",
  "luedd-media",
  "luedd-net",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3296,11 +3297,14 @@ dependencies = [
  "luedd-net",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "trash",
  "url",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
@@ -6152,6 +6156,24 @@ dependencies = [
  "thread_local",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trash"
+version = "5.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be89b3fe156965d29ac4f8522f3a640c655affdd9f21cb4f36857f0c92c00317"
+dependencies = [
+ "chrono",
+ "libc",
+ "log",
+ "objc2",
+ "objc2-foundation",
+ "once_cell",
+ "percent-encoding",
+ "scopeguard",
+ "urlencoding",
+ "windows 0.62.2",
 ]
 
 [[package]]

@@ -40,3 +40,7 @@ axum = "0.7"
 tower-http = { version = "0.6", features = ["cors"] }
 librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls"] }
 librqbit-core = { version = "9.0.1", default-features = false }
+
+# hashing is the hot loop of the duplicate finder; keep it fast in debug builds too
+[profile.dev.package.sha2]
+opt-level = 3

@@ -15,6 +15,9 @@ futures.workspace = true
 chrono.workspace = true
 uuid = { version = "1", features = ["v4"] }
 url.workspace = true
+sha2 = "0.10"
+trash = "5"
+walkdir = "2"
 librqbit = { workspace = true, optional = true }
 librqbit-core = { workspace = true, optional = true }
 luedd-net = { path = "../luedd-net" }

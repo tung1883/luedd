@@ -175,6 +175,56 @@ async fn probe_qualities(state: State<'_, AppState>, url: String) -> Result<Vec<
         .map_err(|e| e.to_string())
 }
 
+static DEDUP_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// Latest scanner progress, polled by the panel. (Events would be cheaper, but the
+// webview is not granted `core:event:allow-listen`, so `listen()` is refused.)
+static DEDUP_PROGRESS: std::sync::Mutex<Option<luedd_core::dedup::Progress>> = std::sync::Mutex::new(None);
+
+#[tauri::command]
+async fn scan_duplicates(
+    state: State<'_, AppState>,
+    dirs: Option<Vec<String>>,
+    min_size: Option<u64>,
+) -> Result<luedd_core::dedup::DedupReport, String> {
+    let mut dirs: Vec<std::path::PathBuf> = dirs
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+    if dirs.is_empty() {
+        dirs.push(state.settings.get().await.download_dir);
+    }
+    DEDUP_CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
+    *DEDUP_PROGRESS.lock().unwrap() = None;
+    let report = tokio::task::spawn_blocking(move || {
+        luedd_core::dedup::scan_with(&dirs, min_size.unwrap_or(1), &DEDUP_CANCEL, &|p| {
+            *DEDUP_PROGRESS.lock().unwrap() = Some(p);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string());
+    *DEDUP_PROGRESS.lock().unwrap() = None;
+    report
+}
+
+#[tauri::command]
+async fn delete_duplicates(plans: Vec<luedd_core::dedup::DeletePlan>) -> Result<luedd_core::dedup::DeleteReport, String> {
+    tokio::task::spawn_blocking(move || luedd_core::dedup::delete_extras(&plans))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn dedup_progress() -> Option<luedd_core::dedup::Progress> {
+    DEDUP_PROGRESS.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn cancel_dedup() {
+    DEDUP_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[tauri::command]
 async fn list_downloads(state: State<'_, AppState>) -> Result<Vec<DownloadEntry>, String> {
     Ok(state.store.list_entries().await)
@@ -667,6 +717,10 @@ fn main() {
             torrent_preview,
             torrent_set_files,
             list_downloads,
+            scan_duplicates,
+            cancel_dedup,
+            dedup_progress,
+            delete_duplicates,
             run_queue,
             remove_entry,
             retry_entry,

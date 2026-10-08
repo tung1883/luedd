@@ -210,6 +210,49 @@
 
   label.checkbox { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); margin: 0; }
 
+  /* duplicate finder */
+  #dedup-overlay .overlay-card { width: 640px; max-width: 94vw; padding: 0; }
+  #dedup-overlay .dd-body { padding: 14px 20px 18px; }
+  #dedup-overlay .dd-summary { margin: 12px 0 8px; font-size: 12px; color: var(--dim); min-height: 16px; }
+  #dedup-overlay .dd-results { height: 34vh; min-height: 150px; overflow-y: auto; transition: opacity .12s; }
+  #dedup-overlay .dd-results.busy { opacity: .45; pointer-events: none; }
+  #dedup-overlay .dd-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; min-height: 34px; }
+  #dedup-overlay .dd-actions .dd-asum { flex: 1; font-size: 12px; color: var(--dim); }
+  #dedup-overlay .dd-actions button.danger { background: transparent; border: 1px solid rgba(242,106,99,.5); color: var(--bad, #F26A63); }
+  #dedup-overlay .dd-actions button.danger:hover:not(:disabled) { background: var(--bad, #F26A63); color: var(--bg); }
+  #dedup-overlay .dd-actions button:disabled { opacity: .4; cursor: default; }
+  #dedup-overlay .dd-dirhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+  #dedup-overlay .dd-dirhead button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; text-transform: none; letter-spacing: 0; }
+  #dedup-overlay .dd-dirhead button svg { display: block; }
+  #dedup-overlay .dd-dirbtns { display: flex; align-items: center; gap: 8px; }
+  /* three folders tall, then it scrolls */
+  #dedup-overlay .dd-dirs { max-height: 108px; overflow-y: auto; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
+  #dedup-overlay .dd-dirrow { display: flex; align-items: center; gap: 8px; flex: none; height: 30px; box-sizing: border-box; padding: 0 4px 0 10px;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  #dedup-overlay .dd-dirrow span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 12px; direction: rtl; text-align: left; }
+  #dedup-overlay .dd-dirrow button { flex: none; background: none; border: 0; color: var(--dim); padding: 4px 6px; cursor: pointer; line-height: 0; }
+  #dedup-overlay .dd-dirrow button:hover { color: var(--text); }
+  #dedup-overlay .dd-dirrow button:disabled { opacity: .4; cursor: default; }
+  #dedup-overlay .dd-prog { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; margin-bottom: 8px; opacity: 0; transition: opacity .12s; }
+  #dedup-overlay .dd-prog.on { opacity: 1; }
+  #dedup-overlay .dd-prog > i { display: block; height: 100%; width: 0; background: var(--accent); }
+  #dedup-overlay .dd-group { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--surface-2, var(--surface)); }
+  #dedup-overlay .dd-ghead { padding: 7px 10px; font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--line); }
+  #dedup-overlay .dd-ghead span { color: var(--dim); font-weight: 400; margin-left: 6px; }
+  #dedup-overlay .dd-file { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: 12px; border-left: 2px solid transparent; }
+  #dedup-overlay .dd-file + .dd-file { border-top: 1px dashed var(--line); }
+  #dedup-overlay .dd-file.keep { border-left-color: var(--accent); background: rgba(79,163,216,.08); }
+  #dedup-overlay .dd-file:not(.keep) .dd-path { color: var(--dim); }
+  #dedup-overlay .dd-file label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; flex: none; color: var(--dim); font-size: 11px; width: 62px; }
+  #dedup-overlay .dd-file.keep label { color: var(--accent); }
+  #dedup-overlay .dd-file input[type=radio] { accent-color: var(--accent); margin: 0; }
+  #dedup-overlay .dd-date { flex: none; color: var(--dim); font-size: 11px; }
+  #dedup-overlay .dd-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--mono, ui-monospace, Consolas, monospace); direction: rtl; text-align: left; }
+  #dedup-overlay .dd-empty { padding: 18px; text-align: center; color: var(--dim); font-size: 13px; }
+
   /* settings modal */
   #settings-overlay .overlay-card { width: 560px; max-width: 92vw; padding: 0; overflow: visible; }
   .set-head { display: flex; align-items: center; padding: 15px 20px; border-bottom: 1px solid var(--line);
@@ -452,10 +495,43 @@
     <button id="detected-btn" class="secondary icon-only" data-i18n-title="show_detected" title="Detected downloads" aria-label="Detected downloads">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>
     </button>
+    <button id="dedup-btn" class="secondary icon-only" data-i18n-title="dedup_btn" title="Find duplicate files" aria-label="Find duplicate files">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"></rect><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"></path></svg>
+    </button>
     <button id="settings-btn" class="secondary icon-only" data-i18n-title="settings" title="Settings" aria-label="Settings">
       <span class="gear"></span>
     </button>
   </header>
+
+  <div id="dedup-overlay" class="overlay">
+    <div class="overlay-card">
+      <div class="set-head">
+        <h2 data-i18n="dedup_title">Duplicate files</h2>
+        <button class="x" id="dedup-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <div class="dd-body">
+        <div class="dd-dirhead">
+          <span data-i18n="dedup_folders">Folders</span>
+          <div class="dd-dirbtns">
+          <button id="dedup-browse-btn" type="button" class="secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path><path d="M12 11v5"></path><path d="M9.5 13.5h5"></path></svg>
+            <span data-i18n="dedup_add_folder">Add folder</span>
+          </button>
+          <button id="dedup-scan-btn" type="button" data-i18n="dedup_scan">Scan</button>
+          </div>
+        </div>
+        <div class="dd-dirs" id="dedup-dirs"></div>
+        <div class="dd-summary" id="dedup-summary"></div>
+        <div class="dd-prog" id="dedup-prog"><i></i></div>
+        <div class="dd-results" id="dedup-list"></div>
+        <div class="dd-actions" id="dedup-actions">
+          <span class="dd-asum" id="dedup-asum"></span>
+          <button type="button" id="dedup-cancel-del" class="secondary" style="display:none" data-i18n="dedup_cancel">Cancel</button>
+          <button type="button" id="dedup-delete-btn" class="danger"></button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div id="settings-overlay" class="overlay">
     <div class="overlay-card">
@@ -2278,6 +2354,262 @@ document.getElementById("clear-btn").addEventListener("click", async () => {
 });
 
 const settingsOverlay = document.getElementById("settings-overlay");
+
+const dedupOverlay = document.getElementById("dedup-overlay");
+const dedupList = document.getElementById("dedup-list");
+const dedupSummary = document.getElementById("dedup-summary");
+const dedupScanBtn = document.getElementById("dedup-scan-btn");
+
+let dedupDirs = [];
+let dedupRunning = false;
+let dedupReport = null;      // { groups: [{ size, sha256, files, keep }] }, `keep` = index of the kept file
+let dedupConfirming = false;
+const dedupDirsEl = document.getElementById("dedup-dirs");
+const dedupProg = document.getElementById("dedup-prog");
+
+const DEDUP_MIN_SIZE = 1024 * 1024;   // tiny files are noise (and hundreds of thousands of them are slow)
+let dedupPoll = null;
+
+function paintDedupProgress(p) {
+  if (!p || !dedupRunning) return;
+  const key = p.phase === "walk" ? "dedup_p_walk" : p.phase === "sample" ? "dedup_p_sample" : "dedup_p_hash";
+  dedupSummary.textContent = I18N.t(key, {
+    files: p.phase === "walk" ? p.files_done : p.files_done + " / " + p.files_total,
+    done: formatBytes(p.bytes_done),
+    total: formatBytes(p.bytes_total),
+  });
+  dedupProg.firstElementChild.style.width =
+    (p.phase === "walk" || !p.bytes_total ? 0 : Math.min(100, (p.bytes_done / p.bytes_total) * 100)) + "%";
+}
+
+function startDedupPoll() {
+  stopDedupPoll();
+  dedupPoll = setInterval(async () => {
+    try { paintDedupProgress(await invoke("dedup_progress")); } catch (e) {}
+  }, 200);
+}
+function stopDedupPoll() { if (dedupPoll) { clearInterval(dedupPoll); dedupPoll = null; } }
+
+function renderDedupDirs() {
+  dedupDirsEl.replaceChildren(...dedupDirs.map((dir) => {
+    const row = document.createElement("div");
+    row.className = "dd-dirrow";
+    const path = document.createElement("span");
+    path.textContent = dir;
+    path.title = dir;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.title = I18N.t("dedup_remove_folder");
+    rm.setAttribute("aria-label", I18N.t("dedup_remove_folder"));
+    rm.disabled = dedupRunning;
+    rm.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12"></path><path d="M18 6L6 18"></path></svg>';
+    rm.addEventListener("click", () => {
+      dedupDirs = dedupDirs.filter((d) => d !== dir);
+      renderDedupDirs();
+      clearDedupResults();
+    });
+    row.append(path, rm);
+    return row;
+  }));
+}
+
+// the shown results belong to the previous folder set
+function clearDedupResults() {
+  dedupReport = null;
+  dedupConfirming = false;
+  dedupList.replaceChildren();
+  dedupSummary.textContent = "";
+  updateDedupActions();
+}
+
+// The oldest copy is the likely original, so it is kept by default
+// (the scanner already sorts each group oldest first).
+function dedupDeletions() {
+  const out = [];
+  for (const g of dedupReport ? dedupReport.groups : []) {
+    g.files.forEach((f, i) => { if (i !== g.keep) out.push({ g, f }); });
+  }
+  return out;
+}
+
+function updateDedupActions() {
+  const del = dedupDeletions();
+  const bytes = del.reduce((n, d) => n + d.g.size, 0);
+  const btn = document.getElementById("dedup-delete-btn");
+  const cancel = document.getElementById("dedup-cancel-del");
+  const sum = document.getElementById("dedup-asum");
+  if (dedupConfirming && del.length) {
+    sum.textContent = I18N.t("dedup_confirm_q", { n: del.length, size: formatBytes(bytes) });
+    btn.textContent = I18N.t("dedup_confirm");
+    btn.disabled = false;
+    cancel.style.display = "";
+  } else {
+    dedupConfirming = false;
+    sum.textContent = del.length ? formatBytes(bytes) : "";
+    btn.textContent = del.length ? I18N.t("dedup_delete_n", { n: del.length }) : I18N.t("dedup_delete_none");
+    btn.disabled = !del.length || dedupRunning;
+    cancel.style.display = "none";
+  }
+}
+
+function renderDedupGroups() {
+  const frag = document.createDocumentFragment();
+  const groups = dedupReport ? dedupReport.groups : [];
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "dd-empty";
+    empty.textContent = I18N.t("dedup_none");
+    frag.appendChild(empty);
+  }
+  groups.forEach((g, gi) => {
+    if (g.keep == null) g.keep = 0;
+    const box = document.createElement("div");
+    box.className = "dd-group";
+    const head = document.createElement("div");
+    head.className = "dd-ghead";
+    head.textContent = I18N.t("dedup_group_head", { size: formatBytes(g.size), n: g.files.length });
+    const sub = document.createElement("span");
+    sub.textContent = g.sha256.slice(0, 12);
+    head.appendChild(sub);
+    box.appendChild(head);
+    const rows = [];
+    g.files.forEach((f, i) => {
+      const row = document.createElement("div");
+      row.className = "dd-file" + (i === g.keep ? " keep" : "");
+      const label = document.createElement("label");
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "dd-keep-" + gi;
+      radio.checked = i === g.keep;
+      radio.addEventListener("change", () => {
+        g.keep = i;
+        dedupConfirming = false;
+        rows.forEach((r, ri) => r.classList.toggle("keep", ri === i));
+        updateDedupActions();
+      });
+      label.append(radio, I18N.t("dedup_keep"));
+      const path = document.createElement("span");
+      path.className = "dd-path";
+      path.title = f.path;
+      path.textContent = f.path;
+      const date = document.createElement("span");
+      date.className = "dd-date";
+      date.textContent = f.modified ? new Date(f.modified * 1000).toLocaleDateString() : "";
+      const show = document.createElement("button");
+      show.className = "secondary";
+      show.textContent = I18N.t("dedup_show");
+      show.addEventListener("click", () => invoke("open_containing_folder", { path: f.path }));
+      row.append(label, path, date, show);
+      rows.push(row);
+      box.appendChild(row);
+    });
+    frag.appendChild(box);
+  });
+  dedupList.replaceChildren(frag);
+  updateDedupActions();
+}
+
+document.getElementById("dedup-delete-btn").addEventListener("click", async () => {
+  const del = dedupDeletions();
+  if (!del.length) return;
+  if (!dedupConfirming) { dedupConfirming = true; updateDedupActions(); return; }
+  dedupConfirming = false;
+  const btn = document.getElementById("dedup-delete-btn");
+  btn.disabled = true;
+  const plans = dedupReport.groups
+    .filter((g) => g.files.length > 1)
+    .map((g) => ({ keep: g.files[g.keep].path, delete: g.files.filter((_, i) => i !== g.keep).map((f) => f.path) }));
+  let res;
+  try {
+    res = await invoke("delete_duplicates", { plans });
+  } catch (e) {
+    dedupSummary.textContent = I18N.t("dedup_error") + ": " + e;
+    updateDedupActions();
+    return;
+  }
+  const gone = new Set(res.deleted);
+  // drop deleted files; a group left with one file is no longer a duplicate
+  for (const g of dedupReport.groups) {
+    const keepPath = g.files[g.keep].path;
+    g.files = g.files.filter((f) => !gone.has(f.path));
+    g.keep = Math.max(0, g.files.findIndex((f) => f.path === keepPath));
+  }
+  dedupReport.groups = dedupReport.groups.filter((g) => g.files.length > 1);
+  let msg = I18N.t("dedup_deleted", { n: res.deleted.length, size: formatBytes(res.freed_bytes) });
+  if (res.failed.length) msg += " " + I18N.t("dedup_delete_failed", { n: res.failed.length }) + ": " + res.failed[0].error;
+  dedupSummary.textContent = msg;
+  renderDedupGroups();
+});
+document.getElementById("dedup-cancel-del").addEventListener("click", () => { dedupConfirming = false; updateDedupActions(); });
+updateDedupActions();
+
+async function runDedupScan() {
+  if (dedupRunning) return;
+  dedupRunning = true;
+  document.getElementById("dedup-browse-btn").disabled = true;
+  renderDedupDirs();
+  dedupScanBtn.textContent = I18N.t("dedup_cancel");
+  dedupList.classList.add("busy");
+  dedupConfirming = false;
+  updateDedupActions();
+  dedupProg.classList.add("on");
+  dedupProg.firstElementChild.style.width = "0";
+  dedupSummary.textContent = I18N.t("dedup_scanning");
+  startDedupPoll();
+  try {
+    if (!dedupDirs.length) { dedupDirs = [(await invoke("get_settings")).download_dir]; renderDedupDirs(); }
+    const report = await invoke("scan_duplicates", { dirs: dedupDirs, minSize: DEDUP_MIN_SIZE });
+    dedupReport = report;
+    if (report.cancelled) {
+      dedupSummary.textContent = I18N.t("dedup_cancelled");
+    } else {
+      dedupSummary.textContent = I18N.t("dedup_summary", {
+        groups: report.groups.length,
+        size: formatBytes(report.wasted_bytes),
+        files: report.scanned_files,
+      });
+      renderDedupGroups();
+      dedupList.scrollTop = 0;
+    }
+  } catch (e) {
+    dedupSummary.textContent = I18N.t("dedup_error") + ": " + e;
+  } finally {
+    stopDedupPoll();
+    dedupProg.firstElementChild.style.width = "0";
+    dedupRunning = false;
+    document.getElementById("dedup-browse-btn").disabled = false;
+    renderDedupDirs();
+    dedupList.classList.remove("busy");
+    dedupProg.classList.remove("on");
+    dedupScanBtn.textContent = I18N.t("dedup_scan");
+    updateDedupActions();
+  }
+}
+
+document.getElementById("dedup-browse-btn").addEventListener("click", async () => {
+  const picked = await invoke("pick_folder");
+  if (picked && !dedupDirs.some((d) => d.toLowerCase() === picked.toLowerCase())) {
+    // adding a folder never starts a scan
+    dedupDirs.push(picked);
+    renderDedupDirs();
+    clearDedupResults();
+    dedupDirsEl.scrollTop = dedupDirsEl.scrollHeight;
+  }
+});
+
+function closeDedup() {
+  if (dedupRunning) invoke("cancel_dedup");
+  dedupOverlay.style.display = "none";
+}
+document.getElementById("dedup-btn").addEventListener("click", () => {
+  dedupOverlay.style.display = "flex";
+  runDedupScan();
+});
+document.getElementById("dedup-close-btn").addEventListener("click", closeDedup);
+dedupScanBtn.addEventListener("click", () => {
+  if (dedupRunning) invoke("cancel_dedup"); else runDedupScan();
+});
+dedupOverlay.addEventListener("click", (ev) => { if (ev.target === dedupOverlay) closeDedup(); });
 const fontPreview = document.getElementById("font-preview");
 const ddLang = document.getElementById("dd-language");
 const ddFont = document.getElementById("dd-font");
