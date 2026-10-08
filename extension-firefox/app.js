@@ -242,9 +242,55 @@ export default class App {
         return this.hostMatchesPageHost(url) ? this.canonicalPageUrl(url) : url;
     }
 
-    async barDownload(url, quality, tabId) {
+    // One slide of an Instagram carousel: fetch the post's media list, work
+    // out which item the hovered slide is (by file name, using the rendered
+    // neighbours when the slide itself is a video), and queue just that file.
+    async igDownloadSlide(url, slide) {
+        const sc = (url.match(/\/(?:p|reel|reels|tv)\/([\w-]+)/) || [])[1];
+        if (!sc || !slide || !Array.isArray(slide.slides)) return false;
+        const r = await this.connector.postMessage("/ig/post", { id: sc });
+        const items = (r && r.items) || [];
+        if (!items.length) return false;
+        const baseOf = u => (u || "").split("?")[0].split("/").pop();
+        let idx = -1;
+        const byDistance = slide.slides.slice().sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset));
+        for (const s of byDistance) {
+            if (!s.base) continue;
+            const k = items.findIndex(it => baseOf(it.media_url) === s.base || baseOf(it.thumb_url) === s.base);
+            if (k >= 0) { idx = k - s.offset; break; }
+        }
+        if (idx < 0) {
+            const here = slide.slides.find(s => s.offset === 0);
+            const vids = items.map((it, i) => (it.is_video ? i : -1)).filter(i => i >= 0);
+            if (here && here.video && vids.length === 1) idx = vids[0];
+        }
+        if (idx < 0 || idx >= items.length) return false;
+        const q = await this.connector.postMessage("/ig/queue", { url: items[idx].media_url });
+        return !!(q && q.queued);
+    }
+
+    async barDownload(url, quality, tabId, slide) {
+        if (slide) return this.igDownloadSlide(url, slide);
         const v = await this.serverItemForUrl(this.barKey(url), tabId);
         return v ? !!(await this.queueVideo(v.id, quality)) : false;
+    }
+
+    // Instagram profile page actions from the on-page pill: the profile
+    // picture, or an archive of the newest / all posts.
+    async igProfileAction(user, action) {
+        if (!this.isMonitoringEnabled()) return false;
+        if (action === "pic") {
+            const p = await this.connector.postMessage("/ig/profile", { username: user });
+            const url = p && p.header && p.header.profile_pic_url;
+            if (!url) return false;
+            const r = await this.connector.postMessage("/ig/queue", { url });
+            return !!(r && r.queued);
+        }
+        if (action === "recent" || action === "all") {
+            const r = await this.connector.postMessage("/ig/archive", { username: user, action });
+            return !!r && !r.error;
+        }
+        return false;
     }
 
     async barProbe(url, tabId) {
@@ -643,7 +689,11 @@ export default class App {
             sendResponse({ items: this.barItemsForTab(sender && sender.tab), enabled: this.isMonitoringEnabled() });
         }
         else if (request.type === "bar-download" && request.url) {
-            this.barDownload(request.url, request.quality, sender && sender.tab && sender.tab.id).then(ok => sendResponse({ ok }));
+            this.barDownload(request.url, request.quality, sender && sender.tab && sender.tab.id, request.slide).then(ok => sendResponse({ ok }));
+            return true;
+        }
+        else if (request.type === "ig-profile" && request.username) {
+            this.igProfileAction(request.username, request.action).then(ok => sendResponse({ ok }));
             return true;
         }
         else if (request.type === "bar-probe" && request.url) {
