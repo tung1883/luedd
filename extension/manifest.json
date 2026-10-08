@@ -15,7 +15,8 @@
         "storage",
         "contextMenus",
         "alarms",
-        "webNavigation"
+        "webNavigation",
+        "debugger"
     ],
     "background": {
         "service_worker": "main.js",
@@ -55,6 +56,17 @@
             ],
             "run_at": "document_start",
             "all_frames": true
+        },
+        {
+            "matches": [
+                "*://*.google.com/*",
+                "*://*.scribd.com/*",
+                "*://*.studocu.com/*"
+            ],
+            "js": [
+                "docs-adapters.js"
+            ],
+            "run_at": "document_idle"
         },
         {
             "matches": [

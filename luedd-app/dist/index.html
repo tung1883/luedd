@@ -253,6 +253,7 @@
     font-family: var(--mono, ui-monospace, Consolas, monospace); direction: rtl; text-align: left; }
   #dedup-overlay .dd-empty { padding: 18px; text-align: center; color: var(--dim); font-size: 13px; }
 
+
   /* settings modal */
   #settings-overlay .overlay-card { width: 560px; max-width: 92vw; padding: 0; overflow: visible; }
   .set-head { display: flex; align-items: center; padding: 15px 20px; border-bottom: 1px solid var(--line);
@@ -490,6 +491,9 @@
     </button>
     <button id="yt-viewer-btn" class="secondary icon-only vwbtn" data-i18n-title="open_yt_viewer" title="yt-dlp viewer" aria-label="yt-dlp viewer">
       <svg class="lg-yt" width="20" height="20" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path fill="red" d="M14.712 4.633a1.754 1.754 0 00-1.234-1.234C12.382 3.11 8 3.11 8 3.11s-4.382 0-5.478.289c-.6.161-1.072.634-1.234 1.234C1 5.728 1 8 1 8s0 2.283.288 3.367c.162.6.635 1.073 1.234 1.234C3.618 12.89 8 12.89 8 12.89s4.382 0 5.478-.289a1.754 1.754 0 001.234-1.234C15 10.272 15 8 15 8s0-2.272-.288-3.367z"/><path fill="#ffffff" d="M6.593 10.11l3.644-2.098-3.644-2.11v4.208z"/></svg><span class="vwcount" id="yt-viewer-count" hidden>0</span>
+    </button>
+    <button id="json-viewer-btn" class="secondary icon-only vwbtn" data-i18n-title="open_json_viewer" title="Lüdd-JSON viewer" aria-label="Lüdd-JSON viewer">
+      <svg class="lg-json" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F0A24A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4C6.5 4 7 7 7 9s-1 3-3 3c2 0 3 1 3 3s-.5 5 2 5"/><path d="M15 4c2.5 0 2 3 2 5s1 3 3 3c-2 0-3 1-3 3s.5 5-2 5"/></svg><span class="vwcount" id="json-viewer-count" hidden>0</span>
     </button>
     <button id="run-btn" data-i18n="run_queue">Run queue</button>
     <button id="detected-btn" class="secondary icon-only" data-i18n-title="show_detected" title="Detected downloads" aria-label="Detected downloads">
@@ -1235,7 +1239,7 @@ function kindLabel(kind) {
 }
 
 // The backend that fetched a download. http/hls/dash are all the built-in engine.
-const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Lüdd-Insta", instaloader: "instaloader", torrent: "Lüdd-Torrent" };
+const PROVIDER_LABELS = { http: "Lüdd", hls: "Lüdd", dash: "Lüdd", ytdlp: "yt-dlp", instagram: "Lüdd-Insta", instaloader: "instaloader", torrent: "Lüdd-Torrent", json: "Lüdd-JSON", docs: "Lüdd-Docs" };
 function providerLabel(id) {
   return PROVIDER_LABELS[id] ?? id ?? "Lüdd";
 }
@@ -1781,7 +1785,7 @@ function renderPluginView(provider, entries) {
     g.className = "pv-group";
 
     const fileCount = es.reduce((n, e) => n + entryLiveFiles(e).length, 0);
-    const sub = isIG ? t("pv_items", { n: fileCount }) : t("pv_videos", { n: es.length });
+    const sub = isIG || provider === PROVIDER_LABELS.json || provider === PROVIDER_LABELS.docs ? t("pv_items", { n: fileCount }) : t("pv_videos", { n: es.length });
     const initial = (author.replace(/^@/, "")[0] || "?").toUpperCase();
 
     const hdr = document.createElement("div");
@@ -2312,6 +2316,7 @@ document.getElementById("run-btn").addEventListener("click", async () => {
 document.getElementById("detected-btn").addEventListener("click", () => invoke("detection_window_show"));
 document.getElementById("ig-viewer-btn").addEventListener("click", () => invoke("viewer_window_show"));
 document.getElementById("yt-viewer-btn").addEventListener("click", () => invoke("ytdlp_viewer_window_show"));
+document.getElementById("json-viewer-btn").addEventListener("click", () => invoke("json_viewer_window_show"));
 
 // caught-library sizes for the two viewer-button badges (the only HTTP the main
 // window makes — same cross-window pattern the viewer / detection panels use).
@@ -2319,7 +2324,7 @@ const pvAvatars = {};   // "@user" (lowercase) -> proxied avatar URL
 async function refreshViewerCounts() {
   try {
     const r = await (await fetch("http://127.0.0.1:8597/library/counts")).json();
-    for (const [id, n] of [["ig-viewer-count", r.instagram], ["yt-viewer-count", r.ytdlp]]) {
+    for (const [id, n] of [["ig-viewer-count", r.instagram], ["yt-viewer-count", r.ytdlp], ["json-viewer-count", r.json]]) {
       const el = document.getElementById(id);
       el.textContent = n;
       el.hidden = !n;
@@ -2610,6 +2615,7 @@ dedupScanBtn.addEventListener("click", () => {
   if (dedupRunning) invoke("cancel_dedup"); else runDedupScan();
 });
 dedupOverlay.addEventListener("click", (ev) => { if (ev.target === dedupOverlay) closeDedup(); });
+
 const fontPreview = document.getElementById("font-preview");
 const ddLang = document.getElementById("dd-language");
 const ddFont = document.getElementById("dd-font");

@@ -36,3 +36,17 @@ pub async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         }
     }
 }
+
+/// Move a finished file into place. `rename` fails across drives (the global
+/// cache lives on the data drive, the destination may be on another), so fall
+/// back to copy + delete.
+pub async fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    match tokio::fs::rename(from, to).await {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            tokio::fs::copy(from, to).await?;
+            tokio::fs::remove_file(from).await.ok();
+            Ok(())
+        }
+    }
+}

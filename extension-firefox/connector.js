@@ -19,6 +19,8 @@ export default class Connector {
             });
         }
         chrome.alarms.onAlarm.addListener(this.onTimer.bind(this));
+        // first alarm is ~6s out; don't leave the pill dead until then
+        this.syncNow();
     }
 
     onTimer() {

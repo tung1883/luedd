@@ -34,6 +34,11 @@ pub struct ServerConfig {
     /// restart (the extension only re-pushes it once it reconnects). `None`
     /// disables the on-disk cache.
     pub ig_cookie_cache: Option<std::path::PathBuf>,
+    /// Where the Lüdd-JSON source library lives. `None` keeps it in the OS temp dir.
+    pub json_library_path: Option<std::path::PathBuf>,
+    /// Fired with a JSON URL when the browser extension asks to review it, so the
+    /// app can open the Lüdd-JSON viewer on it.
+    pub on_json_open: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +100,17 @@ struct AppState {
     /// own — they try these in order and promote whichever one works, so any
     /// number of signed-in browsers can contribute a session.
     ig_cookies: Mutex<Vec<String>>,
+    /// Latest browser `Cookie` header the extension sent per host (and per
+    /// registrable domain). Luedd-JSON forwards it when it fetches a JSON that
+    /// needs a login and when it downloads that JSON's assets.
+    host_cookies: Mutex<HashMap<String, String>>,
+    /// A JSON URL the browser extension asked the app to review (`/json/open`);
+    /// the main window picks it up from `/json/pending`.
+    pending_json: Mutex<Option<String>>,
+    docs: Mutex<HashMap<String, DocSession>>,
+    next_doc_id: AtomicU64,
+    /// JSON sources caught / scanned (the Lüdd-JSON viewer's home).
+    json_library: luedd_core::json_library::JsonLibraryStore,
     config: ServerConfig,
     detected: Mutex<Vec<DetectedMedia>>,
     next_id: AtomicU64,
@@ -314,6 +330,12 @@ pub async fn serve(
         None => Vec::new(),
     };
 
+    let json_library_path = config
+        .json_library_path
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("luedd-json_library.json"));
+    let json_library = luedd_core::json_library::JsonLibraryStore::open(json_library_path).await?;
+
     let state = Arc::new(AppState {
         store,
         manager,
@@ -326,6 +348,11 @@ pub async fn serve(
         ig_archiving: Mutex::new(std::collections::HashMap::new()),
         ig_archive_epoch: AtomicU64::new(1),
         ig_cookies: Mutex::new(seeded_cookies),
+        host_cookies: Mutex::new(HashMap::new()),
+        pending_json: Mutex::new(None),
+        docs: Mutex::new(HashMap::new()),
+        next_doc_id: AtomicU64::new(1),
+        json_library,
         config,
         detected: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
@@ -371,6 +398,20 @@ pub async fn serve(
         .route("/yt/video", post(yt_video))
         .route("/yt/queue", post(yt_queue))
         .route("/library/counts", get(library_counts))
+        .route("/json/scan", post(json_scan))
+        .route("/json/queue", post(json_queue))
+        .route("/json/open", post(json_open))
+        .route("/json/pending", get(json_pending))
+        .route("/json/library", get(json_library_list))
+        .route("/json/catch", post(json_catch))
+        .route("/json/forget", post(json_forget))
+        .route("/docs/begin", post(docs_begin))
+        .route("/docs/page", post(docs_page))
+        .route("/docs/finish", post(docs_finish))
+        .route("/docs/file", post(docs_file))
+        .route("/docs/abort", post(docs_abort))
+        // page images / whole PDFs arrive base64-encoded in one request
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024))
         .layer(cors)
         .with_state(state);
 
@@ -576,6 +617,9 @@ async fn page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRespo
     let mut new_item = None;
     if let Ok(req) = serde_json::from_slice::<PageRequest>(&body) {
         let url = canonical_page_url(&req.url);
+        if let Some(c) = &req.cookie {
+            state.remember_host_cookie(&url, c).await;
+        }
         if std::env::var("IG_DEBUG").is_ok() {
             eprintln!("[/page] url={url} title={:?} cookie={}", req.title, req.cookie.is_some());
         }
@@ -622,6 +666,25 @@ fn push_uniq(out: &mut Vec<String>, c: &str) {
 }
 
 impl AppState {
+    /// Remember the browser cookie for the host of `url`.
+    async fn remember_host_cookie(&self, url: &str, cookie: &str) {
+        let cookie = cookie.trim();
+        let Some(host) = host_part(url) else { return };
+        if cookie.is_empty() {
+            return;
+        }
+        let mut jar = self.host_cookies.lock().await;
+        jar.insert(registrable(&host), cookie.to_string());
+        jar.insert(host, cookie.to_string());
+    }
+
+    /// Cookie remembered for `url`'s host, else for its registrable domain.
+    async fn cookie_for_url(&self, url: &str) -> Option<String> {
+        let host = host_part(url)?;
+        let jar = self.host_cookies.lock().await;
+        jar.get(&host).or_else(|| jar.get(&registrable(&host))).cloned()
+    }
+
     /// Remember an Instagram cookie at the front of the fallback pool (newest
     /// first), deduped by its `sessionid` value, and mirror the pool to the
     /// on-disk cache so it survives a restart. Logged-out cookies (no
@@ -1154,7 +1217,8 @@ async fn library_counts(State(state): State<Arc<AppState>>) -> Json<serde_json::
         .keys()
         .filter(|k| *k != luedd_core::yt_library::UNRESOLVED)
         .count();
-    Json(serde_json::json!({ "instagram": ig, "ytdlp": yt }))
+    let json = state.json_library.len().await;
+    Json(serde_json::json!({ "instagram": ig, "ytdlp": yt, "json": json }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2331,6 +2395,9 @@ async fn download(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncR
             return Json(default_sync_response(video_list(&state).await));
         }
     };
+    if let Some(c) = &body.cookie {
+        state.remember_host_cookie(&body.url, c).await;
+    }
     let _ = queue_url(&state, body.url, body.filename, None, flatten_headers(body.request_headers, body.user_agent), body.cookie, None, Default::default(), None, None, None, false).await;
     Json(default_sync_response(video_list(&state).await))
 }
@@ -2344,6 +2411,12 @@ async fn media(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncResp
         }
     };
     let is_magnet = req.url.starts_with("magnet:");
+    if let Some(c) = &req.cookie {
+        state.remember_host_cookie(&req.url, c).await;
+        if let Some(t) = &req.tab_url {
+            state.remember_host_cookie(t, c).await;
+        }
+    }
     // Passive media detections respect the monitoring toggle; an explicit
     // magnet-link click from the content script always goes through.
     if !is_magnet && !MONITORING.load(Ordering::Relaxed) {
@@ -3215,6 +3288,558 @@ async fn queue_url(
         }
     });
     Some(id)
+}
+
+// ------------------------------------------------------------------------
+// Luedd-JSON: scan a JSON document for asset URLs, then queue the chosen ones
+
+/// Lowercase host of an absolute URL.
+fn host_part(url: &str) -> Option<String> {
+    let after = url.split_once("://")?.1;
+    let authority = after.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?.split(':').next()?.to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// Last two labels of a host (`cdn.site.com` -> `site.com`). Good enough to
+/// pair a site's cookie with its CDN subdomains.
+fn registrable(host: &str) -> String {
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() <= 2 {
+        host.to_string()
+    } else {
+        labels[labels.len() - 2..].join(".")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonScanReq {
+    #[serde(default)]
+    url: Option<String>,
+    /// Raw JSON text (pasted or read from a dropped file) instead of a URL.
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default, rename = "scanAll")]
+    scan_all: bool,
+    #[serde(default, rename = "nameKey")]
+    name_key: Option<String>,
+    #[serde(default)]
+    cookie: Option<String>,
+    /// File name when the text came from a local file (names the library entry).
+    #[serde(default)]
+    name: Option<String>,
+}
+
+fn json_err(kind: &str, msg: impl std::fmt::Display, cookie_used: bool) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": false, "kind": kind, "error": msg.to_string(), "cookie_used": cookie_used }))
+}
+
+async fn json_scan(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<JsonScanReq>(&body) else {
+        return json_err("request", "malformed request", false);
+    };
+    let mut cookie_used = false;
+    let mut source = String::new();
+    let mut source_key = String::new();
+    let (text, base) = if let Some(text) = req.text.as_deref().filter(|t| !t.trim().is_empty()) {
+        (text.to_string(), None)
+    } else if let Some(url) = req.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return json_err("request", "not an http(s) URL", false);
+        }
+        source = url.to_string();
+        let cookie = match req.cookie.clone().filter(|c| !c.trim().is_empty()) {
+            Some(c) => {
+                state.remember_host_cookie(url, &c).await;
+                Some(c)
+            }
+            None => state.cookie_for_url(url).await,
+        };
+        cookie_used = cookie.is_some();
+        let mut headers = HashMap::new();
+        headers.insert("Accept".to_string(), "application/json, text/plain, */*".to_string());
+        if let Some(host) = host_part(url) {
+            headers.insert("Referer".to_string(), format!("https://{host}/"));
+        }
+        let ctx = RequestContext { headers, cookie };
+        match state.manager.http_client().get_text(url, &ctx.to_options(None)).await {
+            Ok(t) => (t, url::Url::parse(url).ok()),
+            Err(e) => return json_err("fetch", e, cookie_used),
+        }
+    } else {
+        return json_err("request", "give a URL or JSON text", false);
+    };
+
+    let bytes = text.len();
+    if let Some(n) = req.name.as_deref().filter(|n| !n.is_empty()) {
+        source_key = format!("file:{n}");
+    } else if !source.is_empty() {
+        source_key = source.clone();
+    }
+    let opts = luedd_core::json_assets::ScanOptions {
+        base,
+        scan_all: req.scan_all,
+        name_key: req.name_key.filter(|k| !k.trim().is_empty()),
+    };
+    let scanned = tokio::task::spawn_blocking(move || {
+        let t = text.trim_start_matches('\u{feff}');
+        match serde_json::from_str::<serde_json::Value>(t) {
+            Ok(v) => Ok(luedd_core::json_assets::scan(&v, &opts)),
+            Err(e) => Err((t.trim_start().starts_with('<'), e.to_string())),
+        }
+    })
+    .await;
+    match scanned {
+        Ok(Ok(res)) => {
+            if !source_key.is_empty() {
+                let _ = state.json_library.scanned(&source_key, res.assets.len() as u32).await;
+            }
+            let mut counts = serde_json::json!({ "image": 0, "video": 0, "audio": 0, "other": 0 });
+            for a in &res.assets {
+                let k = match a.class {
+                    luedd_core::json_assets::AssetClass::Image => "image",
+                    luedd_core::json_assets::AssetClass::Video => "video",
+                    luedd_core::json_assets::AssetClass::Audio => "audio",
+                    luedd_core::json_assets::AssetClass::Other => "other",
+                };
+                counts[k] = (counts[k].as_u64().unwrap_or(0) + 1).into();
+            }
+            Json(serde_json::json!({
+                "ok": true, "source": source, "bytes": bytes, "cookie_used": cookie_used,
+                "nodes": res.nodes, "truncated": res.truncated, "counts": counts, "assets": res.assets,
+            }))
+        }
+        Ok(Err((html, msg))) => {
+            if html {
+                json_err("html", "the server answered with HTML, not JSON (login page?)", cookie_used)
+            } else {
+                json_err("parse", msg, cookie_used)
+            }
+        }
+        Err(e) => json_err("parse", e, cookie_used),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonOpenReq {
+    url: String,
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
+/// The extension's "Review in Lüdd": remember the session, park the URL for the
+/// main window and ask it to come forward.
+async fn json_open(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<JsonOpenReq>(&body) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    if let Some(c) = &req.cookie {
+        state.remember_host_cookie(&req.url, c).await;
+    }
+    let _ = state.json_library.record(&req.url).await;
+    *state.pending_json.lock().await = Some(req.url.clone());
+    if let Some(tx) = &state.config.on_json_open {
+        let _ = tx.send(req.url);
+    } else if let Some(tx) = &state.config.on_focus_request {
+        let _ = tx.send(());
+    }
+    Json(serde_json::json!({ "ok": true }))
+}
+
+async fn json_library_list(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "sources": state.json_library.snapshot().await.sources }))
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonUrlReq {
+    url: String,
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
+/// The extension saw a JSON document on a page: remember it (and its session).
+async fn json_catch(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<JsonUrlReq>(&body) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    if let Some(c) = &req.cookie {
+        state.remember_host_cookie(&req.url, c).await;
+    }
+    let ok = state.json_library.record(&req.url).await.is_ok();
+    Json(serde_json::json!({ "ok": ok }))
+}
+
+async fn json_forget(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<JsonUrlReq>(&body) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    let ok = state.json_library.forget(&req.url).await.unwrap_or(false);
+    Json(serde_json::json!({ "ok": ok }))
+}
+
+/// Taken once by the main window's poll.
+async fn json_pending(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let url = state.pending_json.lock().await.take();
+    Json(serde_json::json!({ "url": url }))
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonQueueAsset {
+    url: String,
+    #[serde(default)]
+    name: String,
+    /// Sub-folder inside the root, `/`-separated (empty = directly in root).
+    #[serde(default)]
+    folder: String,
+    /// `image | video | audio | other`: sub-group in the plugin view.
+    #[serde(default)]
+    class: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonQueueReq {
+    assets: Vec<JsonQueueAsset>,
+    /// Folder under the download dir that holds the whole batch.
+    #[serde(default)]
+    root: String,
+    /// The JSON's own URL: its session cookie and origin are reused for assets.
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
+/// One path component made safe for every OS (no separators, no leading dots).
+fn safe_segment(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    trimmed.chars().take(80).collect::<String>().trim().to_string()
+}
+
+async fn json_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<JsonQueueReq>(&body) else {
+        return Json(serde_json::json!({ "queued": 0, "skipped": 0, "error": "malformed request" }));
+    };
+    let settings = state.config.settings.get().await;
+    let mut root = settings.download_dir.clone();
+    let root_name = safe_segment(&req.root);
+    if !root_name.is_empty() {
+        root.push(root_name);
+    }
+    let source_cookie = match req.cookie.clone().filter(|c| !c.trim().is_empty()) {
+        Some(c) => Some(c),
+        None => match &req.source {
+            Some(s) => state.cookie_for_url(s).await,
+            None => None,
+        },
+    };
+    let source_reg = req.source.as_deref().and_then(host_part).map(|h| registrable(&h));
+    let referer = req.source.as_deref().and_then(host_part).map(|h| format!("https://{h}/"));
+
+    // already queued / running: don't double up a re-submitted batch
+    let busy: std::collections::HashSet<String> = {
+        use luedd_core::queue::DownloadStatus as S;
+        state
+            .store
+            .list_entries()
+            .await
+            .into_iter()
+            .filter(|e| matches!(e.status, S::Queued | S::Downloading | S::Converting | S::Paused))
+            .map(|e| e.url)
+            .collect()
+    };
+
+    let group = format!("json-{}", unix_now());
+    // plugin-view group header: the JSON's own name (`gallery`), else the folder
+    let label = match req.source.as_deref() {
+        Some(s) if !s.is_empty() => luedd_core::json_library::name_and_host(s).0,
+        _ => if req.root.trim().is_empty() { "JSON".to_string() } else { req.root.trim().to_string() },
+    };
+    let mut used: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    let mut made_dirs: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    let mut host_cookie: HashMap<String, Option<String>> = HashMap::new();
+    let mut entries = Vec::with_capacity(req.assets.len());
+    let mut skipped = 0usize;
+    for (i, a) in req.assets.iter().enumerate() {
+        if !(a.url.starts_with("http://") || a.url.starts_with("https://")) || busy.contains(&a.url) {
+            skipped += 1;
+            continue;
+        }
+        let mut dir = root.clone();
+        for seg in a.folder.split('/').map(safe_segment).filter(|s| !s.is_empty()) {
+            dir.push(seg);
+        }
+        let mut name = safe_segment(&a.name);
+        if name.is_empty() {
+            name = format!("asset_{}", i + 1);
+        }
+        // two assets with the same file name in one folder: `name_2.ext`
+        let mut dest = dir.join(&name);
+        let mut n = 2;
+        while !used.insert(dest.clone()) {
+            let p = std::path::Path::new(&name);
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(&name);
+            let candidate = match p.extension().and_then(|e| e.to_str()) {
+                Some(ext) => format!("{stem}_{n}.{ext}"),
+                None => format!("{stem}_{n}"),
+            };
+            dest = dir.join(candidate);
+            n += 1;
+        }
+        if made_dirs.insert(dir.clone()) {
+            tokio::fs::create_dir_all(&dir).await.ok();
+        }
+
+        let host = host_part(&a.url).unwrap_or_default();
+        let cookie = match host_cookie.get(&host) {
+            Some(c) => c.clone(),
+            None => {
+                let mut c = state.cookie_for_url(&a.url).await;
+                if c.is_none() && source_reg.as_deref() == Some(registrable(&host).as_str()) {
+                    c = source_cookie.clone();
+                }
+                host_cookie.insert(host, c.clone());
+                c
+            }
+        };
+        let mut headers = HashMap::new();
+        if let Some(r) = &referer {
+            headers.insert("Referer".to_string(), r.clone());
+        }
+        // the Lüdd-JSON backend runs the entry; the transport (http/hls/dash) is
+        // still picked from the URL, which also fixes the file extension
+        let transport = state.registry.quick_id(&a.url, &settings.backends);
+        let kind = luedd_core::backend::kind_for_backend_id(transport);
+        let dest = luedd_core::jobs::sanitize_dest_for_kind(&dest, kind);
+        let mut entry = DownloadEntry::new(a.url.clone(), dest, kind)
+            .with_backend_id("json")
+            .with_request_context(headers, cookie);
+        entry.author = Some(label.clone());
+        entry.title = std::path::Path::new(&name).file_name().map(|n| n.to_string_lossy().into_owned());
+        entry.media_class = a.class.clone().filter(|c| !c.is_empty());
+        entry.extras.insert("luedd_json".to_string(), group.clone());
+        entries.push(entry);
+    }
+    let queued = entries.len();
+    if queued > 0 {
+        if let Err(e) = state.store.add_entries(entries).await {
+            tracing::warn!(error = %e, "failed to persist Luedd-JSON batch");
+            return Json(serde_json::json!({ "queued": 0, "skipped": skipped, "error": e.to_string() }));
+        }
+        let mgr = state.manager.clone();
+        tokio::spawn(async move {
+            let _ = mgr.run_queued().await;
+        });
+    }
+    if let Some(s) = req.source.as_deref().filter(|s| !s.is_empty()) {
+        let _ = state.json_library.add_queued(s, queued as u32).await;
+    }
+    tracing::info!(queued, skipped, root = %root.display(), "Luedd-JSON batch queued");
+    Json(serde_json::json!({ "queued": queued, "skipped": skipped, "dir": root.to_string_lossy(), "group": group }))
+}
+
+// ---- Lüdd-Docs: documents captured page by page in the browser ------------
+
+/// Pages of one in-progress capture, kept on disk until `/docs/finish`.
+struct DocSession {
+    dir: std::path::PathBuf,
+    site: String,
+    title: String,
+    url: String,
+    pages: std::collections::BTreeMap<u32, std::path::PathBuf>,
+    started: i64,
+}
+
+#[derive(Deserialize)]
+struct DocsBeginReq {
+    #[serde(default)]
+    site: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct DocsPageReq {
+    id: String,
+    n: u32,
+    /// base64, with or without a `data:...;base64,` prefix
+    data: String,
+}
+
+#[derive(Deserialize)]
+struct DocsIdReq {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct DocsFileReq {
+    #[serde(default)]
+    site: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    data: String,
+}
+
+fn decode_b64_payload(s: &str) -> Option<Vec<u8>> {
+    let raw = s.split_once("base64,").map(|(_, b)| b).unwrap_or(s);
+    base64::engine::general_purpose::STANDARD.decode(raw.trim()).ok()
+}
+
+fn docs_err(msg: impl std::fmt::Display) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": false, "error": msg.to_string() }))
+}
+
+async fn docs_begin(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<DocsBeginReq>(&body) else {
+        return docs_err("malformed request");
+    };
+    let id = format!("{:x}{:x}", unix_now(), state.next_doc_id.fetch_add(1, Ordering::Relaxed));
+    let dir = std::env::temp_dir().join("luedd-docs").join(&id);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return docs_err(e);
+    }
+    let mut sessions = state.docs.lock().await;
+    // drop abandoned captures (tab closed mid-way) after a day
+    let now = unix_now();
+    let stale: Vec<String> = sessions.iter().filter(|(_, s)| now - s.started > 86_400).map(|(k, _)| k.clone()).collect();
+    for k in stale {
+        if let Some(s) = sessions.remove(&k) {
+            let _ = tokio::fs::remove_dir_all(&s.dir).await;
+        }
+    }
+    sessions.insert(
+        id.clone(),
+        DocSession { dir, site: req.site, title: req.title, url: req.url, pages: Default::default(), started: now },
+    );
+    Json(serde_json::json!({ "ok": true, "id": id }))
+}
+
+async fn docs_page(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<DocsPageReq>(&body) else {
+        return docs_err("malformed request");
+    };
+    let Some(bytes) = decode_b64_payload(&req.data) else {
+        return docs_err("bad page data");
+    };
+    let path = {
+        let sessions = state.docs.lock().await;
+        let Some(s) = sessions.get(&req.id) else {
+            return docs_err("unknown capture");
+        };
+        s.dir.join(format!("{:06}.jpg", req.n))
+    };
+    if let Err(e) = tokio::fs::write(&path, &bytes).await {
+        return docs_err(e);
+    }
+    let mut sessions = state.docs.lock().await;
+    let Some(s) = sessions.get_mut(&req.id) else {
+        return docs_err("unknown capture");
+    };
+    s.pages.insert(req.n, path);
+    Json(serde_json::json!({ "ok": true, "count": s.pages.len() }))
+}
+
+async fn docs_abort(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    if let Ok(req) = serde_json::from_slice::<DocsIdReq>(&body) {
+        if let Some(s) = state.docs.lock().await.remove(&req.id) {
+            let _ = tokio::fs::remove_dir_all(&s.dir).await;
+        }
+    }
+    Json(serde_json::json!({ "ok": true }))
+}
+
+/// Write `bytes` to `<download_dir>/<site>/<title>.pdf` and record it as a
+/// finished Lüdd-Docs entry.
+async fn save_doc(
+    state: &Arc<AppState>,
+    site: &str,
+    title: &str,
+    url: &str,
+    bytes: Vec<u8>,
+    pages: usize,
+) -> Json<serde_json::Value> {
+    let settings = state.config.settings.get().await;
+    let site_name = {
+        let s = safe_segment(site);
+        if s.is_empty() { "Documents".to_string() } else { s }
+    };
+    let dir = settings.download_dir.join(&site_name);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return docs_err(e);
+    }
+    let mut stem = safe_segment(title);
+    if stem.is_empty() {
+        stem = format!("document_{}", unix_now());
+    }
+    let mut dest = dir.join(format!("{stem}.pdf"));
+    let mut n = 2;
+    while tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+        dest = dir.join(format!("{stem}_{n}.pdf"));
+        n += 1;
+    }
+    if let Err(e) = tokio::fs::write(&dest, &bytes).await {
+        return docs_err(e);
+    }
+    let mut entry = DownloadEntry::new(url.to_string(), dest.clone(), DownloadKind::Http).with_backend_id("docs");
+    entry.status = luedd_core::queue::DownloadStatus::Finished;
+    entry.author = Some(if site.trim().is_empty() { "Documents".to_string() } else { site.trim().to_string() });
+    entry.title = Some(if title.trim().is_empty() { stem.clone() } else { title.trim().to_string() });
+    entry.media_class = Some("document".to_string());
+    entry.expected_files = None;
+    if let Err(e) = state.store.add_entry(entry).await {
+        tracing::warn!(error = %e, "failed to record Luedd-Docs entry");
+    }
+    tracing::info!(pages, path = %dest.display(), "Luedd-Docs document saved");
+    Json(serde_json::json!({ "ok": true, "path": dest.to_string_lossy(), "pages": pages }))
+}
+
+async fn docs_finish(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<DocsIdReq>(&body) else {
+        return docs_err("malformed request");
+    };
+    let Some(s) = state.docs.lock().await.remove(&req.id) else {
+        return docs_err("unknown capture");
+    };
+    let mut jpegs = Vec::with_capacity(s.pages.len());
+    for path in s.pages.values() {
+        match tokio::fs::read(path).await {
+            Ok(b) => jpegs.push(b),
+            Err(e) => {
+                let _ = tokio::fs::remove_dir_all(&s.dir).await;
+                return docs_err(e);
+            }
+        }
+    }
+    let _ = tokio::fs::remove_dir_all(&s.dir).await;
+    if jpegs.is_empty() {
+        return docs_err("no pages captured");
+    }
+    let pdf = match luedd_core::docs_pdf::jpegs_to_pdf(&jpegs, &s.title) {
+        Ok(p) => p,
+        Err(e) => return docs_err(e),
+    };
+    save_doc(&state, &s.site, &s.title, &s.url, pdf, jpegs.len()).await
+}
+
+/// A ready-made PDF (Chrome print-to-PDF: selectable text).
+async fn docs_file(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<DocsFileReq>(&body) else {
+        return docs_err("malformed request");
+    };
+    let Some(bytes) = decode_b64_payload(&req.data) else {
+        return docs_err("bad pdf data");
+    };
+    if !bytes.starts_with(b"%PDF") {
+        return docs_err("not a PDF");
+    }
+    save_doc(&state, &req.site, &req.title, &req.url, bytes, 0).await
 }
 
 fn flatten_headers(headers: HashMap<String, Vec<String>>, user_agent: Option<String>) -> HashMap<String, String> {

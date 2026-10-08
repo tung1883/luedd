@@ -22,22 +22,26 @@
 
   const send = msg => new Promise(resolve => {
     try {
-      const p = ext.runtime.sendMessage(msg, r => { void ext.runtime.lastError; resolve(r); });
+      // promise form only: Firefox's `browser` namespace rejects a callback argument
+      const p = ext.runtime.sendMessage(msg);
       if (p && typeof p.then === "function") p.then(resolve, () => resolve(null));
+      else resolve(null);
     } catch (_) { resolve(null); }
   });
 
   try {
-    ext.storage.local.get(["barMode", "userDisabled"], r => {
+    const gotPrefs = r => {
       if (r && typeof r.barMode === "string") mode = r.barMode;
       if (r && typeof r.userDisabled === "boolean") disabled = r.userDisabled;
       refreshPill();
-    });
+    };
+    const pp = ext.storage.local.get(["barMode", "userDisabled"]);
+    if (pp && typeof pp.then === "function") pp.then(gotPrefs, () => { });
     ext.storage.onChanged.addListener((ch, area) => {
       if (area !== "local") return;
       if (ch.barMode) mode = ch.barMode.newValue || "video";
       if (ch.userDisabled) disabled = ch.userDisabled.newValue === true;
-      if (!active()) { videoBar.hide(); pillBar.hide(); } else refreshPill();
+      if (!active()) { videoBar.hide(); pillBar.hide(); if (jsonBar) jsonBar.hide(); if (docsBar) docsBar.hide(); } else { refreshPill(); refreshJsonBar(); }
     });
   } catch (_) {}
 
@@ -363,7 +367,7 @@
     const r = el.getBoundingClientRect();
     let left = r.left, top = r.top, right = r.right, bottom = r.bottom;
     let n = el.parentElement;
-    for (let i = 0; n && n !== document.documentElement && i < 40; i++, n = n.parentElement) {
+    for (let i = 0; n && n !== document.body && n !== document.documentElement && i < 40; i++, n = n.parentElement) {
       const cs = getComputedStyle(n);
       if (cs.overflowX === "visible" && cs.overflowY === "visible") continue;
       const p = n.getBoundingClientRect();
@@ -429,7 +433,7 @@
     return m && !IG_RESERVED.has(m[1].toLowerCase()) ? m[1] : null;
   }
 
-  function makeActionBar(actions) {
+  function makeActionBar(actions, perform) {
     const host = document.createElement("div");
     host.style.cssText = "all:initial;position:fixed;left:0;top:0;z-index:2147483647;display:none;";
     const root = host.attachShadow({ mode: "closed" });
@@ -453,10 +457,10 @@
       busy = true;
       menu.classList.remove("open");
       lbl.textContent = "Sending...";
-      const r = await send({ type: "ig-profile", username: api.user, action });
+      const r = await (perform ? perform(action) : send({ type: "ig-profile", username: api.user, action }));
       const ok = !!(r && r.ok);
       dl.classList.add(ok ? "ok" : "err");
-      lbl.textContent = ok ? "Queued" : "Failed";
+      lbl.textContent = ok ? (action === "review" ? "Opened" : "Queued") : "Failed";
       setTimeout(() => { dl.classList.remove("ok", "err"); lbl.textContent = "Download"; busy = false; }, 1600);
     };
     const btn = (label, cls, fn) => {
@@ -532,6 +536,71 @@
   if (profileBar) {
     setInterval(() => { if (document.visibilityState === "visible") query(false).then(refreshProfileBar); }, 1500);
     addEventListener("scroll", () => requestAnimationFrame(refreshProfileBar), { capture: true, passive: true });
+  }
+
+  // ---- Luedd-JSON: a pill on a raw JSON document ---------------------------
+  const isJsonDoc = () => {
+    if (!/json/i.test(document.contentType || "") && !/\.json$/i.test(location.pathname)) return false;
+    const pre = document.body && document.body.firstElementChild;
+    const text = ((pre && pre.textContent) || document.body.textContent || "").trimStart();
+    return text[0] === "{" || text[0] === "[";
+  };
+  const jsonBar = isTop && /^https?:$/.test(location.protocol) ? makeActionBar([
+    { label: "Download all assets", action: "download" },
+    { label: "Review in L\u00fcdd", action: "review" },
+  ], action => send({ type: "json-action", url: location.href, action })) : null;
+
+  let jsonReported = false;
+  function refreshJsonBar() {
+    if (!jsonBar || jsonBar.dismissedFor === location.href) return;
+    if (!active() || !isJsonDoc()) return jsonBar.hide();
+    jsonBar.user = location.href;
+    jsonBar.show(12, 12);
+    if (!jsonReported) { jsonReported = true; send({ type: "json-seen", url: location.href }); }
+  }
+  if (jsonBar) {
+    const bootJson = () => refreshJsonBar();
+    if (document.readyState === "complete") bootJson(); else addEventListener("load", bootJson, { once: true });
+  }
+
+  // ---- Luedd-Docs: pill on a document viewer (Drive, Scribd, Studocu) -----------
+  const docsApi = window.__ludddDocs;
+  async function docsRun(action) {
+    const ad = docsApi && docsApi.detect();
+    if (!ad) return { ok: false };
+    const meta = { site: ad.site, title: ad.title(), url: location.href };
+    if (action === "text") {
+      await docsApi.scrollAll(ad);
+      const r = await send({ type: "docs-print", ...meta });
+      if (r && r.ok) return r;
+      // no print-to-PDF here (Firefox): fall back to page images
+    }
+    const begin = await send({ type: "docs-begin", ...meta });
+    if (!begin || !begin.id) return { ok: false };
+    const pages = await ad.collect();
+    let sent = 0;
+    for (const p of pages) {
+      const r = await send({ type: "docs-page", id: begin.id, n: sent + 1, url: p.url, data: p.data });
+      if (r && r.ok) sent++;
+    }
+    if (!sent) { send({ type: "docs-abort", id: begin.id }); return { ok: false }; }
+    const fin = await send({ type: "docs-finish", id: begin.id });
+    return { ok: !!(fin && fin.ok) };
+  }
+  const docsBar = isTop && docsApi && /^https?:$/.test(location.protocol) ? makeActionBar([
+    { label: "PDF from page images", action: "images" },
+    { label: "PDF with selectable text", action: "text" },
+  ], docsRun) : null;
+
+  function refreshDocsBar() {
+    if (!docsBar) return;
+    if (!active() || !monitoring || !docsApi.detect()) return docsBar.hide();
+    if (docsBar.dismissedFor === location.href) return;
+    docsBar.user = location.href;
+    docsBar.show(12, 64);
+  }
+  if (docsBar) {
+    setInterval(() => { if (document.visibilityState === "visible") refreshDocsBar(); }, 2000);
   }
 
   // ---- "all" mode corner pill --------------------------------------------

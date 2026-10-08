@@ -33,6 +33,7 @@ fn build_registry(
     Arc<luedd_core::backend::YtdlpBackend>,
     Arc<luedd_core::backend::TorrentBackend>,
 ) {
+    let client_for_json = client.clone();
     let mut registry = BackendRegistry::with_builtins(client.clone());
     let ytdlp = Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone()));
     registry.register(ytdlp.clone());
@@ -40,6 +41,8 @@ fn build_registry(
     registry.register(instagram.clone());
     let torrent = Arc::new(luedd_core::backend::TorrentBackend::new(data_dir.join("torrent")));
     registry.register(torrent.clone());
+    registry.register(Arc::new(luedd_core::backend::JsonBackend::new(client_for_json)));
+    registry.register(Arc::new(luedd_core::backend::DocsBackend));
     (Arc::new(registry), instagram, ytdlp, torrent)
 }
 
@@ -629,6 +632,7 @@ fn main() {
             let server_settings = settings.clone();
             let (detection_tx, mut detection_rx) = tokio::sync::mpsc::unbounded_channel();
             let (focus_tx, mut focus_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (json_open_tx, mut json_open_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             tauri::async_runtime::spawn(async move {
                 let config = luedd_ipc::server::ServerConfig {
                     settings: server_settings,
@@ -636,6 +640,8 @@ fn main() {
                     on_new_detection: Some(detection_tx),
                     on_focus_request: Some(focus_tx),
                     ig_cookie_cache: Some(default_data_dir().join("ig_session")),
+                    json_library_path: Some(luedd_core::json_library::default_json_library_path(&default_data_dir())),
+                    on_json_open: Some(json_open_tx),
                 };
                 if let Err(e) = luedd_ipc::server::serve(
                     server_store,
@@ -665,6 +671,22 @@ fn main() {
             if let Err(e) = build_ytdlp_viewer_window(&app.handle()) {
                 tracing::warn!(error = %e, "failed to pre-create yt-dlp viewer window");
             }
+            if let Err(e) = build_json_viewer_window(&app.handle()) {
+                tracing::warn!(error = %e, "failed to pre-create Lüdd-JSON viewer window");
+            }
+
+            // The browser extension's "Review in Lüdd" on a JSON page: open the
+            // viewer and point it at that URL.
+            let json_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(url) = json_open_rx.recv().await {
+                    show_or_refresh_json_viewer_window(&json_app_handle);
+                    if let Some(win) = json_app_handle.get_webview_window(JSON_VIEWER_WINDOW_LABEL) {
+                        let arg = serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string());
+                        let _ = win.eval(&format!("window.jxOpen && window.jxOpen({arg})"));
+                    }
+                }
+            });
 
             let detection_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -745,7 +767,8 @@ fn main() {
             detection_window_hide,
             detection_window_show,
             viewer_window_show,
-            ytdlp_viewer_window_show
+            ytdlp_viewer_window_show,
+            json_viewer_window_show
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -886,6 +909,57 @@ fn show_or_refresh_ytdlp_viewer_window(app: &tauri::AppHandle) {
     let _ = win.show();
     let _ = win.set_focus();
     let _ = win.emit("yt-library-updated", ());
+}
+
+const JSON_VIEWER_WINDOW_LABEL: &str = "json-viewer";
+
+/// The Lüdd-JSON viewer - caught JSON sources -> asset picker. Same
+/// separate-window pattern as the yt-dlp viewer.
+fn build_json_viewer_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let url = format!("json-viewer.html?v={}", env!("LUEDD_ASSET_VER"));
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        JSON_VIEWER_WINDOW_LABEL,
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title("Lüdd-JSON")
+    .inner_size(1020.0, 740.0)
+    .min_inner_size(640.0, 480.0)
+    .resizable(true)
+    .visible(false)
+    .background_color(tauri::webview::Color(0x16, 0x17, 0x1a, 0xff))
+    .build()?;
+    let win_for_close = win.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win_for_close.hide();
+        }
+    });
+    Ok(win)
+}
+
+fn show_or_refresh_json_viewer_window(app: &tauri::AppHandle) {
+    let win = match app.get_webview_window(JSON_VIEWER_WINDOW_LABEL) {
+        Some(win) => win,
+        None => match build_json_viewer_window(app) {
+            Ok(win) => win,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open Lüdd-JSON viewer window");
+                return;
+            }
+        },
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    let _ = win.eval("window.jxRefresh && window.jxRefresh()");
+}
+
+#[tauri::command]
+fn json_viewer_window_show(app: tauri::AppHandle) -> Result<(), String> {
+    show_or_refresh_json_viewer_window(&app);
+    Ok(())
 }
 
 #[tauri::command]

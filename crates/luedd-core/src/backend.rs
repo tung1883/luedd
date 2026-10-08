@@ -17,12 +17,16 @@ use crate::jobs::DownloadKind;
 pub mod builtin;
 pub mod instagram;
 pub mod instaloader;
+pub mod docs;
+pub mod json;
 #[cfg(feature = "torrent")]
 pub mod torrent;
 pub mod ytdlp;
 
 pub use builtin::{DashBackend, HlsBackend, HttpBackend};
 pub use instagram::InstagramBackend;
+pub use docs::DocsBackend;
+pub use json::JsonBackend;
 #[cfg(feature = "torrent")]
 pub use torrent::{
     TorrentBackend, TorrentDetail, TorrentFileStat, TorrentPeer, TorrentPreview, TorrentPreviewFile,
@@ -192,6 +196,8 @@ pub fn provider_label(backend_id: &str) -> &str {
         "ytdlp" => "yt-dlp",
         "instagram" => "Lüdd-Insta",
         "torrent" => "Lüdd-Torrent",
+        "json" => "Lüdd-JSON",
+        "docs" => "Lüdd-Docs",
         other => other,
     }
 }

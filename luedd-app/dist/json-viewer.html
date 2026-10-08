@@ -1,0 +1,556 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Lüdd-JSON</title>
+<style>
+  @font-face { font-family: "IBM Plex Mono"; src: url("fonts/ibm-plex-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Cascadia Mono"; src: url("fonts/cascadia-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Excalifont"; src: url("fonts/excalifont.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
+  :root {
+    --bg: #16171A; --surface: #1E2024; --surface-2: #26282E; --line: #34373E;
+    --text: #E7E8EA; --dim: #9A9DA5; --accent: #4FA3D8; --disc: #7FC0E6; --good: #4FD08A; --bad: #F26A63; --warn: #F0A24A;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  body { font-family: var(--sans); margin: 0; background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; height: 100vh; font-size: 13px; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 11px 16px;
+    background: linear-gradient(180deg, #212227, var(--surface)); border-bottom: 1px solid var(--line); }
+  header .htitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+  .hsearch { flex: 1; min-width: 0; max-width: 340px; margin-left: auto; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 6px 10px; }
+  .hsearch:focus, .field:focus { outline: none; border-color: var(--accent); }
+  .hsearch::-webkit-search-cancel-button { -webkit-appearance: none; }
+  button { padding: 6px 12px; background: var(--accent); border: 1px solid transparent; color: var(--bg);
+    border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--sans); font-weight: 600; }
+  button.ghost { background: transparent; border-color: var(--line); color: var(--dim); font-weight: 500; }
+  button.ghost:hover { color: var(--text); border-color: var(--dim); }
+  button:disabled { opacity: .45; cursor: default; }
+  .iconbtn { padding: 0; width: 28px; height: 26px; display: flex; align-items: center; justify-content: center; }
+  .iconbtn svg { width: 15px; height: 15px; }
+  .field { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+    font: inherit; font-size: 12px; padding: 7px 10px; }
+  input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+
+  /* home */
+  #home { flex: 1; overflow-y: auto; }
+  .addbar { display: flex; gap: 8px; padding: 14px 16px 6px; align-items: center; }
+  .addbar .field { flex: 1; min-width: 0; font-family: var(--mono); }
+  .empty { padding: 40px 24px; color: var(--dim); font-size: 13px; text-align: center; line-height: 1.6; }
+  .cgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; padding: 10px 16px 16px; }
+  .ccard { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--surface);
+    display: flex; gap: 11px; align-items: center; cursor: pointer; position: relative; }
+  .ccard:hover { border-color: var(--dim); }
+  .ccard .ic { width: 40px; height: 40px; border-radius: 10px; background: rgba(240,162,74,.12); border: 1px solid rgba(240,162,74,.35);
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--warn); }
+  .ccard .tx { min-width: 0; flex: 1; }
+  .ccard .nm { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ccard .sub { color: var(--dim); font-size: 10.5px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ccard .x { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; padding: 0; background: transparent; color: var(--dim);
+    border: 0; display: none; align-items: center; justify-content: center; }
+  .ccard:hover .x { display: flex; }
+  .ccard .x:hover { color: var(--bad); }
+
+  /* source page */
+  #src { flex: 1; display: none; flex-direction: column; min-height: 0; }
+  .srcbar { display: flex; align-items: center; gap: 10px; padding: 10px 16px 6px; min-height: 40px; }
+  .srcbar .nm { font-size: 14px; font-weight: 700; }
+  .srcbar .host { font-family: var(--mono); font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .srcbar .sp { flex: 1; }
+  .ses { display: none; align-items: center; gap: 6px; font-size: 11px; color: var(--good); white-space: nowrap;
+    border: 1px solid rgba(79,208,138,.35); border-radius: 99px; padding: 2px 9px; }
+  .ses.on { display: inline-flex; }
+  .ses i { width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
+  .status { padding: 0 16px 8px; font-size: 12px; color: var(--dim); min-height: 20px; }
+  .status.bad { color: var(--bad); }
+  .body { flex: 1; display: grid; grid-template-columns: 220px 1fr; border-top: 1px solid var(--line); min-height: 0; }
+  .side { border-right: 1px solid var(--line); padding: 12px 14px; overflow-y: auto; background: var(--surface); }
+  .side h4 { margin: 0 0 6px; font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+  .side .grp { margin-bottom: 16px; }
+  .opt { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; cursor: pointer; }
+  .opt span.n { margin-left: auto; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .opt span.t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .tb { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .tb label { display: flex; align-items: center; gap: 7px; font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--dim); cursor: pointer; }
+  .tb .field { flex: 1; padding: 4px 9px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex: none; }
+  .seg button { background: transparent; border: 0; border-radius: 0; color: var(--dim); padding: 4px 10px; font-size: 11px; font-weight: 500; }
+  .seg button.on { background: var(--surface-2); color: var(--text); }
+  .list { flex: 1; overflow-y: auto; min-height: 0; }
+  .g { display: flex; gap: 8px; padding: 5px 12px; background: var(--surface-2); border-bottom: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11px; color: var(--disc); position: sticky; top: 0; z-index: 1; }
+  .g span { margin-left: auto; font-family: var(--sans); color: var(--dim); }
+  .row { display: grid; grid-template-columns: 16px 30px 1fr 56px; gap: 10px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+  .row:hover { background: var(--surface); }
+  .row.dupe { opacity: .5; }
+  .aic { width: 30px; height: 24px; border-radius: 5px; display: grid; place-items: center; border: 1px solid var(--line); color: var(--dim); }
+  .aic.image { color: #cfe6f5; background: linear-gradient(135deg,#3b5d78,#27394a); }
+  .aic.video { color: #e0d6ff; background: linear-gradient(135deg,#5a4a7e,#2d2540); }
+  .aic.audio { color: #ffe3b0; background: linear-gradient(135deg,#6a5632,#3a2f1b); }
+  .anm { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .apa { font-family: var(--mono); font-size: 10.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .aty { font-size: 11px; color: var(--dim); text-align: right; }
+  .tag { font-size: 10px; padding: 0 5px; border-radius: 4px; border: 1px solid rgba(240,162,74,.35); color: var(--warn); margin-left: 6px; }
+  .more { display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: 12px; color: var(--dim); background: var(--surface); }
+  .more button { margin-left: auto; }
+  .lempty { padding: 36px 20px; text-align: center; color: var(--dim); font-size: 13px; line-height: 1.6; }
+  .foot { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-top: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
+  .sum { font-size: 12px; color: var(--dim); flex: 1; min-width: 160px; }
+  .sum b { color: var(--text); font-weight: 600; }
+  .foot .field { padding: 5px 9px; }
+
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
+    background: #26282e; border: 1px solid var(--line); color: var(--text); font-size: 12px; padding: 8px 14px;
+    border-radius: 8px; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 30; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+  <header>
+    <button id="back-btn" class="ghost iconbtn" style="display:none" title="Back" aria-label="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <span class="htitle" id="head-title">Lüdd-JSON</span>
+    <input id="search" type="search" class="hsearch" data-i18n-placeholder="jv_search" placeholder="Search sources" />
+    <button id="refresh-btn" class="ghost iconbtn" title="Refresh" aria-label="Refresh">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+  </header>
+
+  <div id="home">
+    <div class="addbar">
+      <input id="add-src" class="field" type="text" spellcheck="false" data-i18n-placeholder="json_placeholder" placeholder="https://example.com/data.json, or paste JSON" />
+      <input id="add-file" type="file" accept=".json,application/json,text/plain" style="display:none" />
+      <button id="add-file-btn" class="ghost" data-i18n="json_open_file">Open file</button>
+      <button id="add-btn" data-i18n="jv_add">Scan</button>
+    </div>
+    <div id="sources"></div>
+  </div>
+
+  <div id="src">
+    <div class="srcbar">
+      <span class="nm" id="src-name"></span>
+      <span class="host" id="src-host"></span>
+      <span class="sp"></span>
+      <span class="ses" id="ses"><i></i><span data-i18n="json_session">Browser session used</span></span>
+      <button id="rescan-btn" class="ghost" data-i18n="json_scan">Scan</button>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="body">
+      <div class="side" id="side"></div>
+      <div class="main">
+        <div class="tb">
+          <label><input type="checkbox" id="all" /><span data-i18n="json_select_all">select all</span></label>
+          <input id="q" class="field" type="text" data-i18n-placeholder="json_filter" placeholder="Filter path or URL" />
+          <div class="seg">
+            <button type="button" id="view-g" class="on" data-i18n="json_grouped">Grouped</button>
+            <button type="button" id="view-f" class="ghost" data-i18n="json_flat">Flat</button>
+          </div>
+        </div>
+        <div class="list" id="list"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <span class="sum" id="sum"></span>
+      <div class="seg" id="layout">
+        <button type="button" data-layout="path" class="on" data-i18n="json_l_path">By JSON path</button>
+        <button type="button" data-layout="flat" class="ghost" data-i18n="json_l_flat">Flat</button>
+        <button type="button" data-layout="name" class="ghost" data-i18n="json_l_name">By name field</button>
+      </div>
+      <input id="namekey" class="field" type="text" value="title" style="width:80px;display:none" spellcheck="false" />
+      <input id="root" class="field" type="text" style="width:170px" spellcheck="false" data-i18n-title="json_root" title="Folder inside the download folder" />
+      <button id="dl-btn" disabled></button>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+<script src="i18n.js"></script>
+<script>
+  window.addEventListener("error", e => {
+    let bar = document.getElementById("js-error-bar");
+    if (!bar) { bar = document.createElement("div"); bar.id = "js-error-bar";
+      bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;background:#5a1e1e;color:#fff;font:12px monospace;padding:6px 10px;z-index:99";
+      document.body.appendChild(bar); }
+    bar.textContent = "JS error: " + (e.message || e.error) + " @ " + (e.filename || "") + ":" + (e.lineno || "");
+  });
+
+  const APP = "http://127.0.0.1:8597";
+  const PAGE = 5000;                 // assets shown / queued per batch
+  const L = (k, v) => window.I18N.t(k, v);
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  async function get(p) { try { return await (await fetch(APP + p)).json(); } catch { return null; } }
+  async function post(p, b) { try { return await (await fetch(APP + p, { method: "POST", body: JSON.stringify(b) })).json(); } catch { return null; } }
+  function formatBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+
+  const FONTS = { system: null, georgia: 'Georgia, serif', "ibm-plex-mono": '"IBM Plex Mono", monospace',
+    excalifont: '"Excalifont", cursive', "cascadia-mono": '"Cascadia Mono", monospace' };
+  function applyFont(k) { const f = FONTS[k], s = document.documentElement.style;
+    if (f) { s.setProperty("--sans", f); s.setProperty("--mono", f); } else { s.removeProperty("--sans"); s.removeProperty("--mono"); } }
+
+  let toastTimer = null;
+  function toast(m) { const el = $("toast"); el.textContent = m; el.classList.add("show");
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), 2600); }
+
+  const ICON = (p) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const ICONS = {
+    image: ICON('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l5-5 4 4 3-3 4 4"/>'),
+    video: ICON('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/>'),
+    audio: ICON('<path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>'),
+    other: ICON('<path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/>'),
+  };
+  const BRACES = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4C6.5 4 7 7 7 9s-1 3-3 3c2 0 3 1 3 3s-.5 5 2 5"/><path d="M15 4c2.5 0 2 3 2 5s1 3 3 3c-2 0-3 1-3 3s.5 5-2 5"/></svg>';
+  const COLORS = { image: "#6fb1de", video: "#a78bfa", audio: "#f0a24a", other: "#9a9da5" };
+
+  // ---- state ----
+  const view = { cur: null };                       // { url, name, host, text? } while a source page is open
+  const localTexts = new Map();                     // "file:<name>" -> JSON text read this session
+  let q = "";                                       // home search
+  const st = {
+    assets: [], loaded: false, busy: false, source: "",
+    types: { image: true, video: true, audio: true, other: true },
+    hosts: new Set(), skipDup: true, scanAll: false,
+    grouped: true, q: "", shown: PAGE, layout: "path",
+  };
+  try { st.layout = localStorage.getItem("jx-layout") || "path"; } catch (_) {}
+
+  // ---- home: caught sources ----
+  async function renderHome() {
+    const data = await get("/json/library");
+    const box = $("sources");
+    box.innerHTML = "";
+    if (!data) { box.innerHTML = `<div class="empty">${esc(L("cant_reach"))}</div>`; return; }
+    const all = data.sources || [];
+    if (!all.length) { box.innerHTML = `<div class="empty">${esc(L("jv_empty"))}</div>`; return; }
+    const shown = all.filter(s => !q || (s.name + " " + s.url + " " + s.host).toLowerCase().includes(q));
+    if (!shown.length) { box.innerHTML = `<div class="empty">${esc(L("jv_no_match"))}</div>`; return; }
+    const grid = document.createElement("div"); grid.className = "cgrid";
+    for (const s of shown) {
+      const card = document.createElement("div"); card.className = "ccard";
+      const host = s.host === "local file" ? L("jv_local") : s.host;
+      const bits = [host, s.assets == null ? L("jv_not_scanned") : L("jv_scanned", { n: s.assets.toLocaleString() })];
+      if (s.queued) bits.push(L("jv_queued", { n: s.queued.toLocaleString() }));
+      card.innerHTML = `<span class="ic">${BRACES}</span><div class="tx"><div class="nm" title="${esc(s.url)}">${esc(s.name)}</div>`
+        + `<div class="sub">${esc(bits.join(" · "))}</div></div>`
+        + `<button class="x" title="${esc(L("jv_forget"))}" aria-label="${esc(L("jv_forget"))}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>`;
+      card.addEventListener("click", ev => {
+        if (ev.target.closest(".x")) return;
+        openSource(s.url, s.name, s.host);
+      });
+      card.querySelector(".x").addEventListener("click", async () => {
+        await post("/json/forget", { url: s.url });
+        localTexts.delete(s.url);
+        renderHome();
+      });
+      grid.appendChild(card);
+    }
+    box.appendChild(grid);
+  }
+
+  // ---- nav ----
+  function showHome() {
+    view.cur = null;
+    $("src").style.display = "none"; $("home").style.display = "";
+    $("back-btn").style.display = "none"; $("search").style.display = "";
+    $("head-title").textContent = L("jv_title");
+    renderHome();
+  }
+  function openSource(url, name, host) {
+    view.cur = { url, name, host };
+    $("home").style.display = "none"; $("src").style.display = "flex";
+    $("back-btn").style.display = ""; $("search").style.display = "none";
+    $("head-title").textContent = L("jv_title");
+    $("src-name").textContent = name; $("src-host").textContent = url.startsWith("file:") ? L("jv_local") : url;
+    $("ses").classList.remove("on");
+    st.q = ""; $("q").value = ""; $("all").checked = false;
+    st.types = { image: true, video: true, audio: true, other: true };
+    st.loaded = false; st.assets = []; st.shown = PAGE;
+    const root = $("root"); root.dataset.touched = ""; root.value = "json-" + name;
+    renderSide(); renderList();
+    scan();
+  }
+  $("back-btn").addEventListener("click", showHome);
+  $("refresh-btn").addEventListener("click", () => view.cur ? scan() : renderHome());
+  $("search").addEventListener("input", () => { q = $("search").value.trim().toLowerCase(); renderHome(); });
+
+  // ---- add bar ----
+  function nameFromUrl(u) {
+    try { const x = new URL(u); const last = decodeURIComponent(x.pathname.split("/").filter(Boolean).pop() || ""); return last.replace(/\.json$/i, "") || x.hostname; }
+    catch { return u; }
+  }
+  function startFromInput() {
+    const raw = $("add-src").value.trim();
+    if (!raw) return;
+    if (raw[0] === "{" || raw[0] === "[") {
+      localTexts.set("paste:", raw);
+      openSource("paste:", "pasted JSON", "pasted");
+    } else if (/^https?:\/\//i.test(raw)) {
+      openSource(raw, nameFromUrl(raw), new URL(raw).hostname);
+    } else {
+      toast(L("json_err_request"));
+      return;
+    }
+    $("add-src").value = "";
+  }
+  $("add-btn").addEventListener("click", startFromInput);
+  $("add-src").addEventListener("keydown", e => { if (e.key === "Enter") startFromInput(); });
+  $("add-src").addEventListener("paste", () => setTimeout(() => {
+    const v = $("add-src").value.trim();
+    if (/^https?:\/\//i.test(v) || v[0] === "{" || v[0] === "[") startFromInput();
+  }, 0));
+  $("add-file-btn").addEventListener("click", () => $("add-file").click());
+  $("add-file").addEventListener("change", async ev => {
+    const f = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!f) return;
+    const key = "file:" + f.name;
+    localTexts.set(key, await f.text());
+    openSource(key, f.name.replace(/\.json$/i, ""), "local file");
+  });
+
+  // ---- source page ----
+  function status(msg, bad) { const el = $("status"); el.textContent = msg || ""; el.classList.toggle("bad", !!bad); }
+
+  function visible() {
+    const s = st.q.toLowerCase();
+    return st.assets.filter(a => st.types[a.class] && st.hosts.has(a.host)
+      && (!s || (a.name + " " + a.path + " " + a.url).toLowerCase().includes(s)));
+  }
+
+  function renderSide() {
+    const side = $("side");
+    if (!st.loaded) { side.replaceChildren(); return; }
+    const counts = { image: 0, video: 0, audio: 0, other: 0 };
+    const hosts = new Map();
+    for (const a of st.assets) { counts[a.class]++; hosts.set(a.host, (hosts.get(a.host) || 0) + 1); }
+    const frag = document.createDocumentFragment();
+    const mk = title => { const g = document.createElement("div"); g.className = "grp"; const h = document.createElement("h4"); h.textContent = title; g.appendChild(h); frag.appendChild(g); return g; };
+    const opt = (parent, checked, label, n, onChange, swatch) => {
+      const l = document.createElement("label"); l.className = "opt";
+      const c = document.createElement("input"); c.type = "checkbox"; c.checked = checked;
+      c.addEventListener("change", () => onChange(c.checked));
+      l.appendChild(c);
+      if (swatch) { const s = document.createElement("i"); s.className = "sw"; s.style.background = swatch; l.appendChild(s); }
+      const t = document.createElement("span"); t.className = "t"; t.textContent = label; t.title = label; l.appendChild(t);
+      if (n != null) { const nn = document.createElement("span"); nn.className = "n"; nn.textContent = n.toLocaleString(); l.appendChild(nn); }
+      parent.appendChild(l);
+    };
+    const tg = mk(L("json_type"));
+    for (const k of ["image", "video", "audio", "other"]) {
+      opt(tg, st.types[k], L("json_t_" + k), counts[k], v => { st.types[k] = v; st.shown = PAGE; renderList(); }, COLORS[k]);
+    }
+    const hg = mk(L("json_host"));
+    for (const [h, n] of [...hosts.entries()].sort((a, b) => b[1] - a[1])) {
+      opt(hg, st.hosts.has(h), h, n, v => { v ? st.hosts.add(h) : st.hosts.delete(h); st.shown = PAGE; renderList(); });
+    }
+    const og = mk(L("json_options"));
+    opt(og, st.skipDup, L("json_skip_dup"), null, v => {
+      st.skipDup = v;
+      for (const a of st.assets) if (a.duplicate) a.on = !v;
+      renderList();
+    });
+    opt(og, st.scanAll, L("json_scan_all"), null, v => { st.scanAll = v; scan(); });
+    side.replaceChildren(frag);
+  }
+
+  function renderList() {
+    const list = $("list");
+    if (!st.loaded) {
+      const d = document.createElement("div"); d.className = "lempty";
+      d.textContent = st.busy ? "" : L("json_empty_hint");
+      list.replaceChildren(d); updateFoot(); return;
+    }
+    const vis = visible();
+    if (!vis.length) {
+      const d = document.createElement("div"); d.className = "lempty"; d.textContent = L("json_none");
+      list.replaceChildren(d); updateFoot(); return;
+    }
+    const shown = vis.slice(0, st.shown);
+    const groupCount = new Map();
+    if (st.grouped) for (const a of vis) groupCount.set(a.group, (groupCount.get(a.group) || 0) + 1);
+    const frag = document.createDocumentFragment();
+    let lastGroup = null;
+    for (const a of shown) {
+      if (st.grouped && a.group !== lastGroup) {
+        lastGroup = a.group;
+        const g = document.createElement("div"); g.className = "g";
+        g.append(a.group);
+        const n = document.createElement("span"); n.textContent = L("json_n_assets", { n: groupCount.get(a.group) });
+        g.appendChild(n); frag.appendChild(g);
+      }
+      const row = document.createElement("div");
+      row.className = "row" + (a.duplicate ? " dupe" : "");
+      const c = document.createElement("input"); c.type = "checkbox"; c.checked = a.on;
+      c.addEventListener("change", () => { a.on = c.checked; updateFoot(); });
+      const ic = document.createElement("span"); ic.className = "aic " + a.class; ic.innerHTML = ICONS[a.class];
+      const mid = document.createElement("div"); mid.style.minWidth = "0";
+      const nm = document.createElement("div"); nm.className = "anm"; nm.textContent = a.name || a.url; nm.title = a.url;
+      if (a.duplicate) { const t = document.createElement("span"); t.className = "tag"; t.textContent = L("json_dup"); nm.appendChild(t); }
+      const pa = document.createElement("div"); pa.className = "apa"; pa.textContent = a.path; pa.title = a.path;
+      mid.append(nm, pa);
+      const ty = document.createElement("span"); ty.className = "aty"; ty.textContent = a.ext ? a.ext.toUpperCase() : L("json_t_" + a.class);
+      row.append(c, ic, mid, ty);
+      frag.appendChild(row);
+    }
+    if (vis.length > shown.length) {
+      const more = document.createElement("div"); more.className = "more";
+      const s = document.createElement("span");
+      s.textContent = L("json_showing", { a: shown.length.toLocaleString(), b: vis.length.toLocaleString() });
+      const b = document.createElement("button"); b.className = "ghost"; b.type = "button";
+      b.textContent = L("json_load_more", { n: Math.min(PAGE, vis.length - shown.length).toLocaleString() });
+      b.addEventListener("click", () => { st.shown += PAGE; const top = list.scrollTop; renderList(); list.scrollTop = top; });
+      more.append(s, b); frag.appendChild(more);
+    }
+    list.replaceChildren(frag);
+    updateFoot();
+  }
+
+  function updateFoot() {
+    const vis = st.loaded ? visible() : [];
+    const on = vis.filter(a => a.on).length;
+    $("sum").innerHTML = st.loaded ? L("json_sel", { n: "<b>" + on.toLocaleString() + "</b>", total: vis.length.toLocaleString() }) : "";
+    const all = $("all");
+    all.checked = vis.length > 0 && on === vis.length;
+    all.indeterminate = on > 0 && on < vis.length;
+    const btn = $("dl-btn");
+    btn.disabled = on === 0 || st.busy;
+    btn.textContent = L("json_download", { n: on.toLocaleString() });
+  }
+
+  async function scan() {
+    const cur = view.cur;
+    if (!cur || st.busy) return;
+    st.busy = true;
+    $("rescan-btn").disabled = true;
+    status(L("json_scanning"));
+    const body = { scanAll: st.scanAll };
+    const text = localTexts.get(cur.url);
+    if (text != null) {
+      body.text = text;
+      if (cur.url.startsWith("file:")) body.name = cur.url.slice(5);
+    } else if (cur.url.startsWith("file:") || cur.url === "paste:") {
+      st.busy = false; $("rescan-btn").disabled = false;
+      status(L("jv_reopen"), true);
+      return;
+    } else body.url = cur.url;
+    if (st.layout === "name") body.nameKey = $("namekey").value.trim();
+    const res = await post("/json/scan", body);
+    try {
+      if (!res) {
+        st.loaded = false; st.assets = [];
+        status(L("cant_reach"), true);
+      } else {
+        $("ses").classList.toggle("on", !!res.cookie_used);
+        if (!res.ok) {
+          st.loaded = false; st.assets = [];
+          status(L("json_err_" + res.kind) + (res.kind === "fetch" || res.kind === "parse" ? ": " + res.error : ""), true);
+        } else {
+          st.source = res.source || "";
+          st.assets = res.assets.map(a => ({ ...a, on: !(a.duplicate && st.skipDup) }));
+          st.hosts = new Set(st.assets.map(a => a.host));
+          st.loaded = true; st.shown = PAGE;
+          const dups = st.assets.filter(a => a.duplicate).length;
+          status(L("json_found", { n: st.assets.length.toLocaleString(), size: formatBytes(res.bytes), dup: dups })
+            + (res.truncated ? " " + L("json_truncated") : ""));
+        }
+      }
+    } finally {
+      st.busy = false;
+      $("rescan-btn").disabled = false;
+      renderSide(); renderList();
+    }
+  }
+  $("rescan-btn").addEventListener("click", scan);
+
+  function folderFor(a) {
+    if (st.layout === "flat") return "";
+    if (st.layout === "name" && a.label) return a.label;
+    return a.folder || "";
+  }
+
+  async function download() {
+    const items = visible().filter(a => a.on).map(a => ({ url: a.url, name: a.name, folder: folderFor(a), class: a.class }));
+    if (!items.length || st.busy) return;
+    st.busy = true; updateFoot();
+    const root = $("root").value.trim();
+    let queued = 0, skipped = 0, dir = "";
+    try {
+      // one request per page of results, so a huge JSON becomes several batches
+      for (let i = 0; i < items.length; i += PAGE) {
+        const res = await post("/json/queue", { assets: items.slice(i, i + PAGE), root, source: view.cur && view.cur.url !== "paste:" ? view.cur.url : null });
+        if (!res) throw new Error(L("cant_reach"));
+        if (res.error) throw new Error(res.error);
+        queued += res.queued || 0; skipped += res.skipped || 0; dir = res.dir || dir;
+      }
+      status(L("json_queued", { n: queued.toLocaleString(), skipped, dir }));
+      toast(L("json_queued", { n: queued.toLocaleString(), skipped, dir }));
+    } catch (e) {
+      status(L("json_err_queue") + ": " + e.message, true);
+    } finally {
+      st.busy = false; updateFoot();
+    }
+  }
+  $("dl-btn").addEventListener("click", download);
+
+  function setLayout(l) {
+    st.layout = l;
+    try { localStorage.setItem("jx-layout", l); } catch (_) {}
+    document.querySelectorAll("#layout button").forEach(b => { const on = b.dataset.layout === l; b.classList.toggle("on", on); b.classList.toggle("ghost", !on); });
+    $("namekey").style.display = l === "name" ? "" : "none";
+  }
+  setLayout(st.layout);
+  document.querySelectorAll("#layout button").forEach(b => b.addEventListener("click", () => {
+    setLayout(b.dataset.layout);
+    if (st.layout === "name" && st.loaded) scan();
+  }));
+  $("namekey").addEventListener("change", () => { if (st.loaded) scan(); });
+  $("root").addEventListener("input", () => { $("root").dataset.touched = "1"; });
+  $("q").addEventListener("input", () => { st.q = $("q").value; st.shown = PAGE; renderList(); });
+  $("all").addEventListener("change", () => {
+    const v = $("all").checked;
+    for (const a of visible()) if (!(a.duplicate && st.skipDup)) a.on = v;
+    renderList();
+  });
+  const setView = g => { st.grouped = g; $("view-g").classList.toggle("on", g); $("view-g").classList.toggle("ghost", !g); $("view-f").classList.toggle("on", !g); $("view-f").classList.toggle("ghost", g); renderList(); };
+  $("view-g").addEventListener("click", () => setView(true));
+  $("view-f").addEventListener("click", () => setView(false));
+
+  // ---- entry points from the app ----
+  // the browser extension's "Review in Lüdd" (the app evals this)
+  window.jxOpen = url => { if (url) openSource(url, nameFromUrl(url), new URL(url).hostname); };
+  // the window was shown again: refresh the home list
+  window.jxRefresh = () => { if (!view.cur) renderHome(); };
+
+  (async () => {
+    for (let i = 0; i < 100; i++) {
+      try { const s = await window.__TAURI__.core.invoke("get_settings"); applyFont(s.font || "system"); window.I18N.applyLang(s.language || "en"); break; }
+      catch { if (i === 99) window.I18N.applyLang("en"); await new Promise(r => setTimeout(r, 150)); }
+    }
+    showHome();
+    // a "Review" that arrived before this page finished loading
+    const p = await get("/json/pending");
+    if (p && p.url) window.jxOpen(p.url);
+  })();
+  // (another window's listen() can be refused by the webview ACL - settings still load at start)
+  Promise.resolve(window.__TAURI__.event.listen("settings-changed", async () => {
+    try { const s = await window.__TAURI__.core.invoke("get_settings"); applyFont(s.font || "system"); window.I18N.applyLang(s.language || "en"); if (!view.cur) $("head-title").textContent = L("jv_title"); } catch {}
+  })).catch(() => {});
+  setInterval(() => { if (document.visibilityState === "visible" && !view.cur) renderHome(); }, 15000);
+</script>
+</body>
+</html>

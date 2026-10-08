@@ -1,8 +1,11 @@
 pub mod atomicfile;
 pub mod backend;
 pub mod dedup;
+pub mod docs_pdf;
 pub mod ig_library;
 pub mod jobs;
+pub mod json_assets;
+pub mod json_library;
 pub mod naming;
 pub mod progressive;
 pub mod queue;

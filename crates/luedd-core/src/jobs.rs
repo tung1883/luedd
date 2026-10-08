@@ -45,7 +45,7 @@ pub fn sanitize_dest_for_kind(dest: &Path, kind: DownloadKind) -> PathBuf {
 
 async fn finish_mux(produced: PathBuf, dest: &Path) -> Result<PathBuf> {
     let final_dest = if produced.extension() == dest.extension() { dest.to_path_buf() } else { dest.with_extension("mkv") };
-    tokio::fs::rename(&produced, &final_dest).await.context("moving muxed output into place")?;
+    crate::atomicfile::move_file(&produced, &final_dest).await.context("moving muxed output into place")?;
     Ok(final_dest)
 }
 

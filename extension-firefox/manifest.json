@@ -71,6 +71,17 @@
         },
         {
             "matches": [
+                "*://*.google.com/*",
+                "*://*.scribd.com/*",
+                "*://*.studocu.com/*"
+            ],
+            "js": [
+                "docs-adapters.js"
+            ],
+            "run_at": "document_idle"
+        },
+        {
+            "matches": [
                 "*://*/*"
             ],
             "js": [

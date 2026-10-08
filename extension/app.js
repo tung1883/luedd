@@ -277,6 +277,106 @@ export default class App {
 
     // Instagram profile page actions from the on-page pill: the profile
     // picture, or an archive of the newest / all posts.
+    // A raw JSON document is open in a tab: add it to the Lüdd-JSON viewer's list.
+    async jsonSeen(url) {
+        if (!this.isMonitoringEnabled()) return;
+        let cookie;
+        try {
+            const cs = await chrome.cookies.getAll({ url });
+            if (cs && cs.length) cookie = cs.map(c => `${c.name}=${c.value}`).join("; ");
+        } catch (e) { }
+        this.connector.postMessage("/json/catch", { url, cookie });
+    }
+
+    // JSON document pill: "download" scans the JSON and queues every non-duplicate
+    // asset (layout: by JSON path); "review" opens the Luedd-JSON panel on it.
+    async jsonAction(url, action) {
+        if (!this.isMonitoringEnabled()) return false;
+        let cookie;
+        try {
+            const cs = await chrome.cookies.getAll({ url });
+            if (cs && cs.length) cookie = cs.map(c => `${c.name}=${c.value}`).join("; ");
+        } catch (e) { }
+        if (action === "review") {
+            const r = await this.connector.postMessage("/json/open", { url, cookie });
+            return !!(r && r.ok);
+        }
+        const scan = await this.connector.postMessage("/json/scan", { url, cookie });
+        if (!scan || !scan.ok) return false;
+        const assets = scan.assets.filter(a => !a.duplicate).map(a => ({ url: a.url, name: a.name, folder: a.folder }));
+        if (!assets.length) return false;
+        let root = "json-assets";
+        try {
+            const u = new URL(url);
+            root = "json-" + (decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() || "").replace(/\.json$/i, "") || u.hostname);
+        } catch (e) { }
+        let queued = 0;
+        for (let i = 0; i < assets.length; i += 5000) {
+            const r = await this.connector.postMessage("/json/queue", { assets: assets.slice(i, i + 5000), root, source: url, cookie });
+            if (!r || r.error) return false;
+            queued += r.queued || 0;
+        }
+        return queued > 0;
+    }
+
+    // ---- Luedd-Docs: pages arrive one by one, the app builds the PDF ----------
+    // One page: fetch it with the browser session (or take the in-page JPEG data
+    // URL), make it a JPEG, hand it to the app.
+    async docsPage(req) {
+        try {
+            let b64;
+            if (req.data) {
+                if (/^data:image\/jpeg/i.test(req.data)) b64 = req.data;
+                else b64 = await this.docsJpegB64(await (await fetch(req.data)).blob());
+            } else if (req.url) {
+                const res = await fetch(req.url, { credentials: "include" });
+                if (!res.ok) return false;
+                b64 = await this.docsJpegB64(await res.blob());
+            } else return false;
+            const r = await this.connector.postMessage("/docs/page", { id: req.id, n: req.n, data: b64 });
+            return !!(r && r.ok);
+        } catch (e) { return false; }
+    }
+
+    async docsJpegB64(blob) {
+        if (blob.type !== "image/jpeg") {
+            const bmp = await createImageBitmap(blob);
+            const c = new OffscreenCanvas(bmp.width, bmp.height);
+            const g = c.getContext("2d");
+            g.fillStyle = "#fff";
+            g.fillRect(0, 0, bmp.width, bmp.height);
+            g.drawImage(bmp, 0, 0);
+            if (bmp.close) bmp.close();
+            blob = await c.convertToBlob({ type: "image/jpeg", quality: 0.95 });
+        }
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        return btoa(bin);
+    }
+
+    // Chrome only: print the loaded page to a real (text) PDF through the debugger.
+    async docsPrint(tabId, req) {
+        if (!tabId || !chrome.debugger) return { ok: false, fallback: true };
+        const target = { tabId };
+        try { await chrome.debugger.attach(target, "1.3"); } catch (e) { return { ok: false, fallback: true }; }
+        try {
+            const cmd = (m, p) => chrome.debugger.sendCommand(target, m, p);
+            await cmd("Emulation.setEmulatedMedia", { media: "screen" });
+            const pdf = await cmd("Page.printToPDF", {
+                printBackground: true, preferCSSPageSize: false, paperWidth: 8.27, paperHeight: 11.69,
+                marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+            });
+            await cmd("Emulation.setEmulatedMedia", { media: "" }).catch(() => { });
+            const r = await this.connector.postMessage("/docs/file", { site: req.site, title: req.title, url: req.url, data: pdf.data });
+            return r && r.ok ? { ok: true } : { ok: false, fallback: true };
+        } catch (e) {
+            return { ok: false, fallback: true };
+        } finally {
+            try { await chrome.debugger.detach(target); } catch (e) { }
+        }
+    }
+
     async igProfileAction(user, action) {
         if (!this.isMonitoringEnabled()) return false;
         if (action === "pic") {
@@ -691,6 +791,32 @@ export default class App {
         }
         else if (request.type === "bar-download" && request.url) {
             this.barDownload(request.url, request.quality, sender && sender.tab && sender.tab.id, request.slide).then(ok => sendResponse({ ok }));
+            return true;
+        }
+        else if (request.type === "json-seen" && request.url) {
+            this.jsonSeen(request.url);
+        }
+        else if (request.type === "json-action" && request.url) {
+            this.jsonAction(request.url, request.action).then(ok => sendResponse({ ok }));
+            return true;
+        }
+        else if (request.type === "docs-begin") {
+            this.connector.postMessage("/docs/begin", { site: request.site, title: request.title, url: request.url }).then(sendResponse);
+            return true;
+        }
+        else if (request.type === "docs-page" && request.id) {
+            this.docsPage(request).then(ok => sendResponse({ ok }));
+            return true;
+        }
+        else if (request.type === "docs-finish" && request.id) {
+            this.connector.postMessage("/docs/finish", { id: request.id }).then(sendResponse);
+            return true;
+        }
+        else if (request.type === "docs-abort" && request.id) {
+            this.connector.postMessage("/docs/abort", { id: request.id });
+        }
+        else if (request.type === "docs-print") {
+            this.docsPrint(sender && sender.tab && sender.tab.id, request).then(sendResponse);
             return true;
         }
         else if (request.type === "ig-profile" && request.username) {

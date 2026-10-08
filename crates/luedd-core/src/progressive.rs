@@ -177,7 +177,7 @@ async fn download_resumable(
             bail!("download incomplete: {unfinished} piece(s) unfinished after all workers exited");
         }
     }
-    tokio::fs::rename(work_path, dest).await.context("moving finished download into place")?;
+    crate::atomicfile::move_file(work_path, dest).await.context("moving finished download into place")?;
     tokio::fs::remove_dir_all(cache_dir).await.ok();
     tracker.finish();
     tracing::info!(total_size, path = %dest.display(), "download complete");
@@ -287,7 +287,7 @@ async fn download_single_stream(
     }
     file.flush().await?;
     drop(file);
-    tokio::fs::rename(&work_path, dest).await.context("moving finished download into place")?;
+    crate::atomicfile::move_file(&work_path, dest).await.context("moving finished download into place")?;
     tokio::fs::remove_dir_all(cache_dir).await.ok();
     tracker.finish();
     tracing::info!(total, path = %dest.display(), "download complete (non-resumable single stream)");

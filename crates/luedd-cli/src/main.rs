@@ -51,6 +51,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List every asset URL inside a JSON document (URL or local file).
+    Json {
+        source: String,
+        /// Also keep absolute http(s) strings without a known file extension.
+        #[arg(long)]
+        scan_all: bool,
+        /// Browser `Cookie` header to send when fetching a URL.
+        #[arg(long)]
+        cookie: Option<String>,
+        /// Object key whose value labels each asset's group (e.g. title).
+        #[arg(long)]
+        name_key: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     Serve {
         #[arg(short, long, default_value_t = 8597)]
         port: u16,
@@ -100,6 +115,9 @@ async fn main() -> Result<()> {
         Command::Dash { url, output, concurrency } => run_job(DownloadKind::Dash, &url, &output, concurrency).await,
         Command::Queue { action } => run_queue_action(action).await,
         Command::Dedup { dirs, min_size, json } => run_dedup(dirs, min_size, json).await,
+        Command::Json { source, scan_all, cookie, name_key, json } => {
+            run_json(source, scan_all, cookie, name_key, json).await
+        }
         Command::Serve { port, download_dir } => run_serve(port, download_dir).await,
     }
 }
@@ -113,6 +131,31 @@ fn human_size(n: u64) -> String {
         i += 1;
     }
     if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[i]) }
+}
+
+async fn run_json(source: String, scan_all: bool, cookie: Option<String>, name_key: Option<String>, json: bool) -> Result<()> {
+    let (text, base) = if source.starts_with("http://") || source.starts_with("https://") {
+        let client = HttpClient::new()?;
+        let ctx = RequestContext { headers: Default::default(), cookie };
+        let text = client.get_text(&source, &ctx.to_options(None)).await?;
+        (text, url::Url::parse(&source).ok())
+    } else {
+        (std::fs::read_to_string(&source).with_context(|| format!("reading {source}"))?, None)
+    };
+    let bom = char::from_u32(0xFEFF).unwrap_or(' ');
+    let value: serde_json::Value = serde_json::from_str(text.trim_start_matches(bom)).context("not valid JSON")?;
+    let res = luedd_core::json_assets::scan(&value, &luedd_core::json_assets::ScanOptions { base, scan_all, name_key });
+    if json {
+        println!("{}", serde_json::to_string_pretty(&res)?);
+        return Ok(());
+    }
+    for a in &res.assets {
+        let dup = if a.duplicate { "  (duplicate)" } else { "" };
+        println!("{}\t{}{}", a.path, a.url, dup);
+    }
+    let dups = res.assets.iter().filter(|a| a.duplicate).count();
+    eprintln!("{} assets ({} duplicate) in {} nodes{}", res.assets.len(), dups, res.nodes, if res.truncated { ", truncated" } else { "" });
+    Ok(())
 }
 
 async fn run_dedup(dirs: Vec<PathBuf>, min_size: u64, json: bool) -> Result<()> {
@@ -178,6 +221,8 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
     let ytdlp = Arc::new(luedd_core::backend::YtdlpBackend::new(client.clone()));
     let registry = {
         let mut r = luedd_core::backend::BackendRegistry::with_builtins(client.clone());
+        r.register(Arc::new(luedd_core::backend::JsonBackend::new(client.clone())));
+        r.register(Arc::new(luedd_core::backend::DocsBackend));
         r.register(ytdlp.clone());
         r.register(instagram.clone());
         r.register(Arc::new(luedd_core::backend::TorrentBackend::new(data_dir.join("torrent"))));
@@ -194,7 +239,7 @@ async fn run_serve(port: u16, download_dir: Option<PathBuf>) -> Result<()> {
             .with_backends(registry.clone(), settings.get().await.backends),
     );
     let listener = std::net::TcpListener::bind(("127.0.0.1", port)).with_context(|| format!("binding 127.0.0.1:{port}"))?;
-    luedd_ipc::server::serve(store, manager, registry, instagram, ig_library, ytdlp, yt_library, luedd_ipc::server::ServerConfig { settings, build_id: "cli".into(), on_new_detection: None, on_focus_request: None, ig_cookie_cache: Some(data_dir.join("ig_session")) }, listener).await
+    luedd_ipc::server::serve(store, manager, registry, instagram, ig_library, ytdlp, yt_library, luedd_ipc::server::ServerConfig { settings, build_id: "cli".into(), on_new_detection: None, on_focus_request: None, ig_cookie_cache: Some(data_dir.join("ig_session")), json_library_path: Some(luedd_core::json_library::default_json_library_path(&data_dir)), on_json_open: None }, listener).await
 }
 
 async fn run_job(kind: DownloadKind, url: &str, output: &PathBuf, concurrency: usize) -> Result<()> {

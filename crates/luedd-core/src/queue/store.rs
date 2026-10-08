@@ -84,6 +84,12 @@ impl DownloadStore {
         self.save().await
     }
 
+    /// Add many entries with a single persist (a JSON asset batch is thousands).
+    pub async fn add_entries(&self, entries: Vec<DownloadEntry>) -> Result<()> {
+        self.data.write().await.entries.extend(entries);
+        self.save().await
+    }
+
     pub async fn update_entry(&self, id: &str, f: impl FnOnce(&mut DownloadEntry)) -> Result<()> {
         {
             let mut data = self.data.write().await;
