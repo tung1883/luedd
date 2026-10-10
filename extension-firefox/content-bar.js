@@ -600,7 +600,7 @@
     docsBar.show(12, 64);
   }
   if (docsBar) {
-    setInterval(() => { if (document.visibilityState === "visible") refreshDocsBar(); }, 2000);
+    setInterval(() => { if (document.visibilityState === "visible") query(false).then(refreshDocsBar); }, 2000);
   }
 
   // ---- "all" mode corner pill --------------------------------------------
