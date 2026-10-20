@@ -103,8 +103,10 @@ impl Resolve for SystemThenDoh {
             // 1. System resolver — fast, and unchanged for every host that
             //    already works.
             if let Ok(iter) = tokio::net::lookup_host((host.as_str(), 0)).await {
-                let addrs: Vec<SocketAddr> = iter.collect();
+                let mut addrs: Vec<SocketAddr> = iter.collect();
                 if !addrs.is_empty() {
+                    // OS order lists IPv6 first; broken v6 routes stall every connect.
+                    addrs.sort_by_key(|a| a.is_ipv6());
                     return Ok(Box::new(addrs.into_iter()) as Addrs);
                 }
             }
@@ -113,7 +115,8 @@ impl Resolve for SystemThenDoh {
             if ips.is_empty() {
                 return Err(format!("could not resolve {host} (system resolver and DoH both failed)").into());
             }
-            let addrs: Vec<SocketAddr> = ips.into_iter().map(|ip| SocketAddr::new(ip, 0)).collect();
+            let mut addrs: Vec<SocketAddr> = ips.into_iter().map(|ip| SocketAddr::new(ip, 0)).collect();
+            addrs.sort_by_key(|a| a.is_ipv6());
             Ok(Box::new(addrs.into_iter()) as Addrs)
         })
     }
