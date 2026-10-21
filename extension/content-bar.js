@@ -457,7 +457,7 @@
       busy = true;
       menu.classList.remove("open");
       lbl.textContent = "Sending...";
-      const r = await (perform ? perform(action) : send({ type: "ig-profile", username: api.user, action }));
+      const r = await (perform ? perform(action) : send({ type: "ig-profile", username: api.user, action, picUrl: pageAvatar() }));
       const ok = !!(r && r.ok);
       dl.classList.add(ok ? "ok" : "err");
       lbl.textContent = ok ? (action === "review" ? "Opened" : "Queued") : "Failed";
@@ -522,6 +522,12 @@
     ] },
   ]) : null;
 
+  // The avatar already on the page: last-resort source when IG's APIs are throttled.
+  function pageAvatar() {
+    const img = document.querySelector('header img[alt*="profile picture" i], header img');
+    return (img && /^https?:/.test(img.src) && img.src) || null;
+  }
+
   function refreshProfileBar() {
     if (!profileBar) return;
     const user = active() && monitoring ? profileUser() : null;
@@ -536,6 +542,58 @@
   if (profileBar) {
     setInterval(() => { if (document.visibilityState === "visible") query(false).then(refreshProfileBar); }, 1500);
     addEventListener("scroll", () => requestAnimationFrame(refreshProfileBar), { capture: true, passive: true });
+  }
+
+  // ---- Instagram page thumbnails -------------------------------------------
+  // Fallback for when IG's APIs are throttled: hand the server the story frame /
+  // avatar the page is showing. The player swaps media a beat after the URL
+  // changes, so only capture once the URL has been stable for a moment.
+  function pageThumb() {
+    if (/^\/stories\/[^/]+\/\d+/.test(location.pathname)) {
+      let best = null, area = 0;
+      for (const el of document.querySelectorAll("video, img")) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 200 || r.height < 200 || r.bottom < 0 || r.top > innerHeight) continue;
+        if (r.width * r.height > area) { area = r.width * r.height; best = el; }
+      }
+      if (!best) return null;
+      if (best.tagName === "IMG") return best.complete && /^https?:/.test(best.currentSrc) ? { thumbUrl: best.currentSrc } : null;
+      try {
+        if (best.readyState >= 2 && best.videoWidth) {
+          const c = document.createElement("canvas");
+          c.width = 270; c.height = Math.round(270 * best.videoHeight / best.videoWidth);
+          c.getContext("2d").drawImage(best, 0, 0, c.width, c.height);
+          return { data: c.toDataURL("image/jpeg", 0.7) };
+        }
+      } catch (_) { /* tainted canvas */ }
+      return /^https?:/.test(best.poster || "") ? { thumbUrl: best.poster } : null;
+    }
+    if (profileUser()) {
+      const img = document.querySelector('header img[alt*="profile picture" i], header img');
+      if (!img || !/^https?:/.test(img.src)) return null;
+      // IG shows this notice in place of the posts grid (best effort, English UI)
+      const priv = /this (account|profile) is private/i.test((document.querySelector("main") || document.body).innerText || "");
+      return { thumbUrl: img.src, square: true, ...(priv ? { private: true } : {}) };
+    }
+    return null;
+  }
+
+  if (IS_IG && isTop) {
+    const SETTLE_MS = 1500;
+    let sentFor = null, seenKey = null, seenAt = 0;
+    setInterval(async () => {
+      if (document.visibilityState !== "visible" || !active() || !monitoring) return;
+      const key = location.href;
+      if (key !== seenKey) { seenKey = key; seenAt = Date.now(); }
+      if (key === sentFor || Date.now() - seenAt < SETTLE_MS) return;
+      const t = pageThumb();
+      if (!t) return;
+      sentFor = key;
+      const sm = location.pathname.match(/^\/stories\/([^/]+)\/\d+/);
+      const alias = sm ? location.origin + "/stories/" + sm[1] : null;
+      const r = await send({ type: "ig-page-thumb", pageUrl: key, alias, ...t });
+      if (!(r && r.ok)) sentFor = null;
+    }, 500);
   }
 
   // ---- Luedd-JSON: a pill on a raw JSON document ---------------------------

@@ -246,7 +246,6 @@ fn build_args(target: &Target, dest_dir: &Path, cookie_file: Option<&Path>, lead
         "--no-metadata-json".to_string(),
         "--no-compress-json".to_string(),
         "--no-captions".to_string(),
-        "--no-profile-pic".to_string(),
         "--no-video-thumbnails".to_string(),
         "--dirname-pattern".to_string(),
         dest_dir.to_string_lossy().into_owned(),
@@ -258,6 +257,11 @@ fn build_args(target: &Target, dest_dir: &Path, cookie_file: Option<&Path>, lead
         // NOT `--load-cookies`, which takes a *browser name* and needs browser_cookie3.
         args.push("--cookiefile".to_string());
         args.push(cf.to_string_lossy().into_owned());
+    }
+    // Only a profile download wants the avatar (the only thing a private,
+    // un-followed profile yields); everything else is media-only.
+    if !matches!(target, Target::Profile(_)) {
+        args.push("--no-profile-pic".to_string());
     }
     match target {
         Target::Shortcode(code, _) => {
@@ -434,14 +438,16 @@ async fn spawn_instaloader(
         Err(_) => bail!("instaloader timed out after {}s", started.elapsed().as_secs()),
     };
 
-    if !status.success() {
-        let msg = last_lines.iter().rev().find(|l| !l.starts_with('[')).cloned().unwrap_or_default();
-        bail!("instaloader exited with {status}: {msg}");
-    }
-
     let mut files: Vec<PathBuf> =
         list_dir(dest_dir).into_iter().filter(|p| is_media(p) && !before.contains(p)).collect();
     files.sort();
+
+    // A private un-followed profile exits non-zero after saving its avatar;
+    // keep whatever did land.
+    if !status.success() && files.is_empty() {
+        let msg = last_lines.iter().rev().find(|l| !l.starts_with('[')).cloned().unwrap_or_default();
+        bail!("instaloader exited with {status}: {msg}");
+    }
     Ok(files)
 }
 

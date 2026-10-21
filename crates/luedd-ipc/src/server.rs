@@ -100,6 +100,8 @@ struct AppState {
     /// own — they try these in order and promote whichever one works, so any
     /// number of signed-in browsers can contribute a session.
     ig_cookies: Mutex<Vec<String>>,
+    /// Private account -> the session that was able to see it (in memory only).
+    ig_access: Mutex<HashMap<String, String>>,
     /// Latest browser `Cookie` header the extension sent per host (and per
     /// registrable domain). Luedd-JSON forwards it when it fetches a JSON that
     /// needs a login and when it downloads that JSON's assets.
@@ -118,6 +120,9 @@ struct AppState {
     /// expensive (an HTTP fetch or an ffmpeg spawn) and the client re-polls, so
     /// every result is memoised, successes and failures alike.
     preview_cache: Mutex<HashMap<String, Option<Preview>>>,
+    /// Images the browser extension handed over for a page URL: the fallback
+    /// when IG's own APIs can't produce a thumbnail.
+    page_thumbs: Mutex<HashMap<String, Preview>>,
     /// url -> quality variants, memoised like previews (probing re-fetches the
     /// playlist each time otherwise).
     quality_cache: Mutex<HashMap<String, Vec<luedd_media::quality::QualityOption>>>,
@@ -348,6 +353,7 @@ pub async fn serve(
         ig_archiving: Mutex::new(std::collections::HashMap::new()),
         ig_archive_epoch: AtomicU64::new(1),
         ig_cookies: Mutex::new(seeded_cookies),
+        ig_access: Mutex::new(HashMap::new()),
         host_cookies: Mutex::new(HashMap::new()),
         pending_json: Mutex::new(None),
         docs: Mutex::new(HashMap::new()),
@@ -357,6 +363,7 @@ pub async fn serve(
         detected: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
         preview_cache: Mutex::new(HashMap::new()),
+        page_thumbs: Mutex::new(HashMap::new()),
         quality_cache: Mutex::new(HashMap::new()),
         ffmpeg_slots: Arc::new(tokio::sync::Semaphore::new(6)),
         ig_img_cache: Mutex::new(HashMap::new()),
@@ -387,6 +394,7 @@ pub async fn serve(
         .route("/ig/highlight", post(ig_highlight))
         .route("/ig/post", post(ig_post))
         .route("/ig/queue", post(ig_queue))
+        .route("/ig/pagethumb", post(ig_page_thumb))
         .route("/ig/archive", post(ig_archive))
         .route("/ig/archive-state", get(ig_archive_state))
         .route("/ig/downloaded", get(ig_downloaded))
@@ -760,29 +768,94 @@ impl AppState {
     async fn ig_try<T, F, Fut>(
         &self,
         per_req: Option<&str>,
+        f: F,
+    ) -> (Option<String>, anyhow::Result<T>)
+    where
+        F: FnMut(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        self.ig_try_with(per_req, None, |_| true, f).await
+    }
+
+    /// Cookie to start with for `user`: the session known to see that private
+    /// account, else the pool's front.
+    async fn ig_cookie_for(&self, user: &str) -> Option<String> {
+        let known = self.ig_access.lock().await.get(&user.to_ascii_lowercase()).cloned();
+        match known {
+            Some(c) => Some(c),
+            None => self.ig_cookie(None).await,
+        }
+    }
+
+    /// Like [`ig_try`], but an `Ok` that `accept` rejects (an empty list for a
+    /// private account this session doesn't follow) also moves on to the next
+    /// session. If no session is satisfying, the first `Ok` is returned. With
+    /// `private_user` set, the session that was accepted is remembered for it.
+    async fn ig_try_with<T, F, Fut>(
+        &self,
+        per_req: Option<&str>,
+        private_user: Option<&str>,
+        accept: impl Fn(&T) -> bool,
         mut f: F,
     ) -> (Option<String>, anyhow::Result<T>)
     where
         F: FnMut(Option<String>) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
-        let cands = self.ig_candidates(per_req).await;
+        let mut cands = self.ig_candidates(per_req).await;
         if cands.is_empty() {
             return (None, f(None).await);
         }
+        if let Some(u) = private_user {
+            if let Some(known) = self.ig_access.lock().await.get(&u.to_ascii_lowercase()).cloned() {
+                cands.retain(|c| *c != known);
+                cands.insert(0, known);
+            }
+        }
         let mut last_err = None;
+        let mut first_ok: Option<(String, T)> = None;
         for (i, ck) in cands.iter().enumerate() {
             match f(Some(ck.clone())).await {
+                Ok(v) if !accept(&v) => {
+                    if first_ok.is_none() {
+                        first_ok = Some((ck.clone(), v));
+                    }
+                }
                 Ok(v) => {
                     if i > 0 {
                         self.promote_ig_cookie(ck).await;
                     }
+                    if let Some(u) = private_user {
+                        self.ig_access.lock().await.insert(u.to_ascii_lowercase(), ck.clone());
+                    }
                     return (Some(ck.clone()), Ok(v));
                 }
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    // 429 is per account/IP, not per cookie: the other sessions
+                    // would only add requests to the throttle.
+                    let throttled = e.to_string().contains("429");
+                    last_err = Some(e);
+                    if throttled {
+                        break;
+                    }
+                }
             }
         }
+        if let Some((ck, v)) = first_ok {
+            return (Some(ck), Ok(v));
+        }
         (None, Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all Instagram sessions failed"))))
+    }
+
+    /// Is `user` known (from an earlier visit / lookup) to be private?
+    async fn ig_is_private(&self, user: &str) -> bool {
+        self.ig_library
+            .snapshot()
+            .await
+            .accounts
+            .get(&user.to_ascii_lowercase())
+            .and_then(|a| a.is_private)
+            .unwrap_or(false)
     }
 }
 
@@ -1244,6 +1317,10 @@ struct IgQueueReq {
     /// its owner names the destination folder.
     #[serde(default)]
     post: Option<String>,
+    /// Account this file is the avatar of: names the destination folder, and
+    /// the URL is remembered as that account's avatar.
+    #[serde(default)]
+    user: Option<String>,
 }
 
 /// The caught-accounts list for the profile viewer's home screen.
@@ -1274,6 +1351,7 @@ async fn ig_profiles(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
             "kinds": kinds,
             "last_seen": acct.last_seen,
             "avatar": acct.avatar_url,
+            "is_private": acct.is_private,
         }));
     }
     accounts.sort_by(|a, b| b["last_seen"].as_i64().unwrap_or(0).cmp(&a["last_seen"].as_i64().unwrap_or(0)));
@@ -1314,7 +1392,9 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
                 full_name: String::new(),
                 biography: String::new(),
                 profile_pic_url: String::new(),
-                is_private: false,
+                // privacy learned earlier (browser / past lookup) beats a blank guess
+                is_private: state.ig_library.snapshot().await.accounts
+                    .get(&req.username.to_ascii_lowercase()).and_then(|a| a.is_private).unwrap_or(false),
                 is_verified: false,
                 external_url: None,
                 post_count: 0,
@@ -1334,6 +1414,11 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
     if !header.profile_pic_url.is_empty() {
         let (st, user, pic) = (state.clone(), req.username.clone(), header.profile_pic_url.clone());
         tokio::spawn(async move { st.ig_library.set_avatar(&user, &pic).await.ok(); });
+    }
+    // Only a full header knows privacy; the fallback ones hardcode `false`.
+    if header.complete {
+        let (st, user, private) = (state.clone(), req.username.clone(), header.is_private);
+        tokio::spawn(async move { st.ig_library.set_private(&user, private).await.ok(); });
     }
     // `story_items` is a second IG round-trip — keep it off the critical path.
     // The viewer always fetches `/ig/story` separately and hides the row if empty.
@@ -1379,8 +1464,12 @@ async fn ig_posts(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
     let inst = state.instagram.clone();
     let igc = cfg.instagram.clone();
     let (user, after) = (req.username.clone(), req.after.clone());
+    // A private account's empty first page means "this session can't see it":
+    // only then is it worth trying the other sessions.
+    let private = state.ig_is_private(&user).await;
+    let first_page = after.is_none();
     let (_ck, res) = state
-        .ig_try(None, move |ck| {
+        .ig_try_with(None, private.then_some(req.username.as_str()), |r: &(Vec<_>, Option<String>)| !(private && first_page && r.0.is_empty()), move |ck| {
             let (inst, igc, user, after) = (inst.clone(), igc.clone(), user.clone(), after.clone());
             async move { inst.profile_posts(&user, ck.as_deref(), &igc, after.as_deref()).await }
         })
@@ -1409,8 +1498,9 @@ async fn ig_story(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
     let inst = state.instagram.clone();
     let igc = cfg.instagram.clone();
     let user = req.username.clone();
+    let private = state.ig_is_private(&user).await;
     let (_ck, res) = state
-        .ig_try(None, move |ck| {
+        .ig_try_with(None, private.then_some(req.username.as_str()), |r: &Vec<_>| !(private && r.is_empty()), move |ck| {
             let (inst, igc, user) = (inst.clone(), igc.clone(), user.clone());
             async move { inst.story_items(&user, ck.as_deref(), &igc).await }
         })
@@ -1472,6 +1562,61 @@ async fn ig_post(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_
     }
 }
 
+#[derive(serde::Deserialize)]
+struct IgPageThumbReq {
+    /// The instagram.com page the extension is showing.
+    url: String,
+    /// A ready-made frame (data URL) grabbed from the page's video...
+    #[serde(default)]
+    data: Option<String>,
+    /// ...or the URL of the image the page already displays.
+    #[serde(default)]
+    thumb_url: Option<String>,
+    #[serde(default)]
+    square: bool,
+    /// The profile page says the account is private.
+    #[serde(default)]
+    private: bool,
+    /// A second page URL the same image stands for (`/stories/<user>` while the
+    /// page shows `/stories/<user>/<id>`).
+    #[serde(default)]
+    alias: Option<String>,
+}
+
+/// The extension hands over the story frame / avatar its page is showing, so
+/// the detected-downloads tile has a preview even when IG's APIs are throttled.
+async fn ig_page_thumb(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgPageThumbReq>(&body) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    if req.private {
+        if let Some((Some(account), _)) = ig_caught_of(&req.url) {
+            let st = state.clone();
+            tokio::spawn(async move { st.ig_library.set_private(&account, true).await.ok(); });
+        }
+    }
+    let kind = if req.square { "square" } else { "image" };
+    let preview: Option<Preview> = match (&req.data, &req.thumb_url) {
+        (Some(d), _) if d.starts_with("data:image/") && d.len() < 600_000 => Some((d.clone(), kind)),
+        (_, Some(u)) if u.starts_with("http") => {
+            let client = state.manager.http_client();
+            fetch_image_data_url(&client, u).await.map(|(url, _)| (url, kind))
+        }
+        _ => None,
+    };
+    let ok = preview.is_some();
+    tracing::info!(url = %req.url, alias = ?req.alias, ok, from_data = req.data.is_some(), thumb_url = ?req.thumb_url.as_deref().map(|u| &u[..u.len().min(80)]), "page thumbnail from extension");
+    if let Some(p) = preview {
+        let mut thumbs = state.page_thumbs.lock().await;
+        // the tray-level URL keeps the first story seen, not the latest
+        if let Some(alias) = &req.alias {
+            thumbs.entry(canonical_page_url(alias)).or_insert_with(|| p.clone());
+        }
+        thumbs.insert(canonical_page_url(&req.url), p);
+    }
+    Json(serde_json::json!({ "ok": ok }))
+}
+
 async fn ig_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
     let Ok(req) = serde_json::from_slice::<IgQueueReq>(&body) else {
         return Json(serde_json::json!({ "queued": false }));
@@ -1501,6 +1646,14 @@ async fn ig_queue(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde
             }
         }
         None => (None, None),
+    };
+    let (author_hint, dir_hint) = match req.user.as_deref().map(|u| u.trim_start_matches('@')).filter(|u| !u.is_empty()) {
+        Some(user) => {
+            let (st, u, pic) = (state.clone(), user.to_string(), req.url.clone());
+            tokio::spawn(async move { st.ig_library.set_avatar(&u, &pic).await.ok(); });
+            (Some(format!("@{user}")), Some(user.to_string()))
+        }
+        None => (author_hint, dir_hint),
     };
     let id = queue_url(&state, req.url, None, None, HashMap::new(), cookie, None, Default::default(), None, author_hint, dir_hint, false).await;
     Json(serde_json::json!({ "queued": id.is_some() }))
@@ -1775,7 +1928,7 @@ async fn ig_archive(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
 /// Queue the account's live story (if any) and every saved highlight,
 /// best-effort. No-op without a session cookie — stories/highlights need one.
 async fn queue_story_and_highlights(state: &Arc<AppState>, user: &str) {
-    let Some(cookie) = state.ig_cookie(None).await else { return };
+    let Some(cookie) = state.ig_cookie_for(user).await else { return };
     let cfg = state.config.settings.get().await.backends;
     let author = format!("@{user}");
     // Skip the story fetch entirely when there's no active story — otherwise
@@ -1837,7 +1990,7 @@ async fn archive_one_page(
     epoch: u64,
 ) -> Option<String> {
     let cfg = state.config.settings.get().await.backends;
-    let cookie = state.ig_cookie(None).await;
+    let cookie = state.ig_cookie_for(user).await;
     let (posts, next) = match state
         .instagram
         .profile_posts(user, cookie.as_deref(), &cfg.instagram, cursor)
@@ -2655,8 +2808,12 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
         return Json(default_sync_response(video_list(&state).await));
     };
 
-    if let Some(cached) = state.preview_cache.lock().await.get(&media.url).cloned() {
-        return Json(preview_response(video_list(&state).await, cached));
+    {
+        let cache = state.preview_cache.lock().await;
+        let hit = cache.get(&media.url).or_else(|| cache.get(&canonical_page_url(&media.url))).cloned();
+        if let Some(cached) = hit {
+            return Json(preview_response(video_list(&state).await, cached));
+        }
     }
 
     let client = state.manager.http_client();
@@ -2674,7 +2831,35 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
                 .map(|(url, _)| (url, if square { "square" } else { "image" })),
             _ => None,
         };
-        state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
+        // IG's API couldn't do it (throttled, expired story): use what the
+        // browser showed, else the account's stored avatar over a blank tile.
+        let from_api = result.is_some();
+        let browser_thumb = state.page_thumbs.lock().await.get(&canonical_page_url(&media.url)).cloned();
+        let result = match result {
+            Some(r) => Some(r),
+            None if browser_thumb.is_some() => browser_thumb,
+            None => match ig_caught_of(&media.url).and_then(|(account, _)| account) {
+                Some(acct) => {
+                    let avatar = state
+                        .ig_library
+                        .snapshot()
+                        .await
+                        .accounts
+                        .get(&acct.trim_start_matches('@').to_ascii_lowercase())
+                        .and_then(|a| a.avatar_url.clone());
+                    match avatar {
+                        Some(u) => fetch_image_data_url(&client, &u).await.map(|(url, _)| (url, "square")),
+                        None => None,
+                    }
+                }
+                None => None,
+            },
+        };
+        // Cache only what the API produced; a fallback must not stick once the
+        // API recovers. The backend already rate-limits its own retries.
+        if from_api {
+            state.preview_cache.lock().await.insert(media.url.clone(), result.clone());
+        }
         return Json(preview_response(video_list(&state).await, result));
     }
 
@@ -3129,6 +3314,7 @@ async fn set_monitoring(State(state): State<Arc<AppState>>, body: Bytes) -> Json
 async fn clear(State(state): State<Arc<AppState>>, _body: Bytes) -> Json<SyncResponse> {
     state.detected.lock().await.clear();
     state.preview_cache.lock().await.clear();
+    state.page_thumbs.lock().await.clear();
     state.quality_cache.lock().await.clear();
     Json(default_sync_response(video_list(&state).await))
 }

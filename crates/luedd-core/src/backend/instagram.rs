@@ -30,7 +30,6 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 const GRAPHQL: &str = "https://www.instagram.com/graphql/query/";
 const PROFILE_INFO: &str = "https://www.instagram.com/api/v1/users/web_profile_info/";
 const REELS_MEDIA: &str = "https://www.instagram.com/api/v1/feed/reels_media/";
-const TOPSEARCH: &str = "https://www.instagram.com/web/search/topsearch/?context=blended&query=";
 
 /// insta-graphql.md §5: "Sleep 1-3 s between pages. A tight cursor loop is the
 /// fastest way to a temporary block on the session." Delays and page cap are now
@@ -115,8 +114,9 @@ pub struct InstagramBackend {
     /// Viewer-read concurrency — its own pool so downloads can't starve it.
     read_slots: Semaphore,
     /// Panel-preview thumbnail (url, square) per page URL - the panel calls
-    /// `thumbnail()` on every visible row; `None` = looked, found nothing.
-    thumb_cache: tokio::sync::Mutex<HashMap<String, Option<(String, bool)>>>,
+    /// `thumbnail()` on every visible row; `None` = looked, found nothing -
+    /// only trusted for `META_TTL`, since a miss is usually IG throttling.
+    thumb_cache: tokio::sync::Mutex<HashMap<String, (Instant, Option<(String, bool)>)>>,
     /// Viewer metadata (headers, grid pages, reels, trays) keyed by a string,
     /// value JSON-serialised, 5-minute TTL. Cheap re-polls without hammering IG.
     meta_cache: tokio::sync::Mutex<HashMap<String, (Instant, Value)>>,
@@ -223,8 +223,10 @@ impl DownloadBackend for InstagramBackend {
     /// URL, cached. `square` is `true` for a 1:1 source (profile pic / highlight
     /// cover) so the panel sizes its slot to match.
     async fn thumbnail(&self, req: &DownloadReq) -> Result<Option<(String, bool)>> {
-        if let Some(hit) = self.thumb_cache.lock().await.get(&req.url).cloned() {
-            return Ok(hit);
+        if let Some((at, hit)) = self.thumb_cache.lock().await.get(&req.url).cloned() {
+            if hit.is_some() || at.elapsed() < META_TTL {
+                return Ok(hit);
+            }
         }
         let cfg = &req.config.instagram;
         let cookie =
@@ -253,7 +255,7 @@ impl DownloadBackend for InstagramBackend {
                 });
                 if let Some(pic) = pic {
                     let spec = (pic, true);
-                    self.thumb_cache.lock().await.insert(req.url.clone(), Some(spec.clone()));
+                    self.thumb_cache.lock().await.insert(req.url.clone(), (Instant::now(), Some(spec.clone())));
                     return Ok(Some(spec));
                 }
                 let doc_id = cfg.doc_id_timeline.as_deref().unwrap_or(DEFAULT_DOC_TIMELINE);
@@ -271,7 +273,14 @@ impl DownloadBackend for InstagramBackend {
             // reels_media REST endpoint the download does.
             Target::Stories(user) if cookie.is_some() => {
                 match self.resolve_user_id(user, cookie, cfg).await {
-                    Ok(uid) => self.reels_media(&format!("{uid}"), cookie, &cfg.app_id).await,
+                    Ok(uid) => {
+                        let tray = self.reels_media(&format!("{uid}"), cookie, &cfg.app_id).await;
+                        // the URL names one story: show that one, not the tray's first
+                        match story_id_of(&req.url) {
+                            Some(id) => tray.as_ref().and_then(|t| find_story_item(t, id)),
+                            None => tray,
+                        }
+                    }
                     Err(_) => None,
                 }
             }
@@ -282,7 +291,7 @@ impl DownloadBackend for InstagramBackend {
         };
 
         let spec = resp.as_ref().and_then(smallest_image_url).map(|u| (u, square));
-        self.thumb_cache.lock().await.insert(req.url.clone(), spec.clone());
+        self.thumb_cache.lock().await.insert(req.url.clone(), (Instant::now(), spec.clone()));
         Ok(spec)
     }
 
@@ -585,41 +594,6 @@ impl InstagramBackend {
 
     /// `GET /api/v1/feed/reels_media/?reel_ids=<id>` -> parsed JSON, or `None`.
     /// `reel_id` is already URL-encoded (`<uid>` or `highlight%3A<id>`).
-    /// `(user_id, profile_pic_url, full_name)` from the blended search endpoint.
-    /// Works for accounts with zero posts (unlike the timeline fallback) and IG
-    /// throttles it far less than `web_profile_info`. Best effort.
-    async fn search_user(
-        &self,
-        user: &str,
-        cookie: Option<&str>,
-        cfg: &super::InstagramConfig,
-    ) -> Option<(String, String, String)> {
-        let url = format!("{TOPSEARCH}{user}");
-        let text = self
-            .client
-            .get_text(&url, &ig_opts(cookie, "https://www.instagram.com/", &cfg.app_id))
-            .await
-            .ok()?;
-        let v = parse_ig_json(&text).ok()?;
-        let want = user.trim().to_ascii_lowercase();
-        for entry in v.get("users")?.as_array()? {
-            let u = entry.get("user").unwrap_or(entry);
-            let uname = u.get("username").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
-            if uname != want {
-                continue;
-            }
-            let id = u
-                .get("pk")
-                .and_then(|x| x.as_str().map(str::to_string).or_else(|| x.as_i64().map(|n| n.to_string())))
-                .or_else(|| u.get("pk_id").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_default();
-            let pic = u.get("profile_pic_url").and_then(Value::as_str).unwrap_or_default().to_string();
-            let name = u.get("full_name").and_then(Value::as_str).unwrap_or_default().to_string();
-            return Some((id, pic, name));
-        }
-        None
-    }
-
     async fn reels_media(&self, reel_id: &str, cookie: Option<&str>, app_id: &str) -> Option<Value> {
         let url = format!("{REELS_MEDIA}?reel_ids={reel_id}");
         let text = self
@@ -719,13 +693,6 @@ impl InstagramBackend {
                 return Ok(id);
             }
         }
-        // 3. Blended search - the only one that still answers for a 0-post account.
-        if let Some((id, _, _)) = self.search_user(user, cookie, cfg).await {
-            if !id.is_empty() {
-                self.cache_put(&ckey, &id).await;
-                return Ok(id);
-            }
-        }
         Err(anyhow!("Instagram: could not resolve a user id for @{user} (stale cookie?)"))
     }
 
@@ -793,7 +760,14 @@ impl InstagramBackend {
                 "__relay_internal__pv__PolarisFeedShareMenurelayprovider": true,
             });
             let referer = format!("https://www.instagram.com/{user}/");
-            if let Ok(resp) = self.gql(("doc_id", doc_id), &vars, cookie, &referer, &cfg.app_id).await {
+            let gres = self.gql(("doc_id", doc_id), &vars, cookie, &referer, &cfg.app_id).await;
+            if std::env::var("IG_DEBUG").is_ok() {
+                match &gres {
+                    Ok(r) => eprintln!("[ig] timeline fallback {user}: {}", r.to_string().chars().take(300).collect::<String>()),
+                    Err(e) => eprintln!("[ig] timeline fallback {user} error: {e}"),
+                }
+            }
+            if let Ok(resp) = gres {
                 if let Some(pic) = deep_find_hd_pic(&resp)
                     .or_else(|| deep_find_str(&resp, "profile_pic_url_hd"))
                     .or_else(|| deep_find_str(&resp, "profile_pic_url"))
@@ -808,23 +782,14 @@ impl InstagramBackend {
                 }
             }
         }
-        // Still nothing (e.g. a zero-post account the timeline query can't help
-        // with) — the blended search endpoint carries the avatar regardless.
-        if hdr.profile_pic_url.is_empty() {
-            if let Some((_, pic, name)) = self.search_user(user, cookie, cfg).await {
-                if !pic.is_empty() {
-                    hdr.profile_pic_url = pic;
-                }
-                if hdr.full_name.is_empty() && !name.is_empty() {
-                    hdr.full_name = name;
-                }
-            }
-        }
-        // a good header caches for the full TTL; an incomplete one caches briefly
-        // so repeated viewer opens don't each pay the timeline-fallback round-trip
-        if hdr.complete {
+        // a good header caches for the full TTL; a partial one caches briefly so
+        // repeated viewer opens don't each pay the timeline-fallback round-trip.
+        // A total miss is cached for the full TTL too: the viewer re-asks for
+        // every avatar-less account on each render, and every retry is another
+        // request at an already-throttled IG.
+        if hdr.complete || hdr.profile_pic_url.is_empty() && hdr.full_name.is_empty() {
             self.cache_put(&format!("hdr:{user}"), &hdr).await;
-        } else if !hdr.profile_pic_url.is_empty() || !hdr.full_name.is_empty() {
+        } else {
             self.cache_put_short(&format!("hdr:{user}"), &hdr).await;
         }
         hdr
@@ -838,7 +803,8 @@ impl InstagramBackend {
         cfg: &super::InstagramConfig,
         after: Option<&str>,
     ) -> Result<(Vec<PostMeta>, Option<String>)> {
-        let ckey = format!("posts:{user}:{}", after.unwrap_or(""));
+        // keyed per session: a private profile is empty for one account, full for another
+        let ckey = format!("posts:{user}:{}:{}", after.unwrap_or(""), viewer_tag(Self::ig_cookie(cfg, cookie)));
         if let Some(hit) = self.cache_get::<(Vec<PostMeta>, Option<String>)>(&ckey).await {
             return Ok(hit);
         }
@@ -901,7 +867,7 @@ impl InstagramBackend {
         cookie: Option<&str>,
         cfg: &super::InstagramConfig,
     ) -> Result<Vec<ReelItem>> {
-        let ckey = format!("story:{user}");
+        let ckey = format!("story:{user}:{}", viewer_tag(Self::ig_cookie(cfg, cookie)));
         if let Some(hit) = self.cache_get::<Vec<ReelItem>>(&ckey).await {
             return Ok(hit);
         }
@@ -1283,6 +1249,40 @@ fn best_resource(list: Option<&Value>, keys: &[&str]) -> Option<String> {
         }
     }
     best.map(|(s, _)| s)
+}
+
+/// Short opaque tag telling sessions apart in cache keys (never logged).
+fn viewer_tag(cookie: Option<&str>) -> String {
+    let sid = cookie
+        .and_then(|c| c.split(';').map(str::trim).find_map(|kv| kv.strip_prefix("sessionid=")))
+        .unwrap_or("");
+    sid.chars().rev().take(8).collect()
+}
+
+/// The numeric story id in `/stories/<user>/<id>/`, if the URL has one.
+fn story_id_of(url: &str) -> Option<&str> {
+    let rest = url.split("/stories/").nth(1)?;
+    let mut segs = rest.split(['/', '?', '#']).filter(|s| !s.is_empty());
+    segs.next()?;
+    segs.next().filter(|s| s.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The reel item whose `pk`/`id` is `id` (ids come as `<pk>` or `<pk>_<owner>`).
+fn find_story_item(v: &Value, id: &str) -> Option<Value> {
+    match v {
+        Value::Array(a) => a.iter().find_map(|x| find_story_item(x, id)),
+        Value::Object(m) => {
+            let pk = m
+                .get("pk")
+                .or_else(|| m.get("id"))
+                .and_then(|p| p.as_str().map(str::to_string).or_else(|| p.as_i64().map(|n| n.to_string())));
+            if m.contains_key("image_versions2") && pk.as_deref().is_some_and(|p| p.split('_').next() == Some(id)) {
+                return Some(v.clone());
+            }
+            m.values().find_map(|x| find_story_item(x, id))
+        }
+        _ => None,
+    }
 }
 
 /// *Smallest* `src`/`url` from a resource list - for a lightweight panel thumb.

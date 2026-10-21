@@ -377,13 +377,13 @@ export default class App {
         }
     }
 
-    async igProfileAction(user, action) {
+    async igProfileAction(user, action, picUrl) {
         if (!this.isMonitoringEnabled()) return false;
         if (action === "pic") {
             const p = await this.connector.postMessage("/ig/profile", { username: user });
-            const url = p && p.header && p.header.profile_pic_url;
+            const url = (p && p.header && p.header.profile_pic_url) || picUrl;
             if (!url) return false;
-            const r = await this.connector.postMessage("/ig/queue", { url });
+            const r = await this.connector.postMessage("/ig/queue", { url, user });
             return !!(r && r.queued);
         }
         if (action === "recent" || action === "all") {
@@ -820,7 +820,7 @@ export default class App {
             return true;
         }
         else if (request.type === "ig-profile" && request.username) {
-            this.igProfileAction(request.username, request.action).then(ok => sendResponse({ ok }));
+            this.igProfileAction(request.username, request.action, request.picUrl).then(ok => sendResponse({ ok }));
             return true;
         }
         else if (request.type === "bar-probe" && request.url) {
@@ -845,6 +845,16 @@ export default class App {
         // Content script on instagram.com reports the feed post currently in
         // centre view (and active stories) so browsing the feed catches posts
         // without opening each one.
+        else if (request.type === "ig-page-thumb" && request.pageUrl) {
+            if (this.isMonitoringEnabled()) {
+                this.connector.postMessage("/ig/pagethumb", {
+                    url: request.pageUrl, data: request.data || null,
+                    thumb_url: request.thumbUrl || null, square: !!request.square,
+                    alias: request.alias || null, private: !!request.private,
+                }).then(r => sendResponse({ ok: !!(r && r.ok) }));
+                return true;
+            }
+        }
         else if (request.type === "ig-feed-item" && request.url) {
             if (this.isMonitoringEnabled()) {
                 const tid = sender && sender.tab ? sender.tab.id : undefined;

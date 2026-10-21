@@ -67,6 +67,36 @@
   .acard .av img { width: 100%; height: 100%; object-fit: cover; }
   .acard .nm { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .acard .sub { color: var(--dim); font-size: 11px; margin-top: 3px; }
+  .avw { position: relative; width: 64px; height: 64px; margin: 0 auto 8px; }
+  .avw .av { margin: 0; }
+  .lockchip { position: absolute; right: -2px; bottom: -2px; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--warn); color: #1a1205; border: 2px solid var(--surface); display: flex; align-items: center; justify-content: center; }
+  .lockchip svg { width: 10px; height: 10px; }
+  .phead .pavw { position: relative; width: 90px; height: 90px; flex-shrink: 0; }
+  .phead .pavw .pav.priv { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--warn); }
+  .phead .pavw .lockchip { width: 28px; height: 28px; right: -4px; bottom: -4px; border-color: var(--bg); }
+  .phead .pavw .lockchip svg { width: 13px; height: 13px; }
+  .pavw .hov { position: absolute; inset: 0; border-radius: 50%; background: rgba(10,11,13,.62); color: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    font-size: 10px; font-weight: 600; opacity: 0; transition: opacity .12s; cursor: pointer; }
+  .pavw:hover .hov { opacity: 1; }
+  .pavw .hov svg { width: 18px; height: 18px; }
+  .pavw .viewbtn { position: absolute; top: -4px; right: -4px; width: 24px; height: 24px; padding: 0; border-radius: 50%;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity .12s; }
+  .pavw:hover .viewbtn { opacity: 1; }
+  .pavw .viewbtn svg { width: 12px; height: 12px; }
+  .phead .pbadge.priv { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; color: var(--warn);
+    background: rgba(240,162,74,.12); border-color: rgba(240,162,74,.45); border-radius: 999px; padding: 2px 8px 2px 6px; }
+  .phead .pbadge svg { width: 11px; height: 11px; }
+  .sepv { width: 1px; height: 22px; background: var(--line); margin: 0 2px; }
+  .dlbtn.off { background: var(--surface-2); color: var(--dim); border: 1px dashed var(--line); cursor: not-allowed; opacity: .75; }
+  .dlbtn.done { background: transparent; color: var(--good); border: 1px solid rgba(79,208,138,.4); }
+  .privbar { display: flex; gap: 10px; align-items: flex-start; margin: 0 18px 12px; padding: 10px 12px;
+    border: 1px solid rgba(240,162,74,.35); background: rgba(240,162,74,.07); border-radius: 8px; font-size: 12px; line-height: 1.5; }
+  .privbar.ok { border-color: var(--line); background: transparent; color: var(--dim); }
+  .privbar svg { width: 15px; height: 15px; color: var(--warn); flex-shrink: 0; margin-top: 2px; }
+  .privbar.ok svg { color: var(--dim); }
   .resolving { padding: 10px 16px; font-size: 11px; color: var(--dim); }
 
   .phead { display: flex; gap: 18px; padding: 20px 18px 12px; align-items: flex-start; }
@@ -375,7 +405,8 @@
       if (a.avatar) avatarCache.set(a.username, a.avatar);
       const avInner = url ? `<img src="${esc(img(url))}" alt="" onerror="this.remove()">`
         : `<span>${esc((a.username[0] || "?").toUpperCase())}</span>`;
-      card.innerHTML = `<div class="av">${avInner}</div>`
+      const lock = a.is_private === true ? `<span class="lockchip" title="${esc(L("viewer_private"))}">${IC_LOCK}</span>` : "";
+      card.innerHTML = `<div class="avw"><div class="av">${avInner}</div>${lock}</div>`
         + `<div class="nm">@${esc(a.username)}</div>`
         + `<div class="sub">${esc(a.caught_count)} ${esc(L("viewer_caught"))} · ${esc((a.kinds || []).join(" · "))}</div>`;
       card.addEventListener("click", () => openProfile(a.username));
@@ -544,10 +575,14 @@
     function paintHeader(h, opts) {
       opts = opts || {};
       hd.className = "phead";
-      hd.innerHTML = `<div class="pav"><span>${esc((username[0] || "?").toUpperCase())}</span></div>`
+      curHeader = h;
+      hd.innerHTML = `<div class="pavw"><div class="pav${h.is_private ? " priv" : ""}"><span>${esc((username[0] || "?").toUpperCase())}</span></div>`
+        +   `<div class="hov" id="pic-save">${IC_DL2}${esc(L("viewer_save_pic"))}</div>`
+        +   `<button class="viewbtn" id="pic-view" title="${esc(L("viewer_view_pic"))}" hidden>${IC_EYE}</button>`
+        +   (h.is_private ? `<span class="lockchip">${IC_LOCK}</span>` : "") + `</div>`
         + `<div class="pmeta"><div class="prow1"><span class="puser">@${esc(h.username || username)}</span>`
         +   (h.is_verified ? `<span class="pverif" title="verified">✔</span>` : "")
-        +   (h.is_private ? `<span class="pbadge">${esc(L("viewer_private"))}</span>` : "") + `</div>`
+        +   (h.is_private ? `<span class="pbadge priv">${IC_LOCK}${esc(L("viewer_private"))}</span>` : "") + `</div>`
         +   (h.full_name ? `<div class="pname">${esc(h.full_name)}</div>` : "")
         +   (h.biography ? `<div class="pbio">${esc(h.biography)}</div>` : "")
         +   (h.external_url ? `<div class="plink"><a href="#" id="p-ext">${esc(h.external_url)}</a></div>` : "")
@@ -557,8 +592,9 @@
         avatarCache.set(username, h.profile_pic_url);
         const pav = hd.querySelector(".pav");
         pav.innerHTML = `<img src="${esc(img(h.profile_pic_url))}" alt="">`;
-        pav.classList.add("clickable");
-        pav.addEventListener("click", () => {
+        const vb = hd.querySelector("#pic-view");
+        vb.hidden = false;
+        vb.addEventListener("click", () => {
           openOverlay([{ media_url: h.profile_pic_url, thumb_url: h.profile_pic_url, is_video: false }],
             `https://www.instagram.com/${username}/`, h.full_name || "@" + username, "@" + username);
         });
@@ -566,6 +602,7 @@
         const pav = hd.querySelector(".pav");
         pav.innerHTML = `<img src="${esc(img(avatarCache.get(username)))}" alt="">`;
       }
+      hd.querySelector("#pic-save").addEventListener("click", () => saveAvatar(username));
       const ext = hd.querySelector("#p-ext");
       if (ext) ext.addEventListener("click", e => { e.preventDefault(); try { window.__TAURI__.core.invoke("open_external_url", { url: h.external_url }); } catch (_) {} });
       document.getElementById("p-note")?.remove();
@@ -816,6 +853,9 @@
 
   const IC_CHK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
   const IC_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+  const IC_LOCK = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M4.5 7V5a3.5 3.5 0 1 1 7 0v2H13a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h1.5Zm1.5 0h4V5a2 2 0 1 0-4 0v2Z"/></svg>';
+  const IC_USER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c.8-4 4-6 8-6s7.2 2 8 6"/></svg>';
+  const IC_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
   const IC_DL2 = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>';
   const IC_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
   const IC_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
@@ -860,6 +900,33 @@
     if (dk !== lastDoneKey) { lastDoneKey = dk; applyPfilt(); }
   }
 
+  let curHeader = null, picState = "idle";
+  async function saveAvatar(username) {
+    const url = avatarCache.get(username) || (curHeader && curHeader.profile_pic_url);
+    if (!url) { toast(L("cant_reach")); return; }
+    if (picState === "saving") return;
+    picState = "saving"; paintButton(username);
+    const r = await post("/ig/queue", { url, user: username });
+    if (!(r && r.queued)) { toast(L("cant_reach")); picState = "idle"; paintButton(username); return; }
+    picState = "saved"; paintButton(username);
+    setTimeout(() => { if (picState === "saved") { picState = "idle"; paintButton(username); } }, 3000);
+  }
+
+  // Private profile the logged-in account can't see: no post cells once loading is done.
+  function privLocked() {
+    return !!(curHeader && curHeader.is_private) && !postsLoading
+      && !document.querySelector("#posts-grid .cell[data-sc]");
+  }
+
+  function paintPrivBar() {
+    document.getElementById("p-priv")?.remove();
+    if (!(curHeader && curHeader.is_private)) return;
+    const locked = privLocked();
+    if (!locked && postsLoading) return;
+    document.getElementById("p-head").insertAdjacentHTML("afterend",
+      `<div class="privbar${locked ? "" : " ok"}" id="p-priv">${IC_LOCK}<div>${esc(L(locked ? "viewer_private_note" : "viewer_private_visible"))}</div></div>`);
+  }
+
   function paintButton(username) {
     if (username !== currentUser) return;
     const s = archState || {};
@@ -885,12 +952,26 @@
       } else {
         // Idle / done. "Newest 24" only queues posts not already on disk, so it
         // doubles as "check for new". No auto "download all".
-        pdl.innerHTML = `<button class="dlbtn" id="dl-recent">${IC_DL2}${esc(L("archv_recent"))}</button>`
-          + `<button class="dlbtn ghost2" id="dl-all">${IC_DL2}${esc(L("archv_everything"))}</button>`
-          + (dn ? `<span class="dldone">${IC_CHK}${dn} ${esc(L("archv_on_disk"))}</span>` : "");
-        pdl.querySelector("#dl-recent").onclick = () => archiveAction(username, "recent");
-        pdl.querySelector("#dl-all").onclick = () => archiveAction(username, "all");
+        const off = privLocked() && !dn;
+        const tip = esc(L("viewer_private_locked"));
+        pdl.innerHTML = off
+          ? `<button class="dlbtn off" id="dl-recent" disabled title="${tip}">${IC_LOCK}${esc(L("archv_recent"))}</button>`
+            + `<button class="dlbtn off" id="dl-all" disabled title="${tip}">${IC_LOCK}${esc(L("archv_everything"))}</button>`
+          : `<button class="dlbtn" id="dl-recent">${IC_DL2}${esc(L("archv_recent"))}</button>`
+            + `<button class="dlbtn ghost2" id="dl-all">${IC_DL2}${esc(L("archv_everything"))}</button>`
+            + (dn ? `<span class="dldone">${IC_CHK}${dn} ${esc(L("archv_on_disk"))}</span>` : "");
+        if (!off) {
+          pdl.querySelector("#dl-recent").onclick = () => archiveAction(username, "recent");
+          pdl.querySelector("#dl-all").onclick = () => archiveAction(username, "all");
+        }
       }
+      const hasPic = !!(avatarCache.get(username) || (curHeader && curHeader.profile_pic_url));
+      const pcls = picState === "saved" ? "dlbtn done" : "dlbtn ghost2";
+      const plabel = picState === "saving" ? L("viewer_saving") : picState === "saved" ? L("viewer_saved") : L("viewer_profile_pic");
+      pdl.insertAdjacentHTML("beforeend",
+        `<span class="sepv"></span><button class="${pcls}" id="dl-pic"${hasPic && picState !== "saving" ? "" : " disabled"}>${picState === "saved" ? IC_CHK : IC_USER}${esc(plabel)}</button>`);
+      pdl.querySelector("#dl-pic").onclick = () => saveAvatar(username);
+      paintPrivBar();
     }
     if (selMode) updateSelBar();
   }

@@ -671,7 +671,17 @@
       }
     }
     delete col.dataset.loading;
-    if (!data) return; // no preview available - keep the placeholder icon (retries on scroll)
+    if (!data) {
+      // IG stories/profiles get their image from the browser a moment after the
+      // detection lands, so the first ask can miss: retry a few times.
+      const tries = +(col.dataset.tries || 0);
+      const gaps = [600, 800, 1000, 1500, 2000, 3000, 5000, 8000];
+      if (providerOf(item) === "Lüdd-Insta" && tries < gaps.length) {
+        col.dataset.tries = tries + 1;
+        setTimeout(() => loadPreview(item, col), gaps[tries]);
+      }
+      return; // no preview available - keep the placeholder icon (retries on scroll)
+    }
     col.dataset.loaded = "1";
     col.title = ""; col.classList.remove("preview-failed");
 

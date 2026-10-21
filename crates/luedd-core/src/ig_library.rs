@@ -40,6 +40,9 @@ pub struct IgAccount {
     /// When `avatar_url` was last refreshed (unix seconds).
     #[serde(default)]
     pub avatar_at: i64,
+    /// Whether IG reported the profile as private (`None` = never looked up).
+    #[serde(default)]
+    pub is_private: Option<bool>,
     /// A running / paused / finished "download the whole profile" job. Kept
     /// here so a restart can offer to resume it.
     #[serde(default)]
@@ -143,6 +146,7 @@ impl IgLibraryStore {
                 caught: Vec::new(),
                 avatar_url: None,
                 avatar_at: 0,
+                is_private: None,
                 archive: None,
             });
             acct.last_seen = now();
@@ -183,6 +187,7 @@ impl IgLibraryStore {
                 caught: Vec::new(),
                 avatar_url: None,
                 avatar_at: 0,
+                is_private: None,
                 archive: None,
             });
             if acct.username.is_empty() {
@@ -236,6 +241,22 @@ impl IgLibraryStore {
         self.save().await
     }
 
+    /// Remember whether an account is private (no-op for an unknown account or
+    /// an unchanged value).
+    pub async fn set_private(&self, account: &str, private: bool) -> Result<()> {
+        {
+            let mut lib = self.data.write().await;
+            let Some(acct) = lib.accounts.get_mut(&account.to_ascii_lowercase()) else {
+                return Ok(());
+            };
+            if acct.is_private == Some(private) {
+                return Ok(());
+            }
+            acct.is_private = Some(private);
+        }
+        self.save().await
+    }
+
     /// The archive job for an account, if any.
     pub async fn archive_of(&self, account: &str) -> Option<ArchiveJob> {
         self.data.read().await.accounts.get(&account.to_ascii_lowercase()).and_then(|a| a.archive.clone())
@@ -254,6 +275,7 @@ impl IgLibraryStore {
                 caught: Vec::new(),
                 avatar_url: None,
                 avatar_at: 0,
+                is_private: None,
                 archive: None,
             });
             if acct.username.is_empty() {

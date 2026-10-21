@@ -23,7 +23,8 @@
 
     function codeOf(href) {
         const m = (href || "").match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
-        if (!m) return null;
+        // /reels/audio/<id>/ is a music page, not a reel
+        if (!m || /^(audio|tags|locations|explore)$/.test(m[2])) return null;
         return { kind: m[1] === "reels" ? "reel" : m[1], code: m[2] };
     }
 
