@@ -131,8 +131,9 @@
   .status-Cancelled { color: var(--dim); }
   .status-Paused { color: var(--warn); }
   .status-Seeding { color: var(--good); }
-  /* Finished: the green dot pings - a ring expands outward and fades, then repeats */
-  .status-Finished::before { animation: ping 1.5s ease-out infinite; }
+  /* Finished: the green dot pings once - a ring expands outward and fades. Not
+     infinite: a repainting box-shadow on every finished row kept the renderer busy. */
+  .status-Finished::before { animation: ping 1.5s ease-out 1; }
   @keyframes ping {
     0%   { box-shadow: 0 0 0 0 rgba(79,208,138,.55); }
     100% { box-shadow: 0 0 0 5px rgba(79,208,138,0); }
@@ -1319,6 +1320,136 @@ function dismissBootSpinner() {
   setTimeout(() => document.getElementById("boot-spinner")?.remove(), wait);
 }
 
+
+// Table rows persist across refresh() ticks, keyed by entry id. Rebuilding the
+// whole tbody every 2s restarted every CSS animation and re-bound ~8 listener
+// sets per row; now a row's DOM is only touched when its rendered HTML changed.
+// Listeners live once on #rows (delegated), see wireRowsOnce().
+const rowEls = new Map();   // id -> { tr, det, trHtml, detSig }
+
+function rowCellsHtml(e, tor, isOpen) {
+  return `
+      <td class="toggle-col"><button class="details-toggle-btn${isOpen ? " open" : ""}" data-id="${e.id}" title="${t("details")}">${CARET}</button></td>
+      <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${e.id}" ${selected.has(e.id) ? "checked" : ""} /></td>
+      <td class="id id-col">${e.id.slice(0, 8)}</td>
+      <td class="kind-col">${tor ? "Torrent" : kindLabel(e.kind)}</td>
+      ${tor ? torStatusHtml(e) : `<td class="status-${e.status} status-col">${statusLabel(e.status)}</td>`}
+      <td class="progress-col">${tor ? torProgressHtml(e) : formatProgress(e)}</td>
+      <td class="speed-text speed-col">${tor ? torSpeedHtml(e) : formatSpeed(e)}</td>
+      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;${t("dbl_copy")}">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span>${s.mid ? `<span class="u-mid">${s.mid}</span>` : ""}<span class="u-tail">${s.tail}</span></span>`; })()}</td>
+      <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n" + t("dbl_copy") : ""}">${e.error ?? ""}</td>
+      <td class="actions-col"><div class="actions">
+        ${primaryActionBtn(e)}
+        <button class="small secondary icon-act open-folder-btn" data-id="${e.id}" title="${t("open_folder")}" aria-label="${t("open_folder")}">${ICONS.folder}</button>
+        <button class="small danger icon-act remove-btn" data-id="${e.id}" title="${t("remove")}" aria-label="${t("remove")}">${ICONS.trash}</button>
+      </div></td>
+  `;
+}
+
+function detailsCellsHtml(e, tor) {
+  let site = "";
+  try { site = new URL(e.url).host; } catch { site = t("val_unknown"); }
+  const headerNames = Object.keys(e.headers ?? {});
+  return tor ? `<td colspan="10" class="details-cell">${torDetailCell(e)}</td>` : `
+      <td colspan="10" class="details-cell">
+        <div class="detgrid">
+          <div></div>
+          <dl class="df">
+            <dt>${t("d_provider")}</dt><dd>${providerLabel(e.backend_id)}</dd>
+            <dt>${t("d_site")}</dt><dd>${site}</dd>
+            <dt>${t("d_full_link")}</dt><dd class="selectable">${e.url}</dd>
+            <dt>${t("d_saving_to")}</dt><dd class="selectable">${e.dest}</dd>
+            <dt>${t("d_headers")}</dt><dd>${headerNames.length ? headerNames.join(", ") : t("val_none")}</dd>
+            <dt>${t("d_cookie")}</dt><dd>${e.cookie ? t("val_yes") : t("val_no")}</dd>
+            <dt>${t("d_added")}</dt><dd>${new Date(e.created_at * 1000).toLocaleString(window.I18N.lang)}</dd>
+          </dl>
+          <div class="det-preview">
+            <div class="det-thumb" data-id="${e.id}" data-dest="${(e.dest ?? "").replace(/"/g, "&quot;")}"><span class="glyph">${previewGlyph(e.dest)}</span></div>
+            <div class="det-cap"></div>
+          </div>
+        </div>
+      </td>
+  `;
+}
+
+let rowsWired = false;
+function wireRowsOnce(rows) {
+  if (rowsWired) return;
+  rowsWired = true;
+  const entryOf = id => (window.__lastEntries || []).find(x => x.id === id);
+  rows.addEventListener("change", ev => {
+    const chk = ev.target.closest(".row-chk");
+    if (!chk) return;
+    if (chk.checked) selected.add(chk.dataset.id); else selected.delete(chk.dataset.id);
+    const vis = window.__visibleEntries || [];
+    document.getElementById("select-all-chk").checked = vis.length > 0 && vis.every(e => selected.has(e.id));
+    updateBulkButtons();
+  });
+  rows.addEventListener("click", async ev => {
+    const el = ev.target;
+    const btn = el.closest("button");
+    if (btn && rows.contains(btn)) {
+      const id = btn.dataset.id;
+      if (btn.classList.contains("details-toggle-btn")) {
+        const detailsTr = rows.querySelector(`.details-row[data-id="${id}"]`);
+        if (!detailsTr) return;
+        const nowOpen = detailsTr.style.display === "none";
+        detailsTr.style.display = nowOpen ? "table-row" : "none";
+        btn.classList.toggle("open", nowOpen);
+        const ent = entryOf(id);
+        if (nowOpen) {
+          detailsOpen.add(id);
+          if (ent && isTor(ent)) { refreshTorDetail(ent, true); armTorPoll(); }
+          else loadDetailPreview(detailsTr);
+        } else {
+          detailsOpen.delete(id);
+        }
+      } else if (btn.classList.contains("retry-btn") || btn.classList.contains("resume-btn")) {
+        await invoke("retry_entry", { id });
+        await refresh();
+      } else if (btn.classList.contains("pause-btn")) {
+        await invoke("pause_entry", { id });
+        await refresh();
+      } else if (btn.classList.contains("open-file-btn")) {
+        const entry = entryOf(id);
+        if (entry) await invoke("open_file", { path: entry.dest });
+      } else if (btn.classList.contains("open-folder-btn")) {
+        const entry = entryOf(id);
+        if (entry) await invoke("open_containing_folder", { path: entry.dest });
+      } else if (btn.classList.contains("remove-btn")) {
+        const { confirmed, deleteFiles } = await confirmAction(t("confirm_remove_one"));
+        if (!confirmed) return;
+        await invoke("remove_entry", { id, deleteFiles });
+        await refresh();
+      }
+      return;
+    }
+    // plain row click toggles its checkbox
+    const tr = el.closest("tr.data-row");
+    if (!tr || el.closest("input, a")) return;
+    if (window.getSelection && String(window.getSelection())) return;
+    const chk = tr.querySelector(".row-chk");
+    chk.checked = !chk.checked;
+    chk.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  rows.addEventListener("dblclick", async ev => {
+    const cell = ev.target.closest(".copy-url");
+    if (!cell) return;
+    const entry = entryOf(cell.dataset.id);
+    if (!entry) return;
+    const value = cell.dataset.field === "error" ? entry.error : entry.url;
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      const original = cell.innerHTML;
+      cell.textContent = t("copied");
+      setTimeout(() => { cell.innerHTML = original; }, 700);
+    } catch (err) {
+      console.error("clipboard write failed", err);
+    }
+  });
+}
+
 async function refresh() {
   let entries;
   try {
@@ -1347,78 +1478,57 @@ async function refresh() {
   updateFilterUI(entries.length, visible.length);
 
   const rows = document.getElementById("rows");
-  rows.innerHTML = "";
+  wireRowsOnce(rows);
+  window.__visibleEntries = visible;
+  const desired = [];
+  const seenIds = new Set();
   for (const e of visible) {
-    const tr = document.createElement("tr");
-    tr.className = "data-row";
-    tr.dataset.id = e.id;
+    seenIds.add(e.id);
     const tor = isTor(e);
-    if (tor) tr.dataset.tor = "1";
     const isOpen = detailsOpen.has(e.id);
-    tr.innerHTML = `
-      <td class="toggle-col"><button class="details-toggle-btn${isOpen ? " open" : ""}" data-id="${e.id}" title="${t("details")}">${CARET}</button></td>
-      <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${e.id}" ${selected.has(e.id) ? "checked" : ""} /></td>
-      <td class="id id-col">${e.id.slice(0, 8)}</td>
-      <td class="kind-col">${tor ? "Torrent" : kindLabel(e.kind)}</td>
-      ${tor ? torStatusHtml(e) : `<td class="status-${e.status} status-col">${statusLabel(e.status)}</td>`}
-      <td class="progress-col">${tor ? torProgressHtml(e) : formatProgress(e)}</td>
-      <td class="speed-text speed-col">${tor ? torSpeedHtml(e) : formatSpeed(e)}</td>
-      <td class="url-col copy-url" data-id="${e.id}" data-field="url" title="${e.url}&#10;${t("dbl_copy")}">${(() => { const s = splitUrl(e.url); return `<span class="url"><span class="u-origin">${s.origin}</span>${s.mid ? `<span class="u-mid">${s.mid}</span>` : ""}<span class="u-tail">${s.tail}</span></span>`; })()}</td>
-      <td class="error error-col copy-url" data-id="${e.id}" data-field="error" title="${(e.error ?? "").replace(/"/g, "&quot;")}${e.error ? "\n" + t("dbl_copy") : ""}">${e.error ?? ""}</td>
-      <td class="actions-col"><div class="actions">
-        ${primaryActionBtn(e)}
-        <button class="small secondary icon-act open-folder-btn" data-id="${e.id}" title="${t("open_folder")}" aria-label="${t("open_folder")}">${ICONS.folder}</button>
-        <button class="small danger icon-act remove-btn" data-id="${e.id}" title="${t("remove")}" aria-label="${t("remove")}">${ICONS.trash}</button>
-      </div></td>
-    `;
-    rows.appendChild(tr);
+    const trHtml = rowCellsHtml(e, tor, isOpen);
+    let r = rowEls.get(e.id);
+    if (!r) {
+      const tr = document.createElement("tr");
+      tr.className = "data-row";
+      tr.dataset.id = e.id;
+      if (tor) tr.dataset.tor = "1";
+      const det = document.createElement("tr");
+      det.className = "details-row";
+      det.dataset.id = e.id;
+      r = { tr, det, trHtml: null, detSig: null };
+      rowEls.set(e.id, r);
+    }
+    if (r.trHtml !== trHtml) { r.tr.innerHTML = trHtml; r.trHtml = trHtml; }
 
-    const detailsTr = document.createElement("tr");
-    detailsTr.className = "details-row";
-    detailsTr.dataset.id = e.id;
-    detailsTr.style.display = isOpen ? "table-row" : "none";
-    let site = "";
-    try { site = new URL(e.url).host; } catch { site = t("val_unknown"); }
-    const headerNames = Object.keys(e.headers ?? {});
-    detailsTr.innerHTML = tor ? `<td colspan="10" class="details-cell">${torDetailCell(e)}</td>` : `
-      <td colspan="10" class="details-cell">
-        <div class="detgrid">
-          <div></div>
-          <dl class="df">
-            <dt>${t("d_provider")}</dt><dd>${providerLabel(e.backend_id)}</dd>
-            <dt>${t("d_site")}</dt><dd>${site}</dd>
-            <dt>${t("d_full_link")}</dt><dd class="selectable">${e.url}</dd>
-            <dt>${t("d_saving_to")}</dt><dd class="selectable">${e.dest}</dd>
-            <dt>${t("d_headers")}</dt><dd>${headerNames.length ? headerNames.join(", ") : t("val_none")}</dd>
-            <dt>${t("d_cookie")}</dt><dd>${e.cookie ? t("val_yes") : t("val_no")}</dd>
-            <dt>${t("d_added")}</dt><dd>${new Date(e.created_at * 1000).toLocaleString(window.I18N.lang)}</dd>
-          </dl>
-          <div class="det-preview">
-            <div class="det-thumb" data-id="${e.id}" data-dest="${(e.dest ?? "").replace(/"/g, "&quot;")}"><span class="glyph">${previewGlyph(e.dest)}</span></div>
-            <div class="det-cap"></div>
-          </div>
-        </div>
-      </td>
-    `;
-    rows.appendChild(detailsTr);
+    const disp = isOpen ? "table-row" : "none";
+    if (r.det.style.display !== disp) r.det.style.display = disp;
     if (tor) {
-      const grid = detailsTr.querySelector(".detgrid.tor");
-      const host = torHost[e.id] || torMakeHost(e);
-      grid.appendChild(host);          // move the cached node — keeps scroll + gesture
-      torApplyScroll(e.id, host);
+      // The torrent panel is a cached node; the cell is only a skeleton.
+      if (r.detSig === null) {
+        r.det.innerHTML = `<td colspan="10" class="details-cell">${torDetailCell(e)}</td>`;
+        const grid = r.det.querySelector(".detgrid.tor");
+        const host = torHost[e.id] || torMakeHost(e);
+        grid.appendChild(host);          // move the cached node - keeps scroll + gesture
+        torApplyScroll(e.id, host);
+        r.detSig = "tor";
+      }
       if (isOpen && !torDetail[e.url]) refreshTorDetail(e, true);
-    } else if (isOpen) loadDetailPreview(detailsTr);
-
-    tr.addEventListener("click", (ev) => {
-      if (ev.target.closest("button, input, a")) return;
-      if (window.getSelection && String(window.getSelection())) return;
-      const chk = tr.querySelector(".row-chk");
-      chk.checked = !chk.checked;
-      chk.dispatchEvent(new Event("change"));
-    });
+    } else {
+      // Status in the sig so the preview reloads when a download finishes.
+      const cells = detailsCellsHtml(e, false);
+      const detSig = cells + "|" + e.status;
+      if (r.detSig !== detSig) {
+        r.det.innerHTML = cells;
+        r.detSig = detSig;
+        if (isOpen) loadDetailPreview(r.det);
+      }
+    }
+    desired.push(r.tr, r.det);
   }
 
-  // drop cached torrent panels for entries that are gone
+  // drop rows / cached torrent panels for entries that are gone
+  for (const id of [...rowEls.keys()]) if (!seenIds.has(id)) rowEls.delete(id);
   for (const id of Object.keys(torHost)) {
     if (!liveIds.has(id)) { delete torHost[id]; delete torScroll[id]; delete torScrollAt[id]; }
   }
@@ -1427,89 +1537,16 @@ async function refresh() {
     const tr = document.createElement("tr");
     const msg = entries.length === 0 ? t("no_downloads") : t("no_matches");
     tr.innerHTML = `<td colspan="10" class="empty">${msg}</td>`;
-    rows.appendChild(tr);
+    desired.push(tr);
   }
 
-  rows.querySelectorAll(".row-chk").forEach(chk => {
-    chk.addEventListener("change", () => {
-      if (chk.checked) selected.add(chk.dataset.id); else selected.delete(chk.dataset.id);
-      document.getElementById("select-all-chk").checked = visible.length > 0 && visible.every(e => selected.has(e.id));
-      updateBulkButtons();
-    });
-  });
-  rows.querySelectorAll(".details-toggle-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const id = btn.dataset.id;
-      const detailsTr = rows.querySelector(`.details-row[data-id="${id}"]`);
-      if (!detailsTr) return;
-      const nowOpen = detailsTr.style.display === "none";
-      detailsTr.style.display = nowOpen ? "table-row" : "none";
-      btn.classList.toggle("open", nowOpen);
-      const ent = (window.__lastEntries || []).find(x => x.id === id);
-      if (nowOpen) {
-        detailsOpen.add(id);
-        if (ent && isTor(ent)) { refreshTorDetail(ent, true); armTorPoll(); }
-        else loadDetailPreview(detailsTr);
-      } else {
-        detailsOpen.delete(id);
-      }
-    });
-  });
-  rows.querySelectorAll(".retry-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      await invoke("retry_entry", { id: btn.dataset.id });
-      await refresh();
-    });
-  });
-  rows.querySelectorAll(".resume-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      await invoke("retry_entry", { id: btn.dataset.id });
-      await refresh();
-    });
-  });
-  rows.querySelectorAll(".pause-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      await invoke("pause_entry", { id: btn.dataset.id });
-      await refresh();
-    });
-  });
-  rows.querySelectorAll(".open-file-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const entry = entries.find(x => x.id === btn.dataset.id);
-      if (entry) await invoke("open_file", { path: entry.dest });
-    });
-  });
-  rows.querySelectorAll(".open-folder-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const entry = entries.find(x => x.id === btn.dataset.id);
-      if (!entry) return;
-      await invoke("open_containing_folder", { path: entry.dest });
-    });
-  });
-  rows.querySelectorAll(".remove-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const { confirmed, deleteFiles } = await confirmAction(t("confirm_remove_one"));
-      if (!confirmed) return;
-      await invoke("remove_entry", { id: btn.dataset.id, deleteFiles });
-      await refresh();
-    });
-  });
-  rows.querySelectorAll(".copy-url").forEach(cell => {
-    cell.addEventListener("dblclick", async () => {
-      const entry = entries.find(x => x.id === cell.dataset.id);
-      if (!entry) return;
-      const value = cell.dataset.field === "error" ? entry.error : entry.url;
-      if (!value) return;
-      try {
-        await navigator.clipboard.writeText(value);
-        const original = cell.innerHTML;
-        cell.textContent = t("copied");
-        setTimeout(() => { cell.innerHTML = original; }, 700);
-      } catch (err) {
-        console.error("clipboard write failed", err);
-      }
-    });
-  });
+  // Reorder in place: only nodes out of position move, the rest stay untouched.
+  let cur = rows.firstChild;
+  for (const node of desired) {
+    if (node === cur) cur = cur.nextSibling;
+    else rows.insertBefore(node, cur);
+  }
+  while (cur) { const nx = cur.nextSibling; cur.remove(); cur = nx; }
 
   document.getElementById("select-all-chk").checked = visible.length > 0 && visible.every(e => selected.has(e.id));
   updateBulkButtons();
@@ -1663,12 +1700,18 @@ function syncPluginViews(entries, visible) {
   row.hidden = false;
   const tab = (id, label, n) =>
     `<span class="view-tab ${currentView === id ? "on" : ""}" data-view="${esc(id)}">${esc(label)}<span class="vc">${n}</span></span>`;
-  row.innerHTML = tab("all", t("view_all"), entries.length)
+  const html = tab("all", t("view_all"), entries.length)
     + [...counts.keys()].sort().map(p => tab(p, p, counts.get(p))).join("");
-  row.querySelectorAll(".view-tab").forEach(el => el.addEventListener("click", () => {
-    currentView = el.dataset.view;
-    refresh();
-  }));
+  if (row._html !== html) { row.innerHTML = html; row._html = html; }
+  if (!row._wired) {
+    row._wired = true;
+    row.addEventListener("click", ev => {
+      const el = ev.target.closest(".view-tab");
+      if (!el) return;
+      currentView = el.dataset.view;
+      refresh();
+    });
+  }
 
   if (currentView === "all" || currentView === TORRENT_LABEL) {
     // Torrents render in the real table (scoped in refresh()), not a plugin view.
