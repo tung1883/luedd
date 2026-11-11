@@ -61,6 +61,13 @@ pub async fn run_http(
     Ok(dest.to_path_buf())
 }
 
+/// A small file of unknown size (an Instagram CDN image / clip): one GET, no
+/// probe, no resume state. See [`progressive::download_simple`].
+pub async fn run_http_simple(client: &HttpClient, url: &str, dest: &Path, ctx: &RequestContext) -> Result<PathBuf> {
+    progressive::download_simple(client, url, dest, ctx).await?;
+    Ok(dest.to_path_buf())
+}
+
 pub async fn run_hls(
     client: &HttpClient,
     url: &str,

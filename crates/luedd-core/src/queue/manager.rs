@@ -336,9 +336,11 @@ async fn delete_artifacts(entry: &DownloadEntry) {
         }
     }
     tokio::fs::remove_file(&entry.dest).await.ok();
+    tokio::fs::remove_file(crate::progressive::partial_path_for(&entry.dest)).await.ok();
     tokio::fs::remove_dir_all(crate::naming::cache_dir_for(&entry.dest)).await.ok();
     for f in &entry.extra_files {
         tokio::fs::remove_file(f).await.ok();
+        tokio::fs::remove_file(crate::progressive::partial_path_for(f)).await.ok();
         tokio::fs::remove_dir_all(crate::naming::cache_dir_for(f)).await.ok();
     }
 }

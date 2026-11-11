@@ -23,6 +23,11 @@ librqbit-core = { workspace = true, optional = true }
 luedd-net = { path = "../luedd-net" }
 luedd-media = { path = "../luedd-media" }
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus"] }
+
 [features]
 default = ["torrent"]
 torrent = ["dep:librqbit", "dep:librqbit-core"]
+# only used by examples/bench_download.rs to pick the new code paths
+bench_new = []

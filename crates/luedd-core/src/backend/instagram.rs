@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use luedd_net::{HttpClient, ProgressTracker, ProgressTx, RequestContext};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -53,8 +54,166 @@ static CAPTURED: std::sync::Mutex<Option<HashMap<String, (Instant, Value)>>> = s
 const CAPTURE_TTL: Duration = Duration::from_secs(6 * 3600);
 const CAPTURE_MAX: usize = 300;
 
-/// Keep the media object the browser captured for `code`.
+/// The fields of a user/owner object the app reads.
+fn slim_user(u: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for k in ["username", "pk", "id", "full_name", "is_private"] {
+        if let Some(x) = u.get(k) {
+            out.insert(k.to_string(), x.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// A resource list (`candidates`, `video_versions`, ...) cut down to `keys`.
+///
+/// Only the largest and the smallest entry can ever be picked (`best_resource` /
+/// `smallest_resource`), so the others - a dozen signed ~600-char URLs per
+/// image - are dropped. The same tie rules as those two functions decide which.
+fn slim_list(list: &Value, keys: &[&str]) -> Value {
+    match list.as_array() {
+        Some(a) => Value::Array(
+            prune_to_extremes(a)
+                .into_iter()
+                .map(|r| {
+                    let mut o = serde_json::Map::new();
+                    for k in keys {
+                        if let Some(x) = r.get(*k) {
+                            o.insert((*k).to_string(), x.clone());
+                        }
+                    }
+                    Value::Object(o)
+                })
+                .collect(),
+        ),
+        None => list.clone(), // e.g. a `null` video_versions on an image item
+    }
+}
+
+/// The entries `best_resource` (last maximum width) and `smallest_resource`
+/// (first minimum width) would choose, in their original order.
+fn prune_to_extremes(items: &[Value]) -> Vec<&Value> {
+    let width = |r: &Value| r.get("config_width").or_else(|| r.get("width")).and_then(Value::as_i64);
+    let has_src = |r: &Value| ["url", "src"].iter().any(|k| r.get(*k).and_then(Value::as_str).is_some());
+    let (mut best, mut best_w): (Option<usize>, i64) = (None, i64::MIN);
+    let (mut small, mut small_w): (Option<usize>, i64) = (None, i64::MAX);
+    for (i, r) in items.iter().enumerate() {
+        if !has_src(r) {
+            continue;
+        }
+        if best.is_none() || width(r).unwrap_or(0) >= best_w {
+            best = Some(i);
+            best_w = width(r).unwrap_or(0);
+        }
+        if small.is_none() || width(r).unwrap_or(i64::MAX) < small_w {
+            small = Some(i);
+            small_w = width(r).unwrap_or(i64::MAX);
+        }
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| !has_src(r) || Some(*i) == best || Some(*i) == small)
+        .map(|(_, r)| r)
+        .collect()
+}
+
+/// Keep only what the parsers read from a captured post / reel / story item.
+/// A raw page object carries ~20 KB of likers, comments, music, tags and layout
+/// data nothing here uses; hundreds of them stay in memory for hours.
+fn slim_media(v: &Value) -> Value {
+    let Value::Object(m) = v else { return v.clone() };
+    let mut out = serde_json::Map::new();
+    for k in [
+        "id", "pk", "code", "shortcode", "taken_at", "taken_at_timestamp", "device_timestamp", "media_type",
+        "product_type", "is_video", "video_url", "display_url", "thumbnail_src", "carousel_media_count",
+        "edge_media_to_caption",
+    ] {
+        if let Some(x) = m.get(k) {
+            out.insert(k.to_string(), x.clone());
+        }
+    }
+    for k in ["user", "owner"] {
+        if let Some(u) = m.get(k) {
+            out.insert(k.to_string(), slim_user(u));
+        }
+    }
+    if let Some(c) = m.get("caption") {
+        let slim = match c {
+            Value::Object(_) => c.get("text").map(|t| serde_json::json!({ "text": t })).unwrap_or(Value::Null),
+            other => other.clone(),
+        };
+        out.insert("caption".to_string(), slim);
+    }
+    if let Some(iv) = m.get("image_versions2") {
+        let cands = iv.get("candidates").map(|c| slim_list(c, &["url", "width", "height"])).unwrap_or(Value::Null);
+        out.insert("image_versions2".to_string(), serde_json::json!({ "candidates": cands }));
+    }
+    if let Some(vv) = m.get("video_versions") {
+        out.insert("video_versions".to_string(), slim_list(vv, &["url", "width", "height", "type"]));
+    }
+    for k in ["display_resources", "video_resources"] {
+        if let Some(l) = m.get(k) {
+            out.insert(k.to_string(), slim_list(l, &["src", "url", "config_width", "width", "height"]));
+        }
+    }
+    if let Some(cm) = m.get("carousel_media") {
+        let kids = cm.as_array().map(|a| Value::Array(a.iter().map(slim_media).collect())).unwrap_or_else(|| cm.clone());
+        out.insert("carousel_media".to_string(), kids);
+    }
+    if let Some(edges) = m.get("edge_sidecar_to_children").and_then(|s| s.get("edges")).and_then(Value::as_array) {
+        let slim: Vec<Value> = edges
+            .iter()
+            .map(|e| serde_json::json!({ "node": e.get("node").map(slim_media).unwrap_or(Value::Null) }))
+            .collect();
+        out.insert("edge_sidecar_to_children".to_string(), serde_json::json!({ "edges": slim }));
+    }
+    Value::Object(out)
+}
+
+/// A story / highlight reel: owner, cover and its items, slimmed.
+fn slim_reel(v: &Value) -> Value {
+    let Value::Object(m) = v else { return v.clone() };
+    let mut out = serde_json::Map::new();
+    for k in ["id", "title", "reel_type"] {
+        if let Some(x) = m.get(k) {
+            out.insert(k.to_string(), x.clone());
+        }
+    }
+    if let Some(u) = m.get("user") {
+        out.insert("user".to_string(), slim_user(u));
+    }
+    let cover_of = |o: &Value| {
+        let mut c = serde_json::Map::new();
+        for k in ["cropped_image_version", "cover_image_version"] {
+            if let Some(x) = o.get(k) {
+                c.insert(k.to_string(), slim_list(&Value::Array(vec![x.clone()]), &["url", "width", "height"])[0].clone());
+            }
+        }
+        Value::Object(c)
+    };
+    if let Some(cover) = m.get("cover_media") {
+        out.insert("cover_media".to_string(), cover_of(cover));
+    }
+    for (k, x) in cover_of(v).as_object().into_iter().flatten() {
+        out.insert(k.clone(), x.clone());
+    }
+    if let Some(items) = m.get("items").and_then(Value::as_array) {
+        out.insert("items".to_string(), Value::Array(items.iter().map(slim_media).collect()));
+    }
+    Value::Object(out)
+}
+
+/// Keep the media object the browser captured for `code` (slimmed first).
 pub fn store_capture(code: &str, media: Value) {
+    let slim = slim_media(&media);
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        tracing::debug!(%code, raw_bytes = media.to_string().len(), slim_bytes = slim.to_string().len(), "capture slimmed");
+    }
+    store_slim(code, slim);
+}
+
+fn store_slim(code: &str, media: Value) {
     if let Ok(mut g) = CAPTURED.lock() {
         let map = g.get_or_insert_with(HashMap::new);
         map.retain(|_, (at, _)| at.elapsed() < CAPTURE_TTL);
@@ -134,7 +293,7 @@ fn ingest_walk(v: &Value, posts: &mut Vec<Value>, reels: &mut Vec<(String, Value
                         Some(h) => reel_key_hl(h),
                         None => reel_key_user(user),
                     };
-                    reels.push((key, v.clone()));
+                    reels.push((key, slim_reel(v)));
                     return;
                 }
             }
@@ -173,7 +332,8 @@ pub fn ingest(json: &Value) -> (usize, usize) {
             continue; // a thinner copy of a post already captured in full
         }
         let owner = post_owner(&post);
-        store_capture(&code, post.clone());
+        let post = slim_media(&post); // once, then shared by the per-code and per-profile stores
+        store_slim(&code, post.clone());
         kept += 1;
         if let (Some(owner), Ok(mut g)) = (owner, PROFILE_POSTS.lock()) {
             let map = g.get_or_insert_with(HashMap::new);
@@ -674,7 +834,6 @@ impl InstagramBackend {
     ) -> Result<Outcome> {
         let cfg = &req.config.instagram;
         let cookie = req.ctx.cookie.as_deref().filter(|c| !c.trim().is_empty()).or(cfg.session_cookie.as_deref());
-        let (_page_pace, item_pace, _cc) = cfg.pace_values();
         let mut items: Vec<MediaItem> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
@@ -760,7 +919,6 @@ impl InstagramBackend {
         let dl_ctx = RequestContext { headers, cookie: cookie.map(str::to_string) };
 
         let tracker = ProgressTracker::new(progress, None, items.len() as u64);
-        let mut files = Vec::new();
         let mut last_err: Option<anyhow::Error> = None;
         // instaloader numbers only the members of one carousel (they share a
         // taken-at); a profile crawl's separate posts each keep a bare date name.
@@ -769,6 +927,7 @@ impl InstagramBackend {
             *ts_total.entry(it.timestamp).or_default() += 1;
         }
         let mut ts_seq: std::collections::HashMap<Option<i64>, usize> = std::collections::HashMap::new();
+        let mut jobs_todo: Vec<(usize, String, std::path::PathBuf)> = Vec::with_capacity(items.len());
         for (i, it) in items.iter().enumerate() {
             let seq = {
                 let e = ts_seq.entry(it.timestamp).or_default();
@@ -776,29 +935,49 @@ impl InstagramBackend {
                 *e
             };
             let n = if ts_total.get(&it.timestamp).copied().unwrap_or(1) > 1 { Some(seq) } else { None };
-            let dest = req.dest_dir.join(item_filename(it, i, n));
-            // Already on disk (a re-run of an interrupted post/story, or the
-            // profile walker re-visiting): the final file only appears after an
-            // atomic rename, so its presence means that item completed. Skip the
-            // re-fetch — CDN bytes are immutable for a given shortcode/timestamp.
-            if std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false) {
-                tracker.add_unit(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
-                files.push(dest);
-                continue;
-            }
-            match jobs::run_http(&self.client, &it.url, &dest, 1, &dl_ctx, None).await {
-                Ok(path) => {
-                    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    tracker.add_unit(bytes);
-                    files.push(path);
+            jobs_todo.push((i, it.url.clone(), req.dest_dir.join(item_filename(it, i, n))));
+        }
+
+        // The files come off Instagram's CDN, not its API, so no per-item pause is
+        // needed: fetch a few at a time. Results are put back in item order.
+        let cdn_cc = cdn_concurrency(cfg);
+        let client = &self.client;
+        let (tracker_ref, ctx_ref) = (&tracker, &dl_ctx);
+        let mut done: Vec<(usize, Option<std::path::PathBuf>, Option<anyhow::Error>)> = futures::stream::iter(jobs_todo)
+            .map(|(i, url, dest)| async move {
+                // Already on disk (a re-run of an interrupted post/story, or the
+                // profile walker re-visiting): the final file only appears after an
+                // atomic rename, so its presence means that item completed. Skip the
+                // re-fetch - CDN bytes are immutable for a given shortcode/timestamp.
+                if let Some(len) = std::fs::metadata(&dest).ok().map(|m| m.len()).filter(|l| *l > 0) {
+                    tracker_ref.add_unit(len);
+                    return (i, Some(dest), None);
                 }
-                Err(e) => {
-                    tracing::warn!("Instagram item failed ({}): {e:#}", it.url);
-                    last_err = Some(e);
-                    tracker.add_unit(0);
+                match jobs::run_http_simple(client, &url, &dest, ctx_ref).await {
+                    Ok(path) => {
+                        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        tracker_ref.add_unit(bytes);
+                        (i, Some(path), None)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Instagram item failed ({url}): {e:#}");
+                        tracker_ref.add_unit(0);
+                        (i, None, Some(e))
+                    }
                 }
+            })
+            .buffer_unordered(cdn_cc)
+            .collect()
+            .await;
+        done.sort_by_key(|(i, _, _)| *i);
+        let mut files = Vec::with_capacity(done.len());
+        for (_, path, err) in done {
+            if let Some(p) = path {
+                files.push(p);
             }
-            tokio::time::sleep(item_pace).await;
+            if err.is_some() {
+                last_err = err;
+            }
         }
         tracker.finish();
 
@@ -1354,6 +1533,17 @@ fn ext_from_url(url: &str, is_video: bool) -> String {
 
 /// instaloader-style name: `YYYY-MM-DD_HH-MM-SS_UTC[_N].ext`. `n` = the 1-based
 /// index within a carousel (None for a lone item / a story frame).
+/// How many media files to fetch at once from Instagram's CDN (not its API).
+/// The pace preset scales it; an explicit `max_concurrent` (1-3) maps to 2/4/6.
+fn cdn_concurrency(cfg: &super::InstagramConfig) -> usize {
+    match (cfg.max_concurrent, cfg.pace.as_deref()) {
+        (Some(n), _) => n.clamp(1, 3) * 2,
+        (None, Some("gentle")) => 2,
+        (None, Some("fast")) => 6,
+        _ => 4,
+    }
+}
+
 fn item_filename(it: &MediaItem, idx: usize, n: Option<usize>) -> String {
     let base = it
         .timestamp
@@ -1473,6 +1663,208 @@ mod tests {
         let (frames, _) = parse_post_items(&single);
         assert_eq!(frames.len(), 1);
         assert!(frames[0].is_video);
+    }
+
+    /// Minimal HTTP server: `/bad*` is a 404, anything else answers with its own path.
+    fn serve_paths() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut s) = conn else { continue };
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let mut head = Vec::new();
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match s.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => head.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let line = String::from_utf8_lossy(&head).lines().next().unwrap_or("").to_string();
+                    let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    std::thread::sleep(Duration::from_millis(30));
+                    let (status, body) = if path.starts_with("/bad") { ("404 Not Found", String::new()) } else { ("200 OK", path) };
+                    let resp = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    s.write_all(resp.as_bytes()).ok();
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn carousel_items_download_in_parallel_in_order_and_survive_one_failure() {
+        let base = serve_paths();
+        let cand = |path: &str| json!({ "candidates": [{ "url": format!("{base}{path}"), "width": 1080, "height": 1080 }] });
+        let code = "ParCar1";
+        store_capture(code, json!({
+            "code": code, "taken_at": 1_700_000_000, "user": { "username": "par_user" },
+            "carousel_media": [
+                { "pk": "1", "media_type": 1, "image_versions2": cand("/a1") },
+                { "pk": "2", "media_type": 1, "image_versions2": cand("/bad2") },
+                { "pk": "3", "media_type": 1, "image_versions2": cand("/a3") },
+                { "pk": "4", "media_type": 1, "image_versions2": cand("/a4") },
+                { "pk": "5", "media_type": 1, "image_versions2": cand("/a5") },
+            ],
+        }));
+        let dir = std::env::temp_dir().join(format!("luedd-ig-par-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let backend = InstagramBackend::new(HttpClient::new().unwrap());
+        let req = DownloadReq {
+            url: format!("https://www.instagram.com/p/{code}/"),
+            dest_dir: dir.clone(),
+            filename_hint: None,
+            ctx: RequestContext { headers: HashMap::new(), cookie: None },
+            quality: None,
+            extras: Default::default(),
+            concurrency: 1,
+            config: crate::backend::BackendConfig::default(),
+        };
+        let t = Instant::now();
+        let out = backend.run(&req, None).await.unwrap();
+        let took = t.elapsed();
+
+        assert_eq!(out.files.len(), 4, "the 404 item is skipped, the other four arrive");
+        let bodies: Vec<String> = out.files.iter().map(|f| std::fs::read_to_string(f).unwrap()).collect();
+        assert_eq!(bodies, ["/a1", "/a3", "/a4", "/a5"], "files come back in item order");
+        // old loop: >= 5 x (30 ms + 300 ms pause); parallel with no pause is far below that
+        assert!(took < Duration::from_millis(900), "took {took:?}");
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".luedd-part")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A post as the page really delivers it: the media fields plus a pile of
+    /// likers, comments, music, tags and layout data nothing here reads.
+    fn bloated_post(code: &str, carousel: bool) -> Value {
+        let cand = |u: &str, w: i64| json!({ "url": u, "width": w, "height": w, "scans_profile": "e35", "estimated_scans_sizes": [1, 2, 3, 4] });
+        let child = |n: i64, video: bool| {
+            let mut c = json!({
+                "pk": format!("{n}"), "id": format!("{n}_9"), "media_type": if video { 2 } else { 1 },
+                "image_versions2": { "candidates": [cand(&format!("https://c/{n}_big.jpg"), 1080), cand(&format!("https://c/{n}_small.jpg"), 150)],
+                                     "additional_candidates": { "igtv_first_frame": cand("https://c/x.jpg", 10) } },
+                "accessibility_caption": "Photo by someone. May be an image of 3 people and text ".repeat(4),
+                "original_width": 1080, "original_height": 1350, "usertags": { "in": (0..8).map(|i| json!({ "user": { "username": format!("tag{i}"), "pk": i }, "position": [0.1, 0.2] })).collect::<Vec<_>>() },
+            });
+            if video {
+                c["video_versions"] = json!([{ "url": format!("https://c/{n}_hi.mp4"), "width": 720, "height": 1280, "type": 101 }, { "url": format!("https://c/{n}_lo.mp4"), "width": 360, "height": 640, "type": 102 }]);
+                c["video_dash_manifest"] = json!("<MPD>".repeat(1500));
+            } else {
+                c["video_versions"] = Value::Null;
+            }
+            c
+        };
+        let mut p = json!({
+            "code": code, "pk": "777", "id": "777_9", "taken_at": 1_700_000_123, "media_type": if carousel { 8 } else { 2 },
+            "product_type": if carousel { "carousel_container" } else { "clips" },
+            "user": { "username": "big_user", "pk": "9", "id": "9", "full_name": "Big User", "is_private": false,
+                      "profile_pic_url": "https://c/avatar.jpg", "friendship_status": { "following": false }, "latest_reel_media": 1 },
+            "caption": { "text": "a caption", "pk": "1", "user": { "username": "big_user" }, "created_at": 5, "has_translation": false },
+            "facepile_top_likers": (0..30).map(|i| json!({ "username": format!("liker{i}"), "profile_pic_url": format!("https://c/l{i}.jpg"), "pk": i })).collect::<Vec<_>>(),
+            "preview_comments": (0..20).map(|i| json!({ "text": format!("nice one number {i} ").repeat(6), "user": { "username": format!("c{i}") } })).collect::<Vec<_>>(),
+            "clips_metadata": { "music_info": { "music_asset_info": { "title": "song", "progressive_download_url": "https://c/a.m4a", "waveform_data": vec![0.5; 400] } } },
+            "sharing_friction_info": { "should_have_sharing_friction": false, "bloks_app_url": null },
+            "like_count": 12345, "comment_count": 321, "view_count": 99999,
+        });
+        if carousel {
+            p["carousel_media"] = json!([child(1, false), child(2, true), child(3, false)]);
+            p["carousel_media_count"] = json!(3);
+        } else {
+            let c = child(0, true);
+            p["image_versions2"] = c["image_versions2"].clone();
+            p["video_versions"] = c["video_versions"].clone();
+            p["video_dash_manifest"] = c["video_dash_manifest"].clone();
+        }
+        p
+    }
+
+    #[test]
+    fn slimming_keeps_everything_the_parsers_use_and_shrinks_it_a_lot() {
+        for carousel in [false, true] {
+            let full = bloated_post("SlimOne1", carousel);
+            let slim = slim_media(&full);
+
+            // the downloader
+            let (mut a, mut sa) = (Vec::new(), HashSet::new());
+            let (mut b, mut sb) = (Vec::new(), HashSet::new());
+            walk(&full, &mut a, &mut sa);
+            walk(&slim, &mut b, &mut sb);
+            assert_eq!(format!("{a:?}"), format!("{b:?}"), "walk() must see the same items");
+            assert!(!a.is_empty());
+            // the viewer's post overlay
+            assert_eq!(serde_json::to_value(parse_post_items(&full)).unwrap(), serde_json::to_value(parse_post_items(&slim)).unwrap());
+            // the profile grid tile
+            let tile = |v: &Value| serde_json::to_value(parse_timeline_nodes(&json!({ "edges": [{ "node": v }] }))).unwrap();
+            assert_eq!(tile(&full), tile(&slim));
+            // owner folder + panel thumbnail
+            assert_eq!(find_owner(&full), find_owner(&slim));
+            assert_eq!(find_owner(&slim).as_deref(), Some("big_user"));
+            assert_eq!(smallest_image_url(&full), smallest_image_url(&slim));
+            // size
+            let (before, after) = (full.to_string().len(), slim.to_string().len());
+            assert!(after * 2 < before, "carousel={carousel}: only {before} -> {after} bytes");
+        }
+    }
+
+    #[test]
+    fn pruning_keeps_exactly_the_entries_the_parsers_choose() {
+        // many sizes, with ties for both the largest and the smallest width
+        let widths = [640, 1080, 750, 150, 1080, 320, 150, 240, 1080, 100, 100, 480];
+        let cands: Vec<Value> = widths.iter().enumerate().map(|(i, w)| json!({ "url": format!("https://c/{i}_{w}.jpg"), "width": w, "height": w })).collect();
+        let vids: Vec<Value> = widths.iter().enumerate().map(|(i, w)| json!({ "url": format!("https://c/{i}_{w}.mp4"), "width": w, "height": w, "type": 101 })).collect();
+        let full = json!({ "code": "Prune1", "pk": "1", "media_type": 2, "taken_at": 5, "user": { "username": "p" },
+            "image_versions2": { "candidates": cands }, "video_versions": vids });
+        let slim = slim_media(&full);
+        assert_eq!(slim["image_versions2"]["candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(slim["video_versions"].as_array().unwrap().len(), 2);
+
+        let (mut a, mut sa) = (Vec::new(), HashSet::new());
+        let (mut b, mut sb) = (Vec::new(), HashSet::new());
+        walk(&full, &mut a, &mut sa);
+        walk(&slim, &mut b, &mut sb);
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        assert_eq!(smallest_image_url(&full), smallest_image_url(&slim));
+        assert_eq!(serde_json::to_value(parse_post_items(&full)).unwrap(), serde_json::to_value(parse_post_items(&slim)).unwrap());
+        // an entry with no url is kept untouched (it can never be picked)
+        let odd = slim_media(&json!({ "code": "Prune2", "image_versions2": { "candidates": [{ "width": 5 }, { "url": "https://c/a.jpg", "width": 9 }] } }));
+        assert_eq!(odd["image_versions2"]["candidates"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn slimming_a_story_reel_keeps_items_owner_cover_and_frame_lookup() {
+        let item = |pk: &str, video: bool| {
+            let mut i = json!({ "pk": pk, "id": format!("{pk}_9"), "media_type": if video { 2 } else { 1 }, "taken_at": 1_700_000_000,
+                "image_versions2": { "candidates": [{ "url": format!("https://c/{pk}.jpg"), "width": 1080, "height": 1920 }] },
+                "story_cta": { "x": "y".repeat(2000) }, "story_hashtags": [], "viewers": (0..50).map(|n| json!({ "pk": n })).collect::<Vec<_>>() });
+            if video {
+                i["video_versions"] = json!([{ "url": format!("https://c/{pk}.mp4"), "width": 720, "height": 1280 }]);
+            }
+            i
+        };
+        let reel = json!({ "id": "highlight:55", "title": "Trip", "user": { "username": "Reel_User", "pk": "1", "profile_pic_url": "https://c/a.jpg" },
+            "cover_media": { "cropped_image_version": { "url": "https://c/cover.jpg", "width": 150, "height": 150 }, "extra": [1, 2, 3] },
+            "items": [item("1001", false), item("1002", true)], "seen": 0, "ranked_position": 3 });
+        let slim = slim_reel(&reel);
+        assert_eq!(find_owner(&slim).as_deref(), Some("Reel_User"));
+        assert_eq!(parse_reel_items(&slim).len(), 2);
+        assert_eq!(format!("{:?}", parse_reel_items(&reel)), format!("{:?}", parse_reel_items(&slim)));
+        assert_eq!(smallest_image_url(&slim).as_deref(), Some("https://c/cover.jpg"));
+        assert_eq!(smallest_image_url(&reel), smallest_image_url(&slim));
+        assert_eq!(smallest_image_url(&find_story_item(&slim, "1002").unwrap()).as_deref(), Some("https://c/1002.jpg"));
+        assert!(slim.to_string().len() * 2 < reel.to_string().len());
+    }
+
+    #[test]
+    fn cdn_concurrency_follows_the_pace_preset() {
+        let mut c = crate::backend::InstagramConfig::default();
+        assert_eq!(cdn_concurrency(&c), 4);
+        c.pace = Some("gentle".into());
+        assert_eq!(cdn_concurrency(&c), 2);
+        c.pace = Some("fast".into());
+        assert_eq!(cdn_concurrency(&c), 6);
+        c.max_concurrent = Some(9); // clamps to 3 -> 6
+        assert_eq!(cdn_concurrency(&c), 6);
     }
 
     #[test]
