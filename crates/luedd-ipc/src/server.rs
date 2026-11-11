@@ -166,6 +166,14 @@ struct SyncResponse {
     new_detection: Option<VideoListItem>,
     #[serde(rename = "vidQueued", skip_serializing_if = "Option::is_none")]
     vid_queued: Option<bool>,
+    /// A profile download is waiting for the browser to scroll this Instagram
+    /// profile (so its posts load and get captured). Populated only on `/sync`.
+    #[serde(rename = "igScroll", skip_serializing_if = "Option::is_none")]
+    ig_scroll: Option<String>,
+    /// Instagram pages a running download needs loaded in the browser so they get
+    /// captured. Populated only on `/sync`.
+    #[serde(rename = "igCapture", skip_serializing_if = "Vec::is_empty")]
+    ig_capture: Vec<String>,
     #[serde(rename = "qualityVariants", skip_serializing_if = "Option::is_none")]
     quality_variants: Option<Vec<luedd_media::quality::QualityOption>>,
     #[serde(rename = "previewDataUrl", skip_serializing_if = "Option::is_none")]
@@ -252,6 +260,8 @@ fn sync_response(video_list: Vec<VideoListItem>, new_detection: Option<VideoList
         providers: Vec::new(),
         new_detection,
         vid_queued: None,
+        ig_scroll: None,
+        ig_capture: Vec::new(),
         quality_variants: None,
         preview_data_url: None,
         preview_kind: None,
@@ -395,6 +405,9 @@ pub async fn serve(
         .route("/ig/post", post(ig_post))
         .route("/ig/queue", post(ig_queue))
         .route("/ig/pagethumb", post(ig_page_thumb))
+        .route("/ig/capture", post(ig_capture))
+        .route("/ig/json", post(ig_json))
+        .route("/ig/profilemeta", post(ig_profile_meta))
         .route("/ig/archive", post(ig_archive))
         .route("/ig/archive-state", get(ig_archive_state))
         .route("/ig/downloaded", get(ig_downloaded))
@@ -570,6 +583,9 @@ async fn sync(State(state): State<Arc<AppState>>) -> Json<SyncResponse> {
     resp.page_hosts = state.registry.page_hosts();
     resp.server_build = state.config.build_id.clone();
     resp.providers = state.registry.provider_labels();
+    luedd_core::backend::instagram::note_extension_seen();
+    resp.ig_scroll = luedd_core::backend::instagram::scroll_request();
+    resp.ig_capture = luedd_core::backend::instagram::capture_requests();
     Json(resp)
 }
 
@@ -700,6 +716,7 @@ impl AppState {
     async fn remember_ig_cookie(&self, cookie: &str) {
         let cookie = cookie.trim();
         let Some(sid) = sessionid_of(cookie).map(str::to_string) else { return };
+        self.refresh_stale_ig_entries(cookie).await;
         let snapshot = {
             let mut pool = self.ig_cookies.lock().await;
             if pool.first().map(String::as_str) == Some(cookie) {
@@ -711,6 +728,29 @@ impl AppState {
             pool.clone()
         };
         self.persist_ig_cookies(&snapshot).await;
+    }
+
+    /// A fresh browser session just arrived — swap it onto any queued/failed
+    /// Instagram download entry still carrying an older cookie, so the
+    /// scheduler's next auto-retry (which just resets status, never the
+    /// baked-in `cookie` field - see `DownloadStore::retry_entry`) sends the
+    /// live session instead of replaying the one that got it stuck in the
+    /// first place.
+    async fn refresh_stale_ig_entries(&self, cookie: &str) {
+        use luedd_core::queue::DownloadStatus as S;
+        let fresh = cookie.to_string();
+        let pred_cookie = fresh.clone();
+        let _ = self
+            .store
+            .update_where(
+                move |e| {
+                    e.backend_id == "instagram"
+                        && matches!(e.status, S::Failed | S::Queued)
+                        && e.cookie.as_deref() != Some(pred_cookie.as_str())
+                },
+                move |e| e.cookie = Some(fresh.clone()),
+            )
+            .await;
     }
 
     /// Move a cookie that just worked to the front of the pool and persist, so a
@@ -1363,6 +1403,8 @@ async fn ig_profile(State(state): State<Arc<AppState>>, body: Bytes) -> Json<ser
         return Json(serde_json::json!({ "error": "bad request" }));
     };
     let cfg = state.config.settings.get().await.backends;
+    // not captured yet: have the browser open the profile page (background tab)
+    luedd_core::backend::instagram::ensure_profile_meta(&req.username).await;
     let resolved;
     let header = {
         let inst = state.instagram.clone();
@@ -1445,8 +1487,14 @@ async fn ig_cookie(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serd
     #[derive(serde::Deserialize)]
     struct Req {
         cookie: Option<String>,
+        #[serde(default)]
+        ua: Option<String>,
     }
-    let ok = match serde_json::from_slice::<Req>(&body).ok().and_then(|r| r.cookie) {
+    let req = serde_json::from_slice::<Req>(&body).ok();
+    if let Some(ua) = req.as_ref().and_then(|r| r.ua.as_deref()) {
+        luedd_core::backend::instagram::set_user_agent(ua);
+    }
+    let ok = match req.and_then(|r| r.cookie) {
         Some(c) if c.contains("sessionid=") => {
             state.remember_ig_cookie(&c).await;
             true
@@ -1560,6 +1608,131 @@ async fn ig_post(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_
         }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct IgCaptureReq {
+    /// The post / reel page the extension loaded.
+    url: String,
+    /// The media object (`code`, `image_versions2`, `video_versions`, ...) found
+    /// in that page by the extension, running in the user's own browser.
+    media: serde_json::Value,
+}
+
+/// The extension hands over a post's media JSON taken from the page it loaded in
+/// the user's logged-in browser, so the app never has to call Instagram's API.
+async fn ig_capture(body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgCaptureReq>(&body) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    let Some(code) = luedd_core::backend::instagram::shortcode_of(&req.url) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    // must really be this post's media, not some other object from the page
+    let same = req.media.get("code").and_then(|c| c.as_str()) == Some(code.as_str());
+    if !same || req.media.get("image_versions2").is_none() && req.media.get("carousel_media").is_none() {
+        return Json(serde_json::json!({ "ok": false }));
+    }
+    luedd_core::backend::instagram::store_capture(&code, req.media);
+    tracing::info!(%code, "instagram post captured from the browser");
+    Json(serde_json::json!({ "ok": true }))
+}
+
+#[derive(serde::Deserialize)]
+struct IgProfileMetaReq {
+    username: String,
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    biography: String,
+    #[serde(default)]
+    profile_pic_url: String,
+    #[serde(default)]
+    is_private: bool,
+    #[serde(default)]
+    is_verified: bool,
+    #[serde(default)]
+    external_url: Option<String>,
+    #[serde(default)]
+    post_count: u64,
+    #[serde(default)]
+    follower_count: u64,
+    #[serde(default)]
+    following_count: u64,
+    #[serde(default)]
+    highlights: Vec<IgHighlightTile>,
+}
+
+#[derive(serde::Deserialize)]
+struct IgHighlightTile {
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    cover_url: Option<String>,
+}
+
+/// The extension reads the profile page's header (name, counts, avatar) and
+/// highlight tiles from the page itself, for the profile viewer.
+async fn ig_profile_meta(State(state): State<Arc<AppState>>, body: Bytes) -> Json<serde_json::Value> {
+    use luedd_core::backend::instagram::{store_profile_meta, HighlightMeta, ProfileHeader};
+    let Ok(r) = serde_json::from_slice::<IgProfileMetaReq>(&body) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    let username = r.username.trim_start_matches('@').to_string();
+    // a header without a name, counts or picture is a half-loaded page: ignore it
+    if r.full_name.is_empty() && r.profile_pic_url.is_empty() && r.follower_count == 0 && r.post_count == 0 {
+        tracing::info!(user = %username, "profile header ignored: the page gave no name, picture or counts");
+        return Json(serde_json::json!({ "ok": false }));
+    }
+    if username.is_empty() || username.len() > 64 {
+        return Json(serde_json::json!({ "ok": false }));
+    }
+    if !r.profile_pic_url.is_empty() {
+        let (st, u, pic) = (state.clone(), username.clone(), r.profile_pic_url.clone());
+        tokio::spawn(async move { st.ig_library.set_avatar(&u, &pic).await.ok(); });
+    }
+    tracing::info!(user = %username, name = !r.full_name.is_empty(), pic = !r.profile_pic_url.is_empty(), followers = r.follower_count, "profile header captured from the browser");
+    let hdr = ProfileHeader {
+        username,
+        full_name: r.full_name,
+        biography: r.biography,
+        profile_pic_url: r.profile_pic_url,
+        is_private: r.is_private,
+        is_verified: r.is_verified,
+        external_url: r.external_url.filter(|s| !s.is_empty()),
+        post_count: r.post_count,
+        follower_count: r.follower_count,
+        following_count: r.following_count,
+        complete: true,
+    };
+    let tray = r
+        .highlights
+        .into_iter()
+        .map(|h| HighlightMeta { id: h.id, title: h.title, cover_url: h.cover_url })
+        .collect();
+    store_profile_meta(hdr, tray);
+    Json(serde_json::json!({ "ok": true }))
+}
+
+#[derive(serde::Deserialize)]
+struct IgJsonReq {
+    /// The Instagram API / GraphQL response body the page itself received.
+    json: serde_json::Value,
+}
+
+/// The extension copies the JSON the Instagram page already fetched (story
+/// reels, profile grid pages, feed) so stories, highlights and profile posts
+/// can be previewed and downloaded without the app calling Instagram.
+async fn ig_json(body: Bytes) -> Json<serde_json::Value> {
+    let Ok(req) = serde_json::from_slice::<IgJsonReq>(&body) else {
+        return Json(serde_json::json!({ "ok": false }));
+    };
+    let (posts, reels) = luedd_core::backend::instagram::ingest(&req.json);
+    if posts + reels > 0 {
+        tracing::info!(posts, reels, "instagram data captured from the browser");
+    }
+    Json(serde_json::json!({ "ok": true, "posts": posts, "reels": reels }))
 }
 
 #[derive(serde::Deserialize)]
@@ -2823,13 +2996,21 @@ async fn preview(State(state): State<Arc<AppState>>, body: Bytes) -> Json<SyncRe
     // media file - fetching that would just 413. Ask the backend for a
     // thumbnail image URL instead (yt-dlp `-J` provides one).
     if is_page_host(&media.url, &state.registry.page_hosts()) {
+        // Fast path for YouTube/youtu.be: the thumbnail URL is deterministic
+        // from the video ID — skip yt-dlp entirely.
+        let fast_thumb = yt_caught_of(&media.url, None).and_then(|(_, c)| c.thumbnail);
         let cfg = state.config.settings.get().await.backends;
         let backend = state.registry.resolve(&media.url, &ctx, &cfg).await;
-        let result = match backend.thumbnail(&probe_req(media.url.clone(), ctx.clone(), cfg)).await {
-            Ok(Some((thumb_url, square))) => fetch_image_data_url(&client, &thumb_url)
+        let result = match fast_thumb {
+            Some(thumb_url) => fetch_image_data_url(&client, &thumb_url)
                 .await
-                .map(|(url, _)| (url, if square { "square" } else { "image" })),
-            _ => None,
+                .map(|(url, _)| (url, "image")),
+            None => match backend.thumbnail(&probe_req(media.url.clone(), ctx.clone(), cfg)).await {
+                Ok(Some((thumb_url, square))) => fetch_image_data_url(&client, &thumb_url)
+                    .await
+                    .map(|(url, _)| (url, if square { "square" } else { "image" })),
+                _ => None,
+            },
         };
         // IG's API couldn't do it (throttled, expired story): use what the
         // browser showed, else the account's stored avatar over a blank tile.
@@ -3365,6 +3546,16 @@ async fn queue_url(
     let backend = state.registry.resolve(&url, &ctx, &settings.backends).await;
     let backend_id = backend.id().to_string();
     let kind = luedd_core::backend::kind_for_backend_id(&backend_id);
+
+    // Instagram's API now demands a logged-in session even for public posts. If
+    // the detection carried no (or a logged-out) cookie, use the session the
+    // extension pushed to the pool.
+    let cookie = if backend_id == "instagram" && cookie.as_deref().and_then(sessionid_of).is_none() {
+        state.ig_cookie(None).await.or(cookie)
+    } else {
+        cookie
+    };
+    let ctx = RequestContext { headers: headers.clone(), cookie: cookie.clone() };
 
     // A post / reel URL carries only a shortcode (`/p/<code>`), so by default it
     // lands in a folder named after that code. Resolve the owner (one cached
@@ -4115,6 +4306,16 @@ mod tests {
         assert!(DEFAULT_MEDIA_EXTS.contains(&".PNG"));
         assert!(DEFAULT_MEDIA_TYPES.contains(&"application/pdf"));
         assert!(DEFAULT_MEDIA_TYPES.contains(&"image/"));
+    }
+
+    #[test]
+    fn yt_caught_of_gives_deterministic_thumbnail_for_youtube_only() {
+        let thumb = |u: &str| yt_caught_of(u, None).and_then(|(_, c)| c.thumbnail);
+        let want = Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg".to_string());
+        assert_eq!(thumb("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), want);
+        assert_eq!(thumb("https://youtu.be/dQw4w9WgXcQ"), want);
+        assert_eq!(thumb("https://www.youtube.com/shorts/dQw4w9WgXcQ"), want);
+        assert_eq!(thumb("https://vimeo.com/123456789"), None);
     }
 
     #[test]

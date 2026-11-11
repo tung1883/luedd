@@ -575,6 +575,19 @@
       const priv = /this (account|profile) is private/i.test((document.querySelector("main") || document.body).innerText || "");
       return { thumbUrl: img.src, square: true, ...(priv ? { private: true } : {}) };
     }
+    // Post / reel page: grab the main visible image from the article
+    if (/^\/(p|reel|tv)\/[^/]/.test(location.pathname)) {
+      let best = null, area = 0;
+      for (const el of document.querySelectorAll('article img[src], div[role="dialog"] img[src]')) {
+        const src = el.currentSrc || el.src;
+        if (!/^https?:/.test(src)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 100 || r.height < 100) continue;
+        if (r.width * r.height > area) { area = r.width * r.height; best = { el, src }; }
+      }
+      if (!best) return null;
+      return { thumbUrl: best.src };
+    }
     return null;
   }
 

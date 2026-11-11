@@ -58,35 +58,19 @@ fn avail_cache() -> &'static Mutex<Option<(Instant, Option<(u32, u32)>)>> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Engine {
     Custom,
+    #[allow(dead_code)] // no longer planned: it would call Instagram's API
     Instaloader,
 }
 
-fn parse_engine(s: Option<&str>) -> Option<Engine> {
-    match s {
-        Some("instaloader") => Some(Engine::Instaloader),
-        Some("custom") => Some(Engine::Custom),
-        _ => None,
-    }
-}
-
-/// Ordered engine plan for one download: the configured primary
-/// (`instagram_engine_main`, default `Custom`), then the fallback
-/// (`instagram_engine_fallback`, default none) when it is set and distinct.
+/// Engine plan for one download. Always the custom engine, which serves
+/// posts, reels, stories, highlights and profile posts from what the browser
+/// extension captured from the Instagram page itself.
 ///
-/// A single highlight-by-id always collapses to `[Custom]` - the CLI can't
-/// target one highlight.
-pub(crate) fn engine_plan(cfg: &BackendConfig, target: &Target) -> Vec<Engine> {
-    if matches!(target, Target::Highlight(_)) {
-        return vec![Engine::Custom];
-    }
-    let main = parse_engine(cfg.instagram_engine_main.as_deref()).unwrap_or(Engine::Custom);
-    let mut plan = vec![main];
-    if let Some(fallback) = parse_engine(cfg.instagram_engine_fallback.as_deref()) {
-        if fallback != main {
-            plan.push(fallback);
-        }
-    }
-    plan
+/// `instagram_engine_main` / `_fallback` are deliberately ignored: the
+/// `instaloader` CLI calls Instagram's API from this machine with the session
+/// cookie, the very traffic that gets an account flagged and locked.
+pub(crate) fn engine_plan(_cfg: &BackendConfig, _target: &Target) -> Vec<Engine> {
+    vec![Engine::Custom]
 }
 
 /// `(program, leading_args)` - `cfg.instaloader_path` → `instaloader[.exe]` next
@@ -504,42 +488,19 @@ mod tests {
     }
 
     #[test]
-    fn highlight_always_uses_custom_engine() {
-        let mut cfg = BackendConfig::default();
-        cfg.instagram_engine_main = Some("instaloader".to_string());
-        cfg.instagram_engine_fallback = Some("instaloader".to_string());
-        assert_eq!(engine_plan(&cfg, &Target::Highlight("123".into())), vec![Engine::Custom]);
-    }
-
-    #[test]
-    fn unset_plan_is_custom_only() {
-        let cfg = BackendConfig::default();
-        assert_eq!(
-            engine_plan(&cfg, &Target::Shortcode("abc".into(), false)),
-            vec![Engine::Custom]
-        );
-    }
-
-    #[test]
-    fn main_and_distinct_fallback_are_ordered() {
-        let cfg = BackendConfig {
-            instagram_engine_main: Some("instaloader".into()),
-            instagram_engine_fallback: Some("custom".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            engine_plan(&cfg, &Target::Profile("x".into())),
-            vec![Engine::Instaloader, Engine::Custom]
-        );
-    }
-
-    #[test]
-    fn fallback_equal_to_main_is_dropped() {
+    fn plan_is_always_the_browser_capture_engine() {
         let cfg = BackendConfig {
             instagram_engine_main: Some("instaloader".into()),
             instagram_engine_fallback: Some("instaloader".into()),
             ..Default::default()
         };
-        assert_eq!(engine_plan(&cfg, &Target::Profile("x".into())), vec![Engine::Instaloader]);
+        for target in [
+            Target::Shortcode("abc".into(), false),
+            Target::Stories("u".into()),
+            Target::Highlight("1".into()),
+            Target::Profile("x".into()),
+        ] {
+            assert_eq!(engine_plan(&cfg, &target), vec![Engine::Custom]);
+        }
     }
 }

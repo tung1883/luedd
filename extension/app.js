@@ -83,6 +83,10 @@ export default class App {
         this.blockedHosts = msg.blockedHosts;
         this.tabsWatcher = msg.tabsWatcher;
         this.pageHosts = msg.pageHosts || [];
+        this.igScrollWanted = msg.igScroll || null;
+        if (this.igScrollWanted) this.igAutoScroll(this.igScrollWanted);
+        this.igCaptureWanted = msg.igCapture || [];
+        for (const u of this.igCaptureWanted) this.igCapturePage(u);
         const serverList = msg.videoList || [];
         const serverUrls = new Set(serverList.map(v => v.url));
         const localOnly = (this.videoList || [])
@@ -573,6 +577,11 @@ export default class App {
             const cp = new URL(canon);
             if (cp.pathname.replace(/\/+$/, "").length <= 1 && !cp.search) return;
         } catch (e) { }
+        // An Instagram post / reel: have the page's content script capture its
+        // media JSON now, so a later download needs no Instagram API call.
+        if (tabId != null && /(^|\.)instagram\.com$/.test(host) && /^\/(p|reel|reels|tv)\/[^/]+/.test(new URL(canon).pathname)) {
+            try { chrome.tabs.sendMessage(tabId, { type: "ig-capture-req", url: canon }, () => void chrome.runtime.lastError); } catch (e) { }
+        }
         const title = tab.title || null;
         const host0 = url.host.replace(/^www\./, "").split(".")[0];
         const GENERIC = new Set(["watch", "video", "videos", "home", "youtube", "shorts", host0]);
@@ -623,6 +632,105 @@ export default class App {
     // Push the current instagram.com session cookie to Lüdd so the profile
     // viewer's /ig/* calls work without first visiting an IG page this run.
     // Throttled to ~once a minute; the app keeps it in memory only.
+    // Is the content script in this tab alive? After an extension reload, tabs that
+    // were already open keep a dead script and never answer.
+    tabScriptAlive(tabId) {
+        return new Promise(res => {
+            let done = false;
+            const fin = v => { if (!done) { done = true; res(v); } };
+            setTimeout(() => fin(false), 1500);
+            try {
+                chrome.tabs.sendMessage(tabId, { type: "ig-ping" }, r => { void chrome.runtime.lastError; fin(!!(r && r.ok)); });
+            } catch (e) { fin(false); }
+        });
+    }
+
+    // A profile download is waiting for this profile's posts to load: scroll it in
+    // the browser (slowly, like a person) so the page fetches them and the content
+    // script captures them. Opens the profile in a background tab if none is open.
+    async igAutoScroll(user) {
+        if (this._igScrolling) return;
+        this._igScrolling = user;
+        let tabId = null, opened = false, winId = null;
+        try {
+            const found = await chrome.tabs.query({ url: ["*://www.instagram.com/" + user + "/", "*://www.instagram.com/" + user + "/?*"] });
+            if (found && found.length) tabId = found[0].id;
+            if (tabId != null && !(await this.tabScriptAlive(tabId))) tabId = null;
+            if (tabId == null) {
+                // A small unfocused popup window: a background tab is not rendered, so
+                // Instagram's lazy loading would never fire while scrolling it.
+                const w = await chrome.windows.create({ url: "https://www.instagram.com/" + user + "/", type: "popup", width: 520, height: 800, focused: false });
+                winId = w.id; tabId = w.tabs && w.tabs[0] ? w.tabs[0].id : null; opened = true;
+                if (tabId == null) return;
+                for (let i = 0; i < 20; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    const cur = await chrome.tabs.get(tabId).catch(() => null);
+                    if (!cur) return;
+                    if (cur.status === "complete") break;
+                }
+                await new Promise(r => setTimeout(r, 3000));
+            }
+            const started = Date.now();
+            let lastKick = 0;
+            // keep the scroll going until the app stops asking for this profile
+            while (this.igScrollWanted === user && Date.now() - started < 15 * 60 * 1000) {
+                if (Date.now() - lastKick > 4000) {
+                    lastKick = Date.now();
+                    try { chrome.tabs.sendMessage(tabId, { type: "ig-autoscroll" }, () => void chrome.runtime.lastError); } catch (e) { }
+                }
+                await new Promise(r => setTimeout(r, 1500));
+            }
+        } catch (e) {
+            this.logger.log("ig autoscroll failed: " + e);
+        } finally {
+            if (opened) {
+                try { if (winId != null) chrome.windows.remove(winId); else if (tabId != null) chrome.tabs.remove(tabId); } catch (e) { }
+            }
+            this._igScrolling = null;
+        }
+    }
+
+    // A download needs this Instagram page captured: load it in a background tab
+    // (or reuse an open one), let the content script capture it, then close it.
+    async igCapturePage(url) {
+        if (!/^https:\/\/www\.instagram\.com\//.test(url)) return;
+        if (!this._igCapturing) this._igCapturing = new Set();
+        if (this._igCapturing.has(url) || this._igCapturing.size >= 3) return;
+        this._igCapturing.add(url);
+        let tabId = null, opened = false;
+        try {
+            const bare = url.split("?")[0];
+            const found = await chrome.tabs.query({ url: [bare, bare + "?*"] });
+            if (found && found.length) tabId = found[0].id;
+            if (tabId != null && !(await this.tabScriptAlive(tabId))) tabId = null;
+            if (tabId == null) {
+                const t = await chrome.tabs.create({ url, active: false });
+                tabId = t.id; opened = true;
+                for (let i = 0; i < 20; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    const cur = await chrome.tabs.get(tabId).catch(() => null);
+                    if (!cur) return;
+                    if (cur.status === "complete") break;
+                }
+                await new Promise(r => setTimeout(r, 1500));
+            }
+            const started = Date.now();
+            let lastKick = 0;
+            while ((this.igCaptureWanted || []).includes(url) && Date.now() - started < 40000) {
+                if (Date.now() - lastKick > 5000) {
+                    lastKick = Date.now();
+                    try { chrome.tabs.sendMessage(tabId, { type: "ig-capture-req", url }, () => void chrome.runtime.lastError); } catch (e) { }
+                }
+                await new Promise(r => setTimeout(r, 1000));
+            }
+        } catch (e) {
+            this.logger.log("ig capture failed: " + e);
+        } finally {
+            if (opened && tabId != null) { try { chrome.tabs.remove(tabId); } catch (e) { } }
+            this._igCapturing.delete(url);
+        }
+    }
+
     async maybePushIgCookie() {
         const now = Date.now();
         if (this._igCookieAt && now - this._igCookieAt < 60000) return;
@@ -631,7 +739,7 @@ export default class App {
             const cookies = await chrome.cookies.getAll({ url: "https://www.instagram.com/" });
             if (!cookies || !cookies.some(c => c.name === "sessionid" && c.value)) return;
             const cookie = cookies.map(c => `${c.name}=${c.value}`).join("; ");
-            this.connector.postMessage("/ig/cookie", { cookie });
+            this.connector.postMessage("/ig/cookie", { cookie, ua: navigator.userAgent });
         } catch (e) { }
     }
 
@@ -854,6 +962,19 @@ export default class App {
                 }).then(r => sendResponse({ ok: !!(r && r.ok) }));
                 return true;
             }
+        }
+        // A post's media JSON, taken from the post page by the content script in
+        // the user's own browser - the app downloads it without calling Instagram.
+        else if (request.type === "ig-capture" && request.url && request.media) {
+            this.connector.postMessage("/ig/capture", { url: request.url, media: request.media })
+                .then(r => sendResponse({ ok: !!(r && r.ok) }));
+            return true;
+        }
+        else if (request.type === "ig-profile-meta" && request.payload) {
+            if (this.isMonitoringEnabled()) this.connector.postMessage("/ig/profilemeta", request.payload);
+        }
+        else if (request.type === "ig-json" && request.json) {
+            if (this.isMonitoringEnabled()) this.connector.postMessage("/ig/json", { json: request.json });
         }
         else if (request.type === "ig-feed-item" && request.url) {
             if (this.isMonitoringEnabled()) {

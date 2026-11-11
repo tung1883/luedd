@@ -55,6 +55,16 @@
                 "*://*.instagram.com/*"
             ],
             "js": [
+                "ig-hook.js"
+            ],
+            "run_at": "document_start",
+            "world": "MAIN"
+        },
+        {
+            "matches": [
+                "*://*.instagram.com/*"
+            ],
+            "js": [
                 "content-ig.js"
             ],
             "run_at": "document_idle"
